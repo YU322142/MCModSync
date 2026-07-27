@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "mcmodsync",
+  "version": "1.6.10",
+  "name": "MCModSync",
+  "description": "在游戏启动时根据云端 MD5 清单同步 Mod、资源包和服务器列表。",
+  "authors": ["MCModSync Contributors"],
+  "environment": "client",
+  "entrypoints": {
+    "preLaunch": [
+      "io.github.mcmodsync.FabricPreLaunchEntrypoint"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": ">=1.21.11",
+    "java": ">=21"
+  }
+}

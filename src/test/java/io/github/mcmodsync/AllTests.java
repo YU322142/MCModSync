@@ -1,0 +1,1687 @@
+package io.github.mcmodsync;
+
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
+public final class AllTests {
+    private int passed;
+
+    public static void main(String[] arguments) throws Exception {
+        new AllTests().run();
+    }
+
+    private void run() throws Exception {
+        testManifestGenerationAndParsing();
+        testFabricModIdAndV1Compatibility();
+        testPublisherManifestIncludesSyncTool();
+        testSelfDowngradeIsRefused();
+        testResourcePackManifestGenerationAndParsing();
+        testServerListManifestGenerationAndParsing();
+        testManifestRejectsUnsafeInput();
+        testPathEncoding();
+        testRequiredManifestRetriesTransientFailuresOverHttp11();
+        testDetectedGameDirectoryWinsOverAmbiguousCommandLine();
+        testUnquotedGameDirectoryWithSpacesCanBeParsed();
+        testInstanceGuard();
+        testRedirectDownloadStrictSyncAndBackup();
+        testParallelModDownloadFallsBackToSingleThread();
+        testMissingLocalManifestAsksAboutEveryUnknownMod();
+        testResourcePackMd5SyncAndClientPreservation();
+        testBakaXLDualDirectoryResourcePackSync();
+        testBakaXLDualDirectoryServerListMerge();
+        testVersionFilenameChangeIsAutomaticReplacement();
+        testBakaXLDualDirectorySync();
+        testPortableFabricModeUpdatesAndRequiresRestart();
+        testMobileInProcessUpdateDisablesOldModsThenRestarts();
+        testMobileDefaultManifestUsesPhoneList();
+        testMobileAutoQuarantinesExtrasNotInManifest();
+        testKeepingServerRemovedConvertsItToClientMod();
+        testApplyFailureRollsBackOriginalFiles();
+        testOfflineAlwaysBlocks();
+        testResourcePackAndServerListManifestFailuresBlock();
+        testClientModIsPreservedWhenOfflineBlocks();
+        testInvalidServerManagedModBlocksWhenOffline();
+        testZalithMobileEnvironmentDetection();
+        testHeadlessProgressIsLoggedAndWritten();
+        System.out.println("All tests passed: " + passed);
+    }
+
+    private void testManifestGenerationAndParsing() throws Exception {
+        Path root = Files.createTempDirectory("modsync-manifest-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            byte[] first = "alpha".getBytes(StandardCharsets.UTF_8);
+            byte[] second = "beta".getBytes(StandardCharsets.UTF_8);
+            Files.write(mods.resolve("B-mod.jar"), second);
+            Files.write(mods.resolve("a-mod.jar"), first);
+            Files.writeString(mods.resolve("ignored.txt"), "not a mod");
+
+            ModManifest generated = ModManifest.scan(mods);
+            String text = generated.serialize();
+            ModManifest parsed = ModManifest.parse(text);
+
+            check(parsed.entries().size() == 2, "应只扫描两个 JAR");
+            check(parsed.entries().get(0).fileName().equals("a-mod.jar"), "应按文件名稳定排序");
+            check(parsed.entries().get(0).md5().equals(Hashing.md5(first)), "第一个 MD5 应正确");
+            check(parsed.entries().get(1).md5().equals(Hashing.md5(second)), "第二个 MD5 应正确");
+            pass("manifest generation and parsing");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testManifestRejectsUnsafeInput() {
+        expectFailure(() -> ModManifest.parse(ModManifest.MAGIC + "\n00000000000000000000000000000000\t-\t../evil.jar\n"));
+        expectFailure(() -> ModManifest.parse(ModManifest.MAGIC + "\n"));
+        expectFailure(() -> ModManifest.parse("<html>not a manifest</html>"));
+        pass("unsafe manifests rejected");
+    }
+
+    private void testFabricModIdAndV1Compatibility() throws Exception {
+        Path root = Files.createTempDirectory("modsync-metadata-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path jar = mods.resolve("demo-1.0.jar");
+            writeFabricJar(jar, "demo_mod", "1.0");
+            ModManifest generated = ModManifest.scan(mods);
+            check(generated.entries().get(0).modId().equals("demo_mod"), "应从 fabric.mod.json 读取顶层 Mod ID");
+            check(generated.serialize().startsWith(ModManifest.MAGIC_V2), "新清单应使用 v2 格式");
+            ModManifest.parse(generated.serialize()).ensureUniqueModIds();
+
+            String v1 = ModManifest.MAGIC_V1 + "\n" + Hashing.md5(jar) + "\tdemo-1.0.jar\n";
+            ModManifest old = ModManifest.parse(v1);
+            check(old.entries().get(0).modId().isEmpty(), "v1 清单应兼容并回退到文件名识别");
+
+            writeFabricJar(mods.resolve("duplicate.jar"), "demo_mod", "duplicate");
+            ModManifest duplicates = ModManifest.scan(mods);
+            expectFailure(duplicates::ensureUniqueModIds);
+            pass("Fabric mod id extraction and v1 compatibility");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPublisherManifestIncludesSyncTool() throws Exception {
+        Path root = Files.createTempDirectory("modsync-publisher-self-update-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            writeFabricJar(mods.resolve("MCModSync-1.6.9.jar"), "mcmodsync", "1.6.9");
+            writeFabricJar(mods.resolve("managed.jar"), "managed_mod", "managed");
+
+            ModManifest published = ModManifest.scan(mods);
+            published.ensureUniqueModIds();
+            check(published.entries().size() == 2, "发布清单应包含同步工具本身和普通 Mod");
+            check(published.entries().stream().anyMatch(entry -> entry.modId().equals("mcmodsync")),
+                    "发布清单必须包含 mcmodsync，才能自更新");
+            check(published.entries().stream().anyMatch(entry -> entry.modId().equals("managed_mod")),
+                    "发布清单应保留普通 Mod");
+            pass("publisher includes sync tool for self update");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testSelfDowngradeIsRefused() throws Exception {
+        Path root = Files.createTempDirectory("modsync-self-downgrade-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path localUpdater = mods.resolve("MCModSync-1.6.9.jar");
+            writeFabricJar(localUpdater, "mcmodsync", "1.6.9");
+            Path oldSource = root.resolve("MCModSync-1.5.0.jar");
+            writeFabricJar(oldSource, "mcmodsync", "1.5.0");
+            byte[] oldBytes = Files.readAllBytes(oldSource);
+            String manifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(oldBytes) + "\tmcmodsync\tMCModSync-1.5.0.jar\n";
+            AtomicInteger oldDownloadRequests = new AtomicInteger();
+            server.createContext("/mods/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/mods/MCModSync-1.5.0.jar", exchange -> {
+                oldDownloadRequests.incrementAndGet();
+                respond(exchange, 200, oldBytes, null);
+            });
+            server.start();
+
+            URI manifestUri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/mods/mods.txt");
+            ModSyncConfig config = config(root, manifestUri, true, true);
+            SyncProbeResult probe = new ModSyncEngine(config, message -> { }).probeWithoutJarChanges();
+            check(probe.status() == SyncProbeResult.Status.UP_TO_DATE,
+                    "云端同步器版本较旧时不应要求退出并降级");
+            SyncResult result = new ModSyncEngine(config, message -> { }).synchronize();
+            check(result.status() == SyncResult.Status.UNCHANGED, "较旧同步器应被忽略");
+            check(Files.isRegularFile(localUpdater), "本地新版同步器必须保留");
+            check(!Files.exists(mods.resolve("MCModSync-1.5.0.jar")), "云端旧版同步器不得安装");
+            check(oldDownloadRequests.get() == 0, "不应下载已知版本号更旧的同步器");
+            pass("self downgrade is refused");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testResourcePackManifestGenerationAndParsing() throws Exception {
+        Path root = Files.createTempDirectory("modsync-resourcepack-manifest-");
+        try {
+            Path resourcePack = root.resolve("世界指定资源包喵.zip");
+            byte[] content = "resource pack v1".getBytes(StandardCharsets.UTF_8);
+            Files.write(resourcePack, content);
+            ResourcePackManifest generated = ResourcePackManifest.fromFile(resourcePack);
+            String text = generated.serialize();
+            ResourcePackManifest parsed = ResourcePackManifest.parse(text);
+            check(parsed.entries().size() == 1, "资源包清单应包含一个 ZIP");
+            check(parsed.entries().get(0).fileName().equals("世界指定资源包喵.zip"), "资源包中文文件名应保留");
+            check(parsed.entries().get(0).md5().equals(Hashing.md5(content)), "资源包清单 MD5 应正确");
+            expectFailure(() -> ResourcePackManifest.parse(
+                    ResourcePackManifest.MAGIC + "\n00000000000000000000000000000000\t../evil.zip\n"));
+            pass("resource pack manifest generation and parsing");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testServerListManifestGenerationAndParsing() throws Exception {
+        Path root = Files.createTempDirectory("modsync-serverlist-manifest-");
+        try {
+            Path serversDat = root.resolve("servers.dat");
+            ServerListNbt.writeSimple(serversDat, List.of(
+                    new ServerListNbt.ServerInfo("主服务器", "play.example.test")));
+            ServerListManifest generated = ServerListManifest.fromFile(serversDat);
+            ServerListManifest parsed = ServerListManifest.parse(generated.serialize());
+            check(parsed.md5().equals(Hashing.md5(serversDat)), "服务器列表清单 MD5 应正确");
+            expectFailure(() -> ServerListManifest.parse(
+                    ServerListManifest.MAGIC + "\n00000000000000000000000000000000\t../servers.dat\n"));
+            pass("server list manifest generation and parsing");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPathEncoding() {
+        check(
+                Rfc3986.encodePathSegment("测试 mod+1.jar").equals("%E6%B5%8B%E8%AF%95%20mod%2B1.jar"),
+                "URL 路径段应使用 UTF-8 百分号编码");
+        pass("path encoding");
+    }
+
+    private void testRequiredManifestRetriesTransientFailuresOverHttp11() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        AtomicInteger requests = new AtomicInteger();
+        byte[] expected = (ModManifest.MAGIC + "\n").getBytes(StandardCharsets.UTF_8);
+        server.createContext("/mods.txt", exchange -> {
+            if (requests.incrementAndGet() < 3) {
+                respond(exchange, 500, "temporary".getBytes(StandardCharsets.UTF_8), null);
+            } else {
+                respond(exchange, 200, expected, null);
+            }
+        });
+        server.start();
+        try {
+            HttpClient client = RequiredManifestFetcher.createClient(Duration.ofSeconds(2));
+            check(client.version() == HttpClient.Version.HTTP_1_1,
+                    "云盘清单客户端应固定使用 HTTP/1.1，规避重定向链偶发 HTTP/2 EOF");
+            AtomicInteger retryMessages = new AtomicInteger();
+            byte[] actual = RequiredManifestFetcher.fetch(
+                    client,
+                    URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mods.txt"),
+                    Duration.ofSeconds(2),
+                    1024,
+                    "MCModSync/test",
+                    "测试清单",
+                    message -> retryMessages.incrementAndGet());
+            check(Arrays.equals(actual, expected), "瞬时故障后应取得完整清单");
+            check(requests.get() == 3 && retryMessages.get() == 2, "清单应在失败后最多重试三次");
+            pass("required manifests retry transient failures over HTTP/1.1");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private void testDetectedGameDirectoryWinsOverAmbiguousCommandLine() throws Exception {
+        Path root = Files.createTempDirectory("modsync detected game dir ");
+        String previousCommand = System.getProperty("sun.java.command");
+        String previousOverride = System.getProperty("modsync.gameDir");
+        try {
+            Path detected = Files.createDirectories(root.resolve("versions/1.21.11-Fabric 0.19.3"));
+            System.clearProperty("modsync.gameDir");
+            System.setProperty(
+                    "sun.java.command",
+                    "net.fabricmc.loader.impl.launch.knot.KnotClient --gameDir "
+                            + root.resolve("versions/1.21.11-Fabric") + " 0.19.3 --assetsDir ignored");
+            ModSyncConfig config = ModSyncConfig.fromEnvironment(null, detected);
+            check(config.gameDirectory().equals(detected.toAbsolutePath().normalize()),
+                    "Fabric Loader 检测目录应优先于可能丢失引号的 sun.java.command");
+            pass("detected Fabric game directory wins over ambiguous command line");
+        } finally {
+            restoreProperty("sun.java.command", previousCommand);
+            restoreProperty("modsync.gameDir", previousOverride);
+            deleteTree(root);
+        }
+    }
+
+    private void testUnquotedGameDirectoryWithSpacesCanBeParsed() throws Exception {
+        Path root = Files.createTempDirectory("modsync command game dir ");
+        String previousCommand = System.getProperty("sun.java.command");
+        String previousOverride = System.getProperty("modsync.gameDir");
+        try {
+            Path expected = root.resolve("versions/专用客户端 Fabric 0.19.3").toAbsolutePath().normalize();
+            System.clearProperty("modsync.gameDir");
+            System.setProperty(
+                    "sun.java.command",
+                    "net.fabricmc.loader.impl.launch.knot.KnotClient --username test --gameDir "
+                            + expected + " --assetsDir ignored");
+            ModSyncConfig config = ModSyncConfig.fromEnvironment(null, null);
+            check(config.gameDirectory().equals(expected), "无引号且带空格的 --gameDir 应完整解析到下一个参数前");
+            pass("unquoted game directory with spaces can be parsed");
+        } finally {
+            restoreProperty("sun.java.command", previousCommand);
+            restoreProperty("modsync.gameDir", previousOverride);
+            deleteTree(root);
+        }
+    }
+
+    private void testInstanceGuard() throws Exception {
+        Path root = Files.createTempDirectory("modsync-lock-");
+        try (InstanceGuard first = InstanceGuard.acquire(root)) {
+            try {
+                InstanceGuard.acquire(root);
+                throw new AssertionError("第二个实例锁不应成功");
+            } catch (InstanceGuard.AlreadyRunningException expected) {
+                check(expected.getMessage().contains("正在同步更新"), "重复启动应返回可识别的忙碌状态");
+            }
+            pass("single-instance guard");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testRedirectDownloadStrictSyncAndBackup() throws Exception {
+        Path root = Files.createTempDirectory("modsync-integration-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            byte[] newMod = "new tested mod bytes".getBytes(StandardCharsets.UTF_8);
+            String fileName = "测试 mod.jar";
+            String manifest = ModManifest.MAGIC + "\n"
+                    + "# minecraft=1.21.11\n"
+                    + "# loader=fabric\n"
+                    + Hashing.md5(newMod) + "\t-\t" + fileName + "\n";
+
+            server.createContext("/base/mods.txt", exchange -> respond(exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/", exchange -> {
+                String expected = "/base/%E6%B5%8B%E8%AF%95%20mod.jar";
+                if (!exchange.getRequestURI().getRawPath().equals(expected)) {
+                    respond(exchange, 400, "bad encoding".getBytes(StandardCharsets.UTF_8), null);
+                    return;
+                }
+                respond(exchange, 302, new byte[0], "/blob/temporary-signed-url");
+            });
+            server.createContext("/blob/temporary-signed-url", exchange -> respond(exchange, 200, newMod, null));
+            server.start();
+
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Files.writeString(mods.resolve(fileName), "old bytes");
+            Files.writeString(mods.resolve("extra.jar"), "extra local mod");
+            Files.writeString(mods.resolve("client-only.jar"), "user client mod");
+            Path state = Files.createDirectories(root.resolve(".modsync"));
+            String previousServerManifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5("old bytes".getBytes(StandardCharsets.UTF_8)) + "\t-\t" + fileName + "\n"
+                    + Hashing.md5("extra local mod".getBytes(StandardCharsets.UTF_8)) + "\t-\textra.jar\n";
+            Files.writeString(state.resolve("server-manifest.txt"), previousServerManifest, StandardCharsets.UTF_8);
+
+            URI manifestUri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            ModSyncConfig config = config(root, manifestUri, true, true);
+            AtomicBoolean planObserved = new AtomicBoolean(false);
+            AtomicBoolean completionObserved = new AtomicBoolean(false);
+            AtomicBoolean progressObserved = new AtomicBoolean(false);
+            AtomicBoolean verificationPhaseObserved = new AtomicBoolean(false);
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public RemovalDecision decideServerRemoved(List<String> serverRemoved) {
+                    check(serverRemoved.equals(List.of("extra.jar")), "应只把上次由服务器管理的文件识别为服务器移除");
+                    return RemovalDecision.BACKUP;
+                }
+
+                @Override
+                public UnknownModDecision decideUnknownClientMod(String fileName) {
+                    check(fileName.equals("client-only.jar"), "首次未知文件应为测试客户端 Mod");
+                    return UnknownModDecision.KEEP_CLIENT;
+                }
+
+                @Override
+                public void beforeDownload(
+                        List<String> downloads,
+                        List<String> replacedOldVersions,
+                        List<String> rejectedUnknownMods,
+                        List<String> quarantined,
+                        List<String> retainedServerRemoved,
+                        List<String> retainedClientMods) {
+                    check(downloads.equals(List.of(fileName)), "下载提示应列出目标 Mod");
+                    check(replacedOldVersions.isEmpty(), "无 Mod ID 的测试文件不应识别为改名升级");
+                    check(rejectedUnknownMods.isEmpty(), "已有身份记录时不应出现首次未知 Mod");
+                    check(quarantined.equals(List.of("extra.jar")), "下载提示应列出被隔离 Mod");
+                    check(retainedServerRemoved.isEmpty(), "本次没有选择保留服务器移除 Mod");
+                    check(retainedClientMods.equals(List.of("client-only.jar")), "用户客户端 Mod 应列出并保留");
+                    planObserved.set(true);
+                }
+
+                @Override
+                public void phaseChanged(String message) {
+                    if (message.contains("校验 MD5")) {
+                        verificationPhaseObserved.set(true);
+                    }
+                }
+
+                @Override
+                public void downloadProgress(DownloadProgress progress) {
+                    check(progress.fileName().equals(fileName), "进度事件应标明当前文件");
+                    check(progress.fileIndex() == 1 && progress.fileCount() == 1, "进度事件应标明文件序号");
+                    check(progress.fileDownloadedBytes() >= 0, "进度事件字节数不能为负");
+                    if (progress.fileDownloadedBytes() == newMod.length
+                            && progress.fileTotalBytes() == newMod.length
+                            && progress.totalDownloadedBytes() == newMod.length
+                            && progress.totalBytes() == newMod.length
+                            && progress.totalPermille() == 1000) {
+                        progressObserved.set(true);
+                    }
+                }
+
+                @Override
+                public void afterUpdate(int downloaded, int quarantined, int unchanged) {
+                    check(downloaded == 1 && quarantined == 1, "完成提示统计应正确");
+                    completionObserved.set(true);
+                }
+            };
+            SyncResult first = new ModSyncEngine(config, message -> { }, observer).synchronize();
+
+            check(first.status() == SyncResult.Status.UPDATED, "第一次应完成更新");
+            check(first.downloaded() == 1, "应下载一个文件");
+            check(first.quarantined() == 1, "应隔离一个额外文件");
+            check(planObserved.get(), "自动下载前应发出非确认型内容提示");
+            check(progressObserved.get(), "下载时应发出基于真实字节数的完成进度");
+            check(verificationPhaseObserved.get(), "下载后应显示 MD5 校验阶段");
+            check(completionObserved.get(), "自动下载后应发出完成提示");
+            check(Arrays.equals(Files.readAllBytes(mods.resolve(fileName)), newMod), "应安装下载且校验后的文件");
+            check(!Files.exists(mods.resolve("extra.jar")), "额外 Mod 不应留在 mods 目录");
+            check(Files.isRegularFile(mods.resolve("client-only.jar")), "用户自行添加的客户端 Mod 必须保留");
+
+            Path backups = root.resolve(".modsync/backups");
+            List<String> backupNames;
+            try (var paths = Files.walk(backups)) {
+                backupNames = paths.filter(Files::isRegularFile)
+                        .map(path -> path.getFileName().toString())
+                        .toList();
+            }
+            check(backupNames.contains(fileName), "被替换的旧 Mod 应备份");
+            check(backupNames.contains("extra.jar"), "清单外 Mod 应备份");
+
+            SyncResult second = new ModSyncEngine(config, message -> { }).synchronize();
+            check(second.status() == SyncResult.Status.UNCHANGED, "第二次应识别为完全一致");
+            ModManifest.parse(Files.readString(mods.resolve("mods.txt"), StandardCharsets.UTF_8)).verifySnapshot(mods);
+            pass("redirect download, strict sync and backup");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testParallelModDownloadFallsBackToSingleThread() throws Exception {
+        Path root = Files.createTempDirectory("modsync-parallel-fallback-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        ExecutorService serverExecutor = Executors.newCachedThreadPool();
+        server.setExecutor(serverExecutor);
+        CountDownLatch firstParallelRound = new CountDownLatch(2);
+        AtomicInteger aGets = new AtomicInteger();
+        AtomicInteger bGets = new AtomicInteger();
+        AtomicInteger activeGets = new AtomicInteger();
+        AtomicInteger maximumActiveGets = new AtomicInteger();
+        try {
+            byte[] aBytes = "parallel-a".getBytes(StandardCharsets.UTF_8);
+            byte[] bBytes = "parallel-b".getBytes(StandardCharsets.UTF_8);
+            String manifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(aBytes) + "\t-\ta.jar\n"
+                    + Hashing.md5(bBytes) + "\t-\tb.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/a.jar", exchange -> {
+                if (exchange.getRequestMethod().equalsIgnoreCase("HEAD")) {
+                    respond(exchange, 200, aBytes, null);
+                    return;
+                }
+                int request = aGets.incrementAndGet();
+                int active = activeGets.incrementAndGet();
+                maximumActiveGets.accumulateAndGet(active, Math::max);
+                try {
+                    if (request == 1) {
+                        firstParallelRound.countDown();
+                        firstParallelRound.await(3, TimeUnit.SECONDS);
+                        respond(exchange, 500, "parallel attempt failed".getBytes(StandardCharsets.UTF_8), null);
+                    } else {
+                        respond(exchange, 200, aBytes, null);
+                    }
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    exchange.close();
+                } finally {
+                    activeGets.decrementAndGet();
+                }
+            });
+            server.createContext("/base/b.jar", exchange -> {
+                if (exchange.getRequestMethod().equalsIgnoreCase("HEAD")) {
+                    respond(exchange, 200, bBytes, null);
+                    return;
+                }
+                int request = bGets.incrementAndGet();
+                int active = activeGets.incrementAndGet();
+                maximumActiveGets.accumulateAndGet(active, Math::max);
+                try {
+                    if (request == 1) {
+                        firstParallelRound.countDown();
+                        firstParallelRound.await(3, TimeUnit.SECONDS);
+                    }
+                    respond(exchange, 200, bBytes, null);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    exchange.close();
+                } finally {
+                    activeGets.decrementAndGet();
+                }
+            });
+            server.start();
+
+            Files.createDirectories(root.resolve("mods"));
+            AtomicBoolean fallbackShown = new AtomicBoolean();
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public void phaseChanged(String message) {
+                    if (message.contains("回退单线程")) {
+                        fallbackShown.set(true);
+                    }
+                }
+            };
+            URI manifestUri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            SyncResult result = new ModSyncEngine(
+                    config(root, manifestUri, true, true), message -> { }, observer).synchronize();
+
+            check(result.status() == SyncResult.Status.UPDATED && result.downloaded() == 2,
+                    "并发失败后单线程回退应完成两个 Mod 更新");
+            check(maximumActiveGets.get() >= 2, "首轮应确实同时发起至少两个下载");
+            check(aGets.get() == 2 && bGets.get() == 2,
+                    "并发失败后应清理首轮内容并用单线程完整重下");
+            check(fallbackShown.get(), "并发失败时进度窗口应说明正在回退单线程");
+            check(Arrays.equals(Files.readAllBytes(root.resolve("mods/a.jar")), aBytes), "a.jar 应正确安装");
+            check(Arrays.equals(Files.readAllBytes(root.resolve("mods/b.jar")), bBytes), "b.jar 应正确安装");
+            pass("parallel Mod download falls back to single thread");
+        } finally {
+            server.stop(0);
+            serverExecutor.shutdownNow();
+            deleteTree(root);
+        }
+    }
+
+    private void testResourcePackMd5SyncAndClientPreservation() throws Exception {
+        Path root = Files.createTempDirectory("modsync-resourcepack-sync-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            String fileName = "世界指定资源包喵.zip";
+            byte[] oldPack = "old resource pack".getBytes(StandardCharsets.UTF_8);
+            byte[] newPack = "new tested resource pack".getBytes(StandardCharsets.UTF_8);
+            String manifest = ResourcePackManifest.MAGIC + "\n"
+                    + Hashing.md5(newPack) + "\t" + fileName + "\n";
+            server.createContext("/packs/resourcepacks.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/packs/", exchange -> {
+                String expected = "/packs/%E4%B8%96%E7%95%8C%E6%8C%87%E5%AE%9A%E8%B5%84%E6%BA%90%E5%8C%85%E5%96%B5.zip";
+                if (!exchange.getRequestURI().getRawPath().equals(expected)) {
+                    respond(exchange, 400, "bad resource pack encoding".getBytes(StandardCharsets.UTF_8), null);
+                    return;
+                }
+                respond(exchange, 200, newPack, null);
+            });
+            server.start();
+
+            Path resourcePacks = Files.createDirectories(root.resolve("resourcepacks"));
+            Files.write(resourcePacks.resolve(fileName), oldPack);
+            Path clientPack = resourcePacks.resolve("玩家自己添加.zip");
+            byte[] clientBytes = "client pack".getBytes(StandardCharsets.UTF_8);
+            Files.write(clientPack, clientBytes);
+            Path state = Files.createDirectories(root.resolve(".modsync"));
+            Files.writeString(
+                    state.resolve("resourcepack-manifest.txt"),
+                    ResourcePackManifest.MAGIC + "\n" + Hashing.md5(oldPack) + "\t" + fileName + "\n",
+                    StandardCharsets.UTF_8);
+
+            URI resourceManifest = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/packs/resourcepacks.txt");
+            ModSyncConfig config = resourceConfig(root, resourceManifest);
+            AtomicBoolean planObserved = new AtomicBoolean(false);
+            AtomicBoolean progressObserved = new AtomicBoolean(false);
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public void beforeResourcePackDownload(
+                        List<String> downloads,
+                        List<String> backedUpRemoved) {
+                    check(downloads.equals(List.of(fileName)), "资源包提示应列出需要替换的 ZIP");
+                    check(backedUpRemoved.isEmpty(), "同名 MD5 替换不属于云端移除");
+                    planObserved.set(true);
+                }
+
+                @Override
+                public void downloadProgress(DownloadProgress progress) {
+                    if (progress.fileName().equals(fileName)
+                            && progress.fileDownloadedBytes() == newPack.length
+                            && progress.fileTotalBytes() == newPack.length
+                            && progress.totalPermille() == 1000) {
+                        progressObserved.set(true);
+                    }
+                }
+            };
+
+            SyncResult first = new ResourcePackSyncEngine(config, message -> { }, observer).synchronize();
+            check(first.status() == SyncResult.Status.UPDATED, "资源包 MD5 不同时应完成更新");
+            check(Arrays.equals(Files.readAllBytes(resourcePacks.resolve(fileName)), newPack),
+                    "资源包应替换为通过 MD5 校验的云端内容");
+            check(Arrays.equals(Files.readAllBytes(clientPack), clientBytes), "玩家自行添加的资源包必须保留");
+            check(planObserved.get(), "资源包自动下载前应显示内容提示");
+            check(progressObserved.get(), "资源包下载应发出真实字节和总进度");
+
+            try (var backups = Files.walk(state.resolve("backups/resourcepacks"))) {
+                check(backups.filter(Files::isRegularFile)
+                                .anyMatch(path -> path.getFileName().toString().equals(fileName)),
+                        "旧资源包应进入可恢复备份");
+            }
+            SyncResult second = new ResourcePackSyncEngine(config, message -> { }).synchronize();
+            check(second.status() == SyncResult.Status.UNCHANGED, "资源包 MD5 一致时不应重复下载");
+            pass("resource pack MD5 sync and client pack preservation");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testMissingLocalManifestAsksAboutEveryUnknownMod() throws Exception {
+        Path root = Files.createTempDirectory("modsync-first-unknown-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path managed = mods.resolve("managed.jar");
+            Path pureClient = mods.resolve("pure-client.jar");
+            Path rejected = mods.resolve("unknown-addon.jar");
+            writeFabricJar(managed, "managed_mod", "managed");
+            writeFabricJar(pureClient, "pure_client", "client");
+            writeFabricJar(rejected, "unknown_addon", "unknown");
+            String manifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(managed) + "\tmanaged_mod\tmanaged.jar\n";
+            server.createContext("/mods/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.start();
+
+            AtomicInteger questions = new AtomicInteger();
+            AtomicBoolean planObserved = new AtomicBoolean();
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public UnknownModDecision decideUnknownClientMod(String fileName) {
+                    questions.incrementAndGet();
+                    return fileName.equals("pure-client.jar")
+                            ? UnknownModDecision.KEEP_CLIENT
+                            : UnknownModDecision.BACKUP;
+                }
+
+                @Override
+                public void beforeDownload(
+                        List<String> downloads,
+                        List<String> replacedOldVersions,
+                        List<String> rejectedUnknownMods,
+                        List<String> quarantinedServerRemoved,
+                        List<String> retainedServerRemoved,
+                        List<String> retainedClientMods) {
+                    check(downloads.isEmpty(), "服务器管理 Mod 已一致时无需下载");
+                    check(rejectedUnknownMods.equals(List.of("unknown-addon.jar")),
+                            "确认不是纯客户端的未知 Mod 应列入备份计划");
+                    check(retainedClientMods.equals(List.of("pure-client.jar")),
+                            "确认是纯客户端的 Mod 应列入保留计划");
+                    planObserved.set(true);
+                }
+            };
+            URI uri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/mods/mods.txt");
+            ModSyncConfig config = config(root, uri, true, true);
+            SyncResult first = new ModSyncEngine(config, message -> { }, observer).synchronize();
+            check(first.status() == SyncResult.Status.UPDATED, "拒绝的未知 Mod 应移入备份");
+            check(questions.get() == 2, "mods.txt 原本不存在时应逐个询问所有云端没有的 Mod");
+            check(planObserved.get(), "首次未知 Mod 的处理结果应显示在计划中");
+            check(Files.isRegularFile(pureClient), "确认的纯客户端 Mod 必须保留");
+            check(!Files.exists(rejected), "确认不是纯客户端的 Mod 不应继续留在 mods");
+            String snapshot = Files.readString(mods.resolve("mods.txt"), StandardCharsets.UTF_8);
+            check(snapshot.contains("pure-client.jar") && !snapshot.contains("unknown-addon.jar"),
+                    "最终 mods.txt 应记录确认后的本地组合");
+            try (var backups = Files.walk(root.resolve(".modsync/backups"))) {
+                check(backups.filter(Files::isRegularFile)
+                                .anyMatch(path -> path.getFileName().toString().equals("unknown-addon.jar")),
+                        "拒绝的未知 Mod 应保留可恢复备份");
+            }
+            SyncResult second = new ModSyncEngine(config, message -> { }, new SyncObserver() {
+                @Override
+                public UnknownModDecision decideUnknownClientMod(String fileName) {
+                    throw new AssertionError("已有 mods.txt 后不应重复询问: " + fileName);
+                }
+            }).synchronize();
+            check(second.status() == SyncResult.Status.UNCHANGED, "已确认身份后再次启动应直接校验");
+            pass("missing local manifest asks about every unknown mod");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testBakaXLDualDirectoryResourcePackSync() throws Exception {
+        Path root = Files.createTempDirectory("modsync-bakaxl-resourcepacks-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            Path minecraft = root.resolve("bakaxl/.minecraft");
+            Path persistent = Files.createDirectories(minecraft.resolve("instances/资源包测试客户端"));
+            Path runtime = Files.createDirectories(minecraft.resolve("versions/资源包测试客户端"));
+            byte[] packageInfo = "same-bakaxl-package".getBytes(StandardCharsets.UTF_8);
+            Files.write(persistent.resolve("package.info"), packageInfo);
+            Files.write(runtime.resolve("package.info"), packageInfo);
+
+            byte[] managedMod = "same managed mod".getBytes(StandardCharsets.UTF_8);
+            for (Path target : List.of(persistent, runtime)) {
+                Path mods = Files.createDirectories(target.resolve("mods"));
+                Files.write(mods.resolve("managed.jar"), managedMod);
+                Path packs = Files.createDirectories(target.resolve("resourcepacks"));
+                Files.write(packs.resolve("玩家保留.zip"), ("client-" + target).getBytes(StandardCharsets.UTF_8));
+            }
+
+            String resourceName = "世界指定资源包喵.zip";
+            byte[] resourceBytes = "dual target resource pack".getBytes(StandardCharsets.UTF_8);
+            String modManifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(managedMod) + "\t-\tmanaged.jar\n";
+            String resourceManifest = ResourcePackManifest.MAGIC + "\n"
+                    + Hashing.md5(resourceBytes) + "\t" + resourceName + "\n";
+            server.createContext("/mods/mods.txt", exchange -> respond(
+                    exchange, 200, modManifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/packs/resourcepacks.txt", exchange -> respond(
+                    exchange, 200, resourceManifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/packs/", exchange -> respond(exchange, 200, resourceBytes, null));
+            server.start();
+
+            URI modUri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mods/mods.txt");
+            URI resourceUri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/packs/resourcepacks.txt");
+            ModSyncConfig config = new ModSyncConfig(
+                    modUri,
+                    resourceUri,
+                    modUri,
+                    runtime,
+                    true,
+                    false,
+                    true,
+                    true,
+                    Duration.ofSeconds(2),
+                    Duration.ofSeconds(5),
+                    1024 * 1024,
+                    16 * 1024 * 1024,
+                    3);
+
+            SyncResult first = ModSyncCoordinator.synchronize(config, message -> { }, SyncObserver.NONE);
+            check(first.status() == SyncResult.Status.UPDATED, "BakaXL 双目录资源包应完成同步");
+            check(first.downloaded() == 2, "持久实例和运行副本应各下载一次资源包");
+            for (Path target : List.of(persistent, runtime)) {
+                Path installed = target.resolve("resourcepacks").resolve(resourceName);
+                check(Arrays.equals(Files.readAllBytes(installed), resourceBytes),
+                        "两个 BakaXL 目录都应安装相同 MD5 的资源包");
+                check(Files.isRegularFile(target.resolve("resourcepacks/玩家保留.zip")),
+                        "两个 BakaXL 目录的玩家资源包都必须保留");
+            }
+
+            SyncProbeResult probe = ModSyncCoordinator.probe(config, message -> { });
+            check(probe.status() == SyncProbeResult.Status.UP_TO_DATE,
+                    "双目录资源包完成后只读启动探测应完全一致");
+            pass("BakaXL persistent/runtime resource packs synchronize together");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testBakaXLDualDirectoryServerListMerge() throws Exception {
+        Path root = Files.createTempDirectory("modsync-bakaxl-server-list-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            Path minecraft = root.resolve("bakaxl/.minecraft");
+            Path persistent = Files.createDirectories(minecraft.resolve("instances/服务器列表测试客户端"));
+            Path runtime = Files.createDirectories(minecraft.resolve("versions/服务器列表测试客户端"));
+            byte[] packageInfo = "same-server-list-package".getBytes(StandardCharsets.UTF_8);
+            Files.write(persistent.resolve("package.info"), packageInfo);
+            Files.write(runtime.resolve("package.info"), packageInfo);
+
+            byte[] managedMod = "same managed mod".getBytes(StandardCharsets.UTF_8);
+            Path oldCloud = root.resolve("old-cloud.dat");
+            Path newCloud = root.resolve("new-cloud.dat");
+            ServerListNbt.writeSimple(oldCloud, List.of(
+                    new ServerListNbt.ServerInfo("旧名称", "managed.example.test"),
+                    new ServerListNbt.ServerInfo("即将移除", "removed.example.test")));
+            ServerListNbt.writeSimple(newCloud, List.of(
+                    new ServerListNbt.ServerInfo("云端新名称", "managed.example.test"),
+                    new ServerListNbt.ServerInfo("云端新增", "new.example.test")));
+            byte[] cloudBytes = Files.readAllBytes(newCloud);
+
+            for (Path target : List.of(persistent, runtime)) {
+                Path mods = Files.createDirectories(target.resolve("mods"));
+                Files.write(mods.resolve("managed.jar"), managedMod);
+                ServerListNbt.writeSimple(target.resolve("servers.dat"), List.of(
+                        new ServerListNbt.ServerInfo("本地旧名称", "managed.example.test"),
+                        new ServerListNbt.ServerInfo("本地待移除", "removed.example.test"),
+                        new ServerListNbt.ServerInfo("玩家自己添加", "player-" + target.getParent().getFileName() + ".test")));
+                Path state = Files.createDirectories(target.resolve(".modsync"));
+                Files.copy(oldCloud, state.resolve("server-list-cloud.dat"));
+            }
+
+            String modManifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(managedMod) + "\t-\tmanaged.jar\n";
+            String serverManifest = new ServerListManifest(Hashing.md5(newCloud)).serialize();
+            server.createContext("/mods/mods.txt", exchange -> respond(
+                    exchange, 200, modManifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/servers/serverlist.txt", exchange -> respond(
+                    exchange, 200, serverManifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/servers/servers.dat", exchange -> respond(exchange, 200, cloudBytes, null));
+            server.start();
+
+            URI modUri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mods/mods.txt");
+            URI serverUri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/servers/serverlist.txt");
+            ModSyncConfig config = new ModSyncConfig(
+                    modUri,
+                    modUri,
+                    serverUri,
+                    runtime,
+                    false,
+                    true,
+                    true,
+                    true,
+                    Duration.ofSeconds(2),
+                    Duration.ofSeconds(5),
+                    1024 * 1024,
+                    16 * 1024 * 1024,
+                    3);
+            AtomicInteger planCount = new AtomicInteger();
+            AtomicBoolean completedProgress = new AtomicBoolean();
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public void beforeServerListDownload(String fileName) {
+                    check(fileName.equals("servers.dat"), "服务器列表提示应指向 servers.dat");
+                    planCount.incrementAndGet();
+                }
+
+                @Override
+                public void downloadProgress(DownloadProgress progress) {
+                    if (progress.fileName().equals("servers.dat") && progress.totalPermille() == 1000) {
+                        completedProgress.set(true);
+                    }
+                }
+            };
+
+            SyncResult first = ModSyncCoordinator.synchronize(config, message -> { }, observer);
+            check(first.status() == SyncResult.Status.UPDATED, "BakaXL 双目录服务器列表应完成同步");
+            check(first.downloaded() == 2, "持久实例和运行副本应各下载一次 servers.dat");
+            check(planCount.get() == 2, "两个同步目标都应显示自动下载内容提示");
+            check(completedProgress.get(), "服务器列表同步应计入总进度并最终达到 100%");
+            for (Path target : List.of(persistent, runtime)) {
+                List<ServerListNbt.ServerInfo> entries = ServerListNbt.readServerInfo(target.resolve("servers.dat"));
+                check(entries.stream().anyMatch(entry -> entry.name().equals("云端新名称")
+                                && entry.address().equals("managed.example.test")),
+                        "云端管理的服务器应更新名称");
+                check(entries.stream().anyMatch(entry -> entry.address().equals("new.example.test")),
+                        "云端新增服务器应加入列表");
+                check(entries.stream().noneMatch(entry -> entry.address().equals("removed.example.test")),
+                        "云端移除服务器应从列表移除");
+                check(entries.stream().anyMatch(entry -> entry.address().startsWith("player-")),
+                        "玩家自行添加的服务器必须保留");
+                try (var backups = Files.walk(target.resolve(".modsync/backups/server-list"))) {
+                    check(backups.filter(Files::isRegularFile)
+                                    .anyMatch(path -> path.getFileName().toString().equals("servers.dat")),
+                            "原服务器列表应保留可恢复备份");
+                }
+            }
+            SyncProbeResult probe = ModSyncCoordinator.probe(config, message -> { });
+            check(probe.status() == SyncProbeResult.Status.UP_TO_DATE,
+                    "双目录服务器列表完成后只读启动探测应完全一致");
+
+            ServerListNbt.writeSimple(runtime.resolve("servers.dat"), List.of(
+                    new ServerListNbt.ServerInfo("玩家后来添加", "late-player.test")));
+            SyncProbeResult locallyEdited = ModSyncCoordinator.probe(config, message -> { });
+            check(locallyEdited.status() == SyncProbeResult.Status.CHANGES_REQUIRED,
+                    "玩家删改云端管理条目后应重新合并，而非只看云端缓存 MD5");
+            SyncResult repaired = ModSyncCoordinator.synchronize(config, message -> { }, SyncObserver.NONE);
+            check(repaired.status() == SyncResult.Status.UPDATED && repaired.downloaded() == 1,
+                    "只应修复发生本地删改的 BakaXL 目标");
+            List<ServerListNbt.ServerInfo> repairedEntries =
+                    ServerListNbt.readServerInfo(runtime.resolve("servers.dat"));
+            check(repairedEntries.stream().anyMatch(entry -> entry.address().equals("managed.example.test")),
+                    "云端管理条目应恢复");
+            check(repairedEntries.stream().anyMatch(entry -> entry.address().equals("late-player.test")),
+                    "修复云端条目时仍应保留玩家后来添加的服务器");
+            pass("BakaXL server list three-way merge preserves player entries");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testOfflineAlwaysBlocks() throws Exception {
+        Path root = Files.createTempDirectory("modsync-offline-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Files.writeString(mods.resolve("local.jar"), "keep me");
+            ModSyncConfig config = config(root, URI.create("http://127.0.0.1:1/mods.txt"), true, false);
+            try {
+                new ModSyncEngine(config, message -> { }).synchronize();
+                throw new AssertionError("云端 Mod 清单故障时不得放行");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains("已阻止启动"), "断网时应明确阻止启动");
+            }
+            check(Files.exists(mods.resolve("local.jar")), "断网时不能改动本地 Mod");
+            check(Files.isRegularFile(mods.resolve("mods.txt")), "本地清单缺失时应自动生成");
+            ModManifest.parse(Files.readString(mods.resolve("mods.txt"), StandardCharsets.UTF_8)).verifySnapshot(mods);
+            pass("offline always blocks");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testResourcePackAndServerListManifestFailuresBlock() throws Exception {
+        Path root = Files.createTempDirectory("modsync-secondary-manifests-offline-");
+        try {
+            URI unreachable = URI.create("http://127.0.0.1:1/manifest.txt");
+            ModSyncConfig config = new ModSyncConfig(
+                    unreachable,
+                    unreachable,
+                    unreachable,
+                    root,
+                    true,
+                    true,
+                    true,
+                    false,
+                    Duration.ofSeconds(1),
+                    Duration.ofSeconds(2),
+                    1024 * 1024,
+                    16 * 1024 * 1024,
+                    3);
+            try {
+                new ResourcePackSyncEngine(config, message -> { }).synchronize();
+                throw new AssertionError("云端资源包清单故障时不得放行");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains("资源包清单"), "应明确报告资源包清单故障");
+            }
+            try {
+                new ServerListSyncEngine(config, message -> { }).synchronize();
+                throw new AssertionError("云端服务器列表清单故障时不得放行");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains("服务器列表清单"), "应明确报告服务器列表清单故障");
+            }
+            pass("resource pack and server list manifest failures always block");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testVersionFilenameChangeIsAutomaticReplacement() throws Exception {
+        Path root = Files.createTempDirectory("modsync-version-rename-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path oldJar = mods.resolve("demo-1.0.jar");
+            writeFabricJar(oldJar, "demo_mod", "1.0");
+            Path clientJar = mods.resolve("client-helper.jar");
+            writeFabricJar(clientJar, "client_helper", "client");
+
+            Path newJarSource = root.resolve("demo-2.0-source.jar");
+            writeFabricJar(newJarSource, "demo_mod", "2.0");
+            byte[] newJar = Files.readAllBytes(newJarSource);
+            String currentManifest = ModManifest.MAGIC_V2 + "\n"
+                    + Hashing.md5(newJar) + "\tdemo_mod\tdemo-2.0.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange, 200, currentManifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/demo-2.0.jar", exchange -> respond(exchange, 200, newJar, null));
+            server.start();
+
+            Path state = Files.createDirectories(root.resolve(".modsync"));
+            String v1History = ModManifest.MAGIC_V1 + "\n" + Hashing.md5(oldJar) + "\tdemo-1.0.jar\n";
+            Files.writeString(state.resolve("server-manifest.txt"), v1History, StandardCharsets.UTF_8);
+
+            AtomicBoolean planObserved = new AtomicBoolean(false);
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public RemovalDecision decideServerRemoved(List<String> serverRemoved) {
+                    throw new AssertionError("同一 Mod ID 的版本改名不应询问服务器删除");
+                }
+
+                @Override
+                public UnknownModDecision decideUnknownClientMod(String fileName) {
+                    check(fileName.equals("client-helper.jar"), "应询问首次出现的客户端 Mod");
+                    return UnknownModDecision.KEEP_CLIENT;
+                }
+
+                @Override
+                public void beforeDownload(
+                        List<String> downloads,
+                        List<String> replacedOldVersions,
+                        List<String> rejectedUnknownMods,
+                        List<String> quarantinedServerRemoved,
+                        List<String> retainedServerRemoved,
+                        List<String> retainedClientMods) {
+                    check(downloads.equals(List.of("demo-2.0.jar")), "应下载新版本文件名");
+                    check(replacedOldVersions.equals(List.of("demo-1.0.jar")), "旧文件应识别为同 ID 版本替换");
+                    check(rejectedUnknownMods.isEmpty(), "版本改名不属于首次未知 Mod");
+                    check(quarantinedServerRemoved.isEmpty(), "版本替换不属于服务器删除");
+                    check(retainedServerRemoved.isEmpty(), "版本替换不需要保留选择");
+                    check(retainedClientMods.equals(List.of("client-helper.jar")), "独立客户端 Mod 应保留");
+                    planObserved.set(true);
+                }
+            };
+            URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            SyncResult result = new ModSyncEngine(config(root, uri, true, true), message -> { }, observer).synchronize();
+            check(result.status() == SyncResult.Status.UPDATED, "改名升级应执行同步");
+            check(planObserved.get(), "应显示自动版本替换内容");
+            check(!Files.exists(oldJar), "旧版本不应继续留在 mods");
+            check(Files.isRegularFile(mods.resolve("demo-2.0.jar")), "新版本应安装");
+            check(FabricModMetadata.readModId(mods.resolve("demo-2.0.jar")).equals("demo_mod"), "新版本 Mod ID 应正确");
+            check(Files.isRegularFile(clientJar), "客户端 Mod 不应受版本替换影响");
+            pass("version filename change is automatic replacement");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testPortableFabricModeUpdatesAndRequiresRestart() throws Exception {
+        Path root = Files.createTempDirectory("modsync-fabric-portable-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        String previousManifest = System.getProperty("modsync.manifest");
+        String previousRequired = System.getProperty("modsync.requireManifest");
+        String previousDialogs = System.getProperty("modsync.disableDialogs");
+        String previousHelperLaunch = System.getProperty("modsync.disableHelperLaunch");
+        try {
+            byte[] wanted = "portable fabric update".getBytes(StandardCharsets.UTF_8);
+            String manifest = ModManifest.MAGIC + "\n" + Hashing.md5(wanted) + "\t-\twanted.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/wanted.jar", exchange -> respond(exchange, 200, wanted, null));
+            server.start();
+
+            Files.createDirectories(root.resolve("mods"));
+            net.fabricmc.loader.api.FabricLoader.setGameDir(root);
+            String manifestUri = "http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt";
+            System.setProperty("modsync.manifest", manifestUri);
+            System.setProperty("modsync.requireManifest", "true");
+            System.setProperty("modsync.disableDialogs", "true");
+            System.setProperty("modsync.disableHelperLaunch", "true");
+            System.setProperty("modsync.forceDesktopHelper", "true");
+            System.setProperty("modsync.disableProcessExit", "true");
+            System.clearProperty("modsync.forceMobile");
+            System.clearProperty("modsync.forceMobileInProcessUpdate");
+
+            try {
+                new FabricPreLaunchEntrypoint().onPreLaunch();
+                throw new AssertionError("Fabric 便携模式更新后必须停止本次启动");
+            } catch (RuntimeException expected) {
+                check(expected.getMessage().contains("辅助进程"), "应明确说明退出后由辅助进程更新");
+            } finally {
+                FabricPreLaunchEntrypoint.releaseGuard();
+            }
+            check(!Files.exists(root.resolve("mods/wanted.jar")),
+                    "桌面便携模式进程仍存活时只允许检查，不应替换 JAR");
+
+            URI uri = URI.create(manifestUri);
+            SyncResult helperResult = PortableUpdateHelper.runNow(config(root, uri, true, true), message -> { });
+            check(helperResult.status() == SyncResult.Status.UPDATED, "退出后辅助进程应完成更新");
+            check(Arrays.equals(Files.readAllBytes(root.resolve("mods/wanted.jar")), wanted),
+                    "辅助进程应完成下载与 MD5 校验");
+
+            SyncProbeResult secondProbe = new ModSyncEngine(
+                    config(root, uri, true, true), message -> { }).probeWithoutJarChanges();
+            check(secondProbe.status() == SyncProbeResult.Status.UP_TO_DATE,
+                    "第二次启动应识别为一致并直接放行");
+            pass("portable Fabric mode defers locked JAR update and requires restart");
+        } finally {
+            FabricPreLaunchEntrypoint.releaseGuard();
+            restoreProperty("modsync.manifest", previousManifest);
+            restoreProperty("modsync.requireManifest", previousRequired);
+            restoreProperty("modsync.disableDialogs", previousDialogs);
+            restoreProperty("modsync.disableHelperLaunch", previousHelperLaunch);
+            System.clearProperty("modsync.forceDesktopHelper");
+            System.clearProperty("modsync.disableProcessExit");
+            System.clearProperty("modsync.forceMobile");
+            System.clearProperty("modsync.forceMobileInProcessUpdate");
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+
+    private void testMobileInProcessUpdateDisablesOldModsThenRestarts() throws Exception {
+        Path root = Files.createTempDirectory("modsync-mobile-inprocess-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        Map<String, String> previous = snapshotProperties(
+                "modsync.manifest",
+                "modsync.requireManifest",
+                "modsync.disableDialogs",
+                "modsync.disableHelperLaunch",
+                "modsync.forceMobile",
+                "modsync.forceMobileInProcessUpdate",
+                "modsync.forceDesktopHelper",
+                "modsync.disableProcessExit",
+                "modsync.syncResourcePacks",
+                "modsync.syncServerList",
+                "modsync.gameDir");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path oldJar = mods.resolve("skin-old.jar");
+            writeFabricJar(oldJar, "customskinloader", "old");
+            byte[] wanted = "mobile new skin patch bytes".getBytes(StandardCharsets.UTF_8);
+            String manifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(wanted) + "\tcustomskinloader\tskin-new.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/skin-new.jar", exchange -> respond(exchange, 200, wanted, null));
+            server.start();
+
+            net.fabricmc.loader.api.FabricLoader.setGameDir(root);
+            String manifestUri = "http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt";
+            System.setProperty("modsync.manifest", manifestUri);
+            System.setProperty("modsync.requireManifest", "true");
+            System.setProperty("modsync.disableDialogs", "true");
+            System.setProperty("modsync.forceMobile", "true");
+            System.setProperty("modsync.forceMobileInProcessUpdate", "true");
+            System.setProperty("modsync.disableProcessExit", "true");
+            System.setProperty("modsync.syncResourcePacks", "false");
+            System.setProperty("modsync.syncServerList", "false");
+            System.setProperty("modsync.gameDir", root.toString());
+            System.clearProperty("modsync.forceDesktopHelper");
+            UserNotifier.resetDialogsAvailabilityForTests();
+
+            try {
+                new FabricPreLaunchEntrypoint().onPreLaunch();
+                throw new AssertionError("手机端更新后必须停止本次启动并要求重启");
+            } catch (RuntimeException expected) {
+                check(expected.getMessage().contains("手机端") || expected.getMessage().contains("重新启动"),
+                        "应说明手机端已完成更新并需要重启: " + expected.getMessage());
+            } finally {
+                FabricPreLaunchEntrypoint.releaseGuard();
+            }
+
+            Path newJar = mods.resolve("skin-new.jar");
+            check(Files.isRegularFile(newJar), "手机端应在当前进程内先安装新模组");
+            check(Arrays.equals(Files.readAllBytes(newJar), wanted), "新模组内容应正确");
+            check(!Files.exists(oldJar), "旧模组应已从 mods 禁用/移出");
+            boolean backedUp = false;
+            Path modsyncDir = root.resolve(".modsync");
+            if (Files.isDirectory(modsyncDir)) {
+                try (var stream = Files.walk(modsyncDir)) {
+                    backedUp = stream.anyMatch(path -> path.getFileName().toString().equals("skin-old.jar"));
+                }
+            }
+            check(backedUp, "旧模组应备份到 .modsync");
+            pass("mobile in-process update disables old mods then restarts");
+        } finally {
+            FabricPreLaunchEntrypoint.releaseGuard();
+            restoreProperties(previous);
+            UserNotifier.resetDialogsAvailabilityForTests();
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testBakaXLDualDirectorySync() throws Exception {
+        Path minecraft = Files.createTempDirectory("modsync-bakaxl-layout-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            Path persistent = Files.createDirectories(minecraft.resolve("instances/demo"));
+            Path runtime = Files.createDirectories(minecraft.resolve("versions/demo"));
+            String packageInfo = "{\"uuid\":\"test-instance\",\"name\":\"demo\"}";
+            Files.writeString(persistent.resolve("package.info"), packageInfo, StandardCharsets.UTF_8);
+            Files.writeString(runtime.resolve("package.info"), packageInfo, StandardCharsets.UTF_8);
+            Files.createDirectories(persistent.resolve("mods"));
+            Files.createDirectories(runtime.resolve("mods"));
+            Files.writeString(persistent.resolve("mods/persistent-client.jar"), "persistent client");
+            Files.writeString(runtime.resolve("mods/runtime-client.jar"), "runtime client");
+
+            byte[] wanted = "same managed bytes in both BakaXL directories".getBytes(StandardCharsets.UTF_8);
+            String manifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(wanted) + "\tmanaged_mod\tmanaged.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/managed.jar", exchange -> respond(exchange, 200, wanted, null));
+            server.start();
+
+            List<BakaXLLayout.Target> targets = BakaXLLayout.syncTargets(runtime);
+            check(targets.size() == 2, "应识别 BakaXL instances/versions 双目录");
+            check(targets.get(0).gameDirectory().equals(persistent), "应先更新持久实例");
+            check(targets.get(1).gameDirectory().equals(runtime), "随后应更新运行副本");
+
+            AtomicInteger completions = new AtomicInteger();
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public void afterUpdate(int downloaded, int quarantined, int unchanged) {
+                    check(downloaded == 2, "双目录首次同步应各安装一次托管文件");
+                    completions.incrementAndGet();
+                }
+            };
+            URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            SyncResult first = ModSyncCoordinator.synchronize(
+                    config(runtime, uri, true, true), message -> { }, observer);
+            check(first.status() == SyncResult.Status.UPDATED, "BakaXL 双目录首次同步应更新");
+            check(completions.get() == 1, "双目录完成提示应只发送一次");
+            check(Arrays.equals(Files.readAllBytes(persistent.resolve("mods/managed.jar")), wanted),
+                    "持久实例应安装托管文件");
+            check(Arrays.equals(Files.readAllBytes(runtime.resolve("mods/managed.jar")), wanted),
+                    "运行副本应安装托管文件");
+
+            SyncResult second = ModSyncCoordinator.synchronize(
+                    config(runtime, uri, true, true), message -> { }, SyncObserver.NONE);
+            check(second.status() == SyncResult.Status.UNCHANGED, "双目录第二次同步应完全一致");
+            pass("BakaXL persistent/runtime directories synchronize together");
+        } finally {
+            server.stop(0);
+            deleteTree(minecraft);
+        }
+    }
+
+
+    private void testMobileDefaultManifestUsesPhoneList() throws Exception {
+        Map<String, String> previous = snapshotProperties(
+                "modsync.forceMobile",
+                "modsync.manifest",
+                "modsync.mobileManifest",
+                "modsync.resourcePackManifest",
+                "modsync.mobileResourcePackManifest",
+                "modsync.gameDir");
+        Path root = Files.createTempDirectory("modsync-mobile-manifest-");
+        try {
+            System.clearProperty("modsync.manifest");
+            System.clearProperty("modsync.mobileManifest");
+            System.clearProperty("modsync.resourcePackManifest");
+            System.clearProperty("modsync.mobileResourcePackManifest");
+            System.setProperty("modsync.forceMobile", "true");
+            System.setProperty("modsync.gameDir", root.toString());
+            ModSyncConfig config = ModSyncConfig.fromEnvironment(null, root);
+            check(config.manifestUri().equals(ModSyncConfig.DEFAULT_MOBILE_MANIFEST_URI),
+                    "手机端默认应使用手机版 mods.txt: " + config.manifestUri());
+            check(config.resourcePackManifestUri().equals(
+                            ModSyncConfig.DEFAULT_MOBILE_RESOURCE_PACK_MANIFEST_URI),
+                    "手机端默认应使用手机版 resourcepacks.txt: " + config.resourcePackManifestUri());
+            System.clearProperty("modsync.forceMobile");
+            ModSyncConfig desktop = ModSyncConfig.fromEnvironment(null, root);
+            check(desktop.manifestUri().equals(ModSyncConfig.DEFAULT_MANIFEST_URI),
+                    "电脑端默认应继续使用电脑版 mods.txt: " + desktop.manifestUri());
+            check(desktop.resourcePackManifestUri().equals(
+                            ModSyncConfig.DEFAULT_RESOURCE_PACK_MANIFEST_URI),
+                    "电脑端默认应继续使用电脑版 resourcepacks.txt: " + desktop.resourcePackManifestUri());
+            pass("mobile default manifest uses phone list");
+        } finally {
+            restoreProperties(previous);
+            deleteTree(root);
+        }
+    }
+
+    private void testMobileAutoQuarantinesExtrasNotInManifest() throws Exception {
+        Path root = Files.createTempDirectory("modsync-mobile-quarantine-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        Map<String, String> previous = snapshotProperties(
+                "modsync.forceMobile",
+                "modsync.disableDialogs",
+                "modsync.gameDir",
+                "modsync.syncResourcePacks",
+                "modsync.syncServerList");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path extra = mods.resolve("kuayue-broken.jar");
+            writeFabricJar(extra, "kuayue", "2.0.0");
+            Path c2me = mods.resolve("c2me-opts-natives-math.jar");
+            writeFabricJar(c2me, "c2me-opts-natives-math", "0.3.7");
+            byte[] wanted = "managed mobile mod".getBytes(StandardCharsets.UTF_8);
+            String manifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(wanted) + "\tmanaged_mod\tmanaged.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/managed.jar", exchange -> respond(exchange, 200, wanted, null));
+            server.start();
+
+            System.setProperty("modsync.forceMobile", "true");
+            System.setProperty("modsync.disableDialogs", "true");
+            System.setProperty("modsync.gameDir", root.toString());
+            System.setProperty("modsync.syncResourcePacks", "false");
+            System.setProperty("modsync.syncServerList", "false");
+            UserNotifier.resetDialogsAvailabilityForTests();
+
+            URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            UserNotifier notifier = new UserNotifier(true, root);
+            SyncResult result = ModSyncCoordinator.synchronize(
+                    config(root, uri, true, true), message -> { }, notifier);
+            check(result.status() == SyncResult.Status.UPDATED, "手机端应完成同步");
+            check(Files.isRegularFile(mods.resolve("managed.jar")), "应安装清单内模组");
+            check(!Files.exists(extra), "手机端应移出清单外 kuayue");
+            check(!Files.exists(c2me), "手机端应移出清单外 c2me-opts-natives-math");
+            boolean backedUpKuayue = false;
+            boolean backedUpC2me = false;
+            Path modsyncDir = root.resolve(".modsync");
+            if (Files.isDirectory(modsyncDir)) {
+                try (var stream = Files.walk(modsyncDir)) {
+                    for (Path path : stream.toList()) {
+                        String name = path.getFileName().toString();
+                        if (name.equals("kuayue-broken.jar")) {
+                            backedUpKuayue = true;
+                        }
+                        if (name.equals("c2me-opts-natives-math.jar")) {
+                            backedUpC2me = true;
+                        }
+                    }
+                }
+            }
+            check(backedUpKuayue, "kuayue 应备份到 .modsync");
+            check(backedUpC2me, "c2me 应备份到 .modsync");
+            pass("mobile auto-quarantines extras not in manifest");
+        } finally {
+            restoreProperties(previous);
+            UserNotifier.resetDialogsAvailabilityForTests();
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testKeepingServerRemovedConvertsItToClientMod() throws Exception {
+        Path root = Files.createTempDirectory("modsync-keep-removed-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            byte[] managed = "managed current".getBytes(StandardCharsets.UTF_8);
+            String currentManifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(managed) + "\t-\tmanaged.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange,
+                    200,
+                    currentManifest.getBytes(StandardCharsets.UTF_8),
+                    null));
+            server.start();
+
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Files.write(mods.resolve("managed.jar"), managed);
+            Files.writeString(mods.resolve("removed.jar"), "keep as client");
+            Path state = Files.createDirectories(root.resolve(".modsync"));
+            String previousManifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5(managed) + "\t-\tmanaged.jar\n"
+                    + Hashing.md5("keep as client".getBytes(StandardCharsets.UTF_8)) + "\t-\tremoved.jar\n";
+            Files.writeString(state.resolve("server-manifest.txt"), previousManifest, StandardCharsets.UTF_8);
+
+            int[] decisions = {0};
+            SyncObserver keepObserver = new SyncObserver() {
+                @Override
+                public RemovalDecision decideServerRemoved(List<String> serverRemoved) {
+                    decisions[0]++;
+                    check(serverRemoved.equals(List.of("removed.jar")), "应提示服务器已移除文件");
+                    return RemovalDecision.KEEP;
+                }
+            };
+            URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            SyncResult first = new ModSyncEngine(config(root, uri, true, true), message -> { }, keepObserver).synchronize();
+            check(first.status() == SyncResult.Status.UNCHANGED, "选择保留时不应改动 JAR");
+            check(Files.isRegularFile(mods.resolve("removed.jar")), "选择保留的服务器移除 Mod 应留在客户端");
+
+            new ModSyncEngine(config(root, uri, true, true), message -> { }, keepObserver).synchronize();
+            check(decisions[0] == 1, "保留后应转为客户端 Mod，不应在下次启动重复询问");
+            String savedHistory = Files.readString(state.resolve("server-manifest.txt"), StandardCharsets.UTF_8);
+            check(!savedHistory.contains("removed.jar"), "新的服务器历史不应继续管理已选择保留的 Mod");
+            pass("keeping server-removed mod converts it to client mod");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testClientModIsPreservedWhenOfflineBlocks() throws Exception {
+        Path root = Files.createTempDirectory("modsync-client-offline-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            byte[] managed = "managed bytes".getBytes(StandardCharsets.UTF_8);
+            Files.write(mods.resolve("managed.jar"), managed);
+            ModManifest initial = ModManifest.scan(mods);
+            initial.write(mods.resolve("mods.txt"));
+            Path state = Files.createDirectories(root.resolve(".modsync"));
+            initial.write(state.resolve("server-manifest.txt"));
+            Files.writeString(mods.resolve("new-client.jar"), "player added while offline");
+
+            try {
+                new ModSyncEngine(
+                        config(root, URI.create("http://127.0.0.1:1/mods.txt"), true, false),
+                        message -> { }).synchronize();
+                throw new AssertionError("即使只有客户端 Mod 变化，云端清单故障也不得放行");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains("已阻止启动"), "应因云端清单不可用阻止启动");
+            }
+            check(Files.isRegularFile(mods.resolve("new-client.jar")), "离线新增的客户端 Mod 必须保留");
+            String snapshot = Files.readString(mods.resolve("mods.txt"), StandardCharsets.UTF_8);
+            check(snapshot.contains("new-client.jar"), "本地清单应自动纳入新增客户端 Mod");
+            ModManifest.parse(snapshot).verifySnapshot(mods);
+            pass("client mod is preserved when offline blocks");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testInvalidServerManagedModBlocksWhenOffline() throws Exception {
+        Path root = Files.createTempDirectory("modsync-local-invalid-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Files.writeString(mods.resolve("local.jar"), "current bytes");
+            ModManifest.scan(mods).write(mods.resolve("mods.txt"));
+            Path state = Files.createDirectories(root.resolve(".modsync"));
+            String serverHistory = ModManifest.MAGIC + "\n"
+                    + Hashing.md5("different bytes".getBytes(StandardCharsets.UTF_8)) + "\t-\tlocal.jar\n";
+            Files.writeString(state.resolve("server-manifest.txt"), serverHistory, StandardCharsets.UTF_8);
+
+            try {
+                new ModSyncEngine(
+                        config(root, URI.create("http://127.0.0.1:1/mods.txt"), true, false),
+                        message -> { }).synchronize();
+                throw new AssertionError("服务器管理的 Mod 损坏且离线时不应继续启动");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains("服务器管理的本地 Mod 校验失败"), "应报告服务器管理文件校验失败");
+            }
+            check(Files.readString(mods.resolve("local.jar")).equals("current bytes"), "校验失败不能改动本地 Mod");
+            pass("invalid server-managed mod blocks when offline");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testApplyFailureRollsBackOriginalFiles() throws Exception {
+        Path root = Files.createTempDirectory("modsync-rollback-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            byte[] wanted = "wanted mod".getBytes(StandardCharsets.UTF_8);
+            String manifest = ModManifest.MAGIC + "\n" + Hashing.md5(wanted) + "\t-\twanted.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.createContext("/base/wanted.jar", exchange -> respond(exchange, 200, wanted, null));
+            server.start();
+
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Files.writeString(mods.resolve("extra.jar"), "must survive rollback");
+            Path state = Files.createDirectories(root.resolve(".modsync"));
+            String previousServerManifest = ModManifest.MAGIC + "\n"
+                    + Hashing.md5("must survive rollback".getBytes(StandardCharsets.UTF_8)) + "\t-\textra.jar\n";
+            Files.writeString(state.resolve("server-manifest.txt"), previousServerManifest, StandardCharsets.UTF_8);
+            // 用同名目录制造确定性的提交失败，模拟目标无法被替换的情况。
+            Files.createDirectory(mods.resolve("wanted.jar"));
+
+            URI manifestUri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            try {
+                new ModSyncEngine(config(root, manifestUri, true, true), message -> { }).synchronize();
+                throw new AssertionError("目标不可替换时同步不应成功");
+            } catch (IOException expected) {
+                check(expected.getMessage().contains("自动恢复原 Mod"), "失败信息应确认已回滚");
+            }
+
+            check(Files.readString(mods.resolve("extra.jar")).equals("must survive rollback"), "提交失败后额外 Mod 应恢复");
+            check(Files.isDirectory(mods.resolve("wanted.jar")), "原有冲突目录不应被删除");
+            check(!Files.exists(root.resolve(".modsync/RECOVERY_REQUIRED.txt")), "完整回滚不应留下人工恢复标记");
+            pass("apply failure rolls back originals");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private static ModSyncConfig config(Path gameDirectory, URI manifest, boolean strict, boolean requireManifest) {
+        return new ModSyncConfig(
+                manifest,
+                manifest,
+                manifest,
+                gameDirectory,
+                false,
+                false,
+                strict,
+                requireManifest,
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(5),
+                1024 * 1024,
+                16 * 1024 * 1024,
+                3);
+    }
+
+    private static ModSyncConfig resourceConfig(Path gameDirectory, URI resourceManifest) {
+        return new ModSyncConfig(
+                URI.create("http://127.0.0.1:1/mods.txt"),
+                resourceManifest,
+                URI.create("http://127.0.0.1:1/serverlist.txt"),
+                gameDirectory,
+                true,
+                false,
+                true,
+                true,
+                Duration.ofSeconds(2),
+                Duration.ofSeconds(5),
+                1024 * 1024,
+                16 * 1024 * 1024,
+                3);
+    }
+
+    private static void respond(HttpExchange exchange, int status, byte[] body, String location) throws IOException {
+        try (exchange) {
+            if (location != null) {
+                exchange.getResponseHeaders().add("Location", location);
+            }
+            if (exchange.getRequestMethod().equalsIgnoreCase("HEAD")) {
+                exchange.getResponseHeaders().set("Content-Length", Long.toString(body.length));
+                exchange.sendResponseHeaders(status, -1);
+                return;
+            }
+            exchange.sendResponseHeaders(status, body.length);
+            exchange.getResponseBody().write(body);
+        }
+    }
+
+    private static void writeFabricJar(Path output, String modId, String marker) throws IOException {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
+            zip.putNextEntry(new ZipEntry("fabric.mod.json"));
+            String json = "{\"custom\":{\"id\":\"wrong_nested_id\"},\"id\":\""
+                    + modId + "\",\"version\":\"" + marker + "\"}";
+            zip.write(json.getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("marker.txt"));
+            zip.write(marker.getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (root == null || !Files.exists(root)) {
+            return;
+        }
+        try (var stream = Files.walk(root)) {
+            for (Path path : stream.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
+    }
+
+    private static void expectFailure(ThrowingRunnable runnable) {
+        try {
+            runnable.run();
+            throw new AssertionError("预期操作失败，但它成功了");
+        } catch (IllegalArgumentException expected) {
+        } catch (Exception exception) {
+            throw new AssertionError("异常类型不符合预期", exception);
+        }
+    }
+
+
+    private void testZalithMobileEnvironmentDetection() throws Exception {
+        Map<String, String> previous = snapshotProperties(
+                "os.name",
+                "os.version",
+                "java.awt.headless",
+                "awt.toolkit",
+                "java.awt.graphicsenv",
+                "minecraft.launcher.brand",
+                "net.minecraft.clientmodname",
+                "pojav.path.minecraft",
+                "user.home",
+                "java.io.tmpdir",
+                "loader.disable_forked_guis",
+                "modsync.forceMobile",
+                "modsync.disableDialogs",
+                "modsync.forceHeadless");
+        try {
+            System.setProperty("os.name", "Linux");
+            System.setProperty("os.version", "Android-12");
+            System.setProperty("java.awt.headless", "false");
+            System.setProperty("awt.toolkit", "com.github.caciocavallosilano.cacio.ctc.CTCToolkit");
+            System.setProperty(
+                    "java.awt.graphicsenv",
+                    "com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment");
+            System.setProperty("minecraft.launcher.brand", "Zalith Launcher");
+            System.setProperty("net.minecraft.clientmodname", "Zalith Launcher");
+            System.setProperty(
+                    "pojav.path.minecraft",
+                    "/storage/emulated/0/Android/data/com.movtery.zalithlauncher.v2/files/.minecraft");
+            System.setProperty(
+                    "user.home",
+                    "/storage/emulated/0/Android/data/com.movtery.zalithlauncher.v2/files/.minecraft");
+            System.setProperty(
+                    "java.io.tmpdir",
+                    "/data/user/0/com.movtery.zalithlauncher.v2/cache");
+            System.setProperty("loader.disable_forked_guis", "true");
+            System.clearProperty("modsync.forceMobile");
+            System.clearProperty("modsync.disableDialogs");
+            System.clearProperty("modsync.forceHeadless");
+            UserNotifier.resetDialogsAvailabilityForTests();
+
+            RuntimeEnvironment environment = RuntimeEnvironment.detect();
+            check(environment.mobile(), "Zalith 特征应识别为手机端");
+            check(environment.cacioAwt(), "应识别 Cacio AWT");
+            check(!environment.dialogsUsable(), "手机端即使 headless=false 也不应使用独立 Swing 窗口");
+            check(environment.launcherName().toLowerCase().contains("zalith"),
+                    "启动器名称应包含 Zalith");
+            check(environment.summaryLine().contains("progress=log"),
+                    "摘要应标明使用日志进度");
+            check(!UserNotifier.dialogsAvailable(), "UserNotifier 应关闭弹窗");
+            pass("zalith mobile environment detection");
+        } finally {
+            restoreProperties(previous);
+            UserNotifier.resetDialogsAvailabilityForTests();
+        }
+    }
+
+    private void testHeadlessProgressIsLoggedAndWritten() throws Exception {
+        Path root = Files.createTempDirectory("modsync-headless-progress-");
+        Map<String, String> previous = snapshotProperties(
+                "modsync.disableDialogs",
+                "modsync.forceMobile",
+                "modsync.gameDir");
+        try {
+            System.setProperty("modsync.disableDialogs", "true");
+            System.setProperty("modsync.forceMobile", "true");
+            System.setProperty("modsync.gameDir", root.toString());
+            UserNotifier.resetDialogsAvailabilityForTests();
+
+            UserNotifier notifier = new UserNotifier(true, root);
+            notifier.beforeDownload(
+                    List.of("demo.jar"),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of(),
+                    List.of());
+            notifier.downloadProgress(new SyncObserver.DownloadProgress(
+                    "demo.jar",
+                    1,
+                    1,
+                    512 * 1024,
+                    1024 * 1024,
+                    512 * 1024,
+                    1024 * 1024,
+                    500));
+            notifier.afterUpdate(1, 0, 0);
+
+            Path status = root.resolve(".modsync/ui-status.txt");
+            Path progressLog = root.resolve(".modsync/progress.log");
+            check(Files.isRegularFile(status), "应写入 ui-status.txt");
+            check(Files.isRegularFile(progressLog), "应写入 progress.log");
+            String statusText = Files.readString(status);
+            String progressText = Files.readString(progressLog);
+            check(statusText.contains("progressPermille=") || statusText.contains("更新完成"),
+                    "状态文件应包含进度或完成信息");
+            check(progressText.contains("PROGRESS") || progressText.contains("demo.jar"),
+                    "进度日志应包含下载文件信息");
+            check(progressText.contains("环境识别")
+                            || progressText.contains("ENV ")
+                            || progressText.contains("mobile="),
+                    "进度日志应包含环境识别信息");
+            pass("headless progress is logged and written");
+        } finally {
+            restoreProperties(previous);
+            UserNotifier.resetDialogsAvailabilityForTests();
+            deleteTree(root);
+        }
+    }
+
+    private static Map<String, String> snapshotProperties(String... keys) {
+        Map<String, String> snapshot = new java.util.LinkedHashMap<>();
+        for (String key : keys) {
+            snapshot.put(key, System.getProperty(key));
+        }
+        return snapshot;
+    }
+
+    private static void restoreProperties(Map<String, String> snapshot) {
+        for (Map.Entry<String, String> entry : snapshot.entrySet()) {
+            restoreProperty(entry.getKey(), entry.getValue());
+        }
+    }
+
+    private static void restoreProperty(String name, String value) {
+        if (value == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, value);
+        }
+    }
+
+    private static void check(boolean condition, String message) {
+        if (!condition) {
+            throw new AssertionError(message);
+        }
+    }
+
+    private void pass(String name) {
+        passed++;
+        System.out.println("PASS: " + name);
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+}

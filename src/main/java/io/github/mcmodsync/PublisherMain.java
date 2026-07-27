@@ -1,0 +1,371 @@
+package io.github.mcmodsync;
+
+import javax.swing.BorderFactory;
+import javax.swing.JButton;
+import javax.swing.JFileChooser;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JScrollPane;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
+import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
+import javax.swing.UIManager;
+import javax.swing.filechooser.FileNameExtensionFilter;
+import java.awt.BorderLayout;
+import java.awt.Desktop;
+import java.awt.FlowLayout;
+import java.awt.Font;
+import java.awt.GraphicsEnvironment;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public final class PublisherMain {
+    private PublisherMain() {
+    }
+
+    public static void main(String[] arguments) {
+        if (arguments.length > 0) {
+            int status = runCommandLine(arguments);
+            if (status != 0) {
+                System.exit(status);
+            }
+            return;
+        }
+
+        if (GraphicsEnvironment.isHeadless()) {
+            printUsage();
+            System.exit(2);
+        }
+        SwingUtilities.invokeLater(PublisherMain::showWindow);
+    }
+
+    private static int runCommandLine(String[] arguments) {
+        if (arguments.length == 1 && (arguments[0].equals("--help") || arguments[0].equals("-h"))) {
+            printUsage();
+            return 0;
+        }
+        if (arguments.length == 1 && arguments[0].equals("--version")) {
+            System.out.println("MCModSync 1.6.10");
+            return 0;
+        }
+        if (arguments.length >= 1 && arguments[0].equals("--serverlist")) {
+            if (arguments.length < 2 || arguments.length > 3) {
+                printUsage();
+                return 2;
+            }
+            Path serversDat = Path.of(arguments[1]).toAbsolutePath().normalize();
+            Path output = arguments.length == 3
+                    ? Path.of(arguments[2]).toAbsolutePath().normalize()
+                    : serversDat.getParent().resolve("serverlist.txt");
+            try {
+                generateServerList(serversDat, output);
+                System.out.println("服务器列表清单生成成功: " + output);
+                return 0;
+            } catch (Exception exception) {
+                System.err.println("服务器列表清单生成失败: " + exception.getMessage());
+                return 1;
+            }
+        }
+        if (arguments.length >= 1 && arguments[0].equals("--resourcepack")) {
+            if (arguments.length < 2 || arguments.length > 3) {
+                printUsage();
+                return 2;
+            }
+            Path resourcePack = Path.of(arguments[1]).toAbsolutePath().normalize();
+            Path output = arguments.length == 3
+                    ? Path.of(arguments[2]).toAbsolutePath().normalize()
+                    : resourcePack.getParent().resolve("resourcepacks.txt");
+            try {
+                generateResourcePack(resourcePack, output);
+                System.out.println("资源包清单生成成功: " + output);
+                return 0;
+            } catch (Exception exception) {
+                System.err.println("资源包清单生成失败: " + exception.getMessage());
+                return 1;
+            }
+        }
+        if (arguments.length < 1 || arguments.length > 2) {
+            printUsage();
+            return 2;
+        }
+
+        Path modsDirectory = Path.of(arguments[0]).toAbsolutePath().normalize();
+        Path output = arguments.length == 2
+                ? Path.of(arguments[1]).toAbsolutePath().normalize()
+                : modsDirectory.resolve("mods.txt");
+        try {
+            int count = generate(modsDirectory, output);
+            System.out.println("生成成功，共 " + count + " 个 Mod: " + output);
+            return 0;
+        } catch (Exception exception) {
+            System.err.println("生成失败: " + exception.getMessage());
+            return 1;
+        }
+    }
+
+    private static int generate(Path modsDirectory, Path output) throws IOException {
+        ModManifest manifest = ModManifest.scan(modsDirectory);
+        try {
+            manifest.ensureUniqueModIds();
+        } catch (IllegalArgumentException exception) {
+            throw new IOException("发布目录包含重复 Fabric Mod ID: " + exception.getMessage(), exception);
+        }
+        manifest.write(output);
+        long withoutModId = manifest.entriesWithoutModId();
+        if (withoutModId > 0) {
+            System.err.println("警告：有 " + withoutModId
+                    + " 个 JAR 无法读取 fabric.mod.json/id，版本改名时将回退到文件名识别。");
+        }
+        return manifest.entries().size();
+    }
+
+    private static void generateResourcePack(Path resourcePack, Path output) throws IOException {
+        ResourcePackManifest.fromFile(resourcePack).write(output);
+    }
+
+    private static void generateServerList(Path serversDat, Path output) throws IOException {
+        ServerListManifest.fromFile(serversDat).write(output);
+    }
+
+    private static void showWindow() {
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (Exception ignored) {
+        }
+
+        JFrame frame = new JFrame("MCModSync 清单发布工具");
+        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        frame.setSize(760, 410);
+        frame.setLocationRelativeTo(null);
+
+        JPanel form = new JPanel(new GridBagLayout());
+        form.setBorder(BorderFactory.createEmptyBorder(16, 16, 8, 16));
+        GridBagConstraints constraints = new GridBagConstraints();
+        constraints.insets = new Insets(5, 5, 5, 5);
+        constraints.fill = GridBagConstraints.HORIZONTAL;
+
+        JTextField directoryField = new JTextField();
+        JButton browseButton = new JButton("选择 mods 目录");
+        JButton generateButton = new JButton("核对 MD5 并生成 mods.txt");
+        JButton resourcePackButton = new JButton("为资源包生成 resourcepacks.txt…");
+        JButton serverListButton = new JButton("为服务器列表生成 serverlist.txt…");
+        JTextArea log = new JTextArea();
+        log.setEditable(false);
+        log.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
+        log.setLineWrap(true);
+        log.setWrapStyleWord(true);
+        log.setText("选择测试完成的客户端 mods 目录。\n生成的 mods.txt 会放在该目录内，不会修改任何 JAR。\n");
+
+        constraints.gridx = 0;
+        constraints.gridy = 0;
+        constraints.weightx = 0;
+        form.add(new JLabel("Mod 目录："), constraints);
+        constraints.gridx = 1;
+        constraints.weightx = 1;
+        form.add(directoryField, constraints);
+        constraints.gridx = 2;
+        constraints.weightx = 0;
+        form.add(browseButton, constraints);
+
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        actions.add(serverListButton);
+        actions.add(resourcePackButton);
+        actions.add(generateButton);
+        constraints.gridx = 0;
+        constraints.gridy = 1;
+        constraints.gridwidth = 3;
+        constraints.weightx = 1;
+        form.add(actions, constraints);
+
+        frame.add(form, BorderLayout.NORTH);
+        JScrollPane scroll = new JScrollPane(log);
+        scroll.setBorder(BorderFactory.createTitledBorder("结果"));
+        frame.add(scroll, BorderLayout.CENTER);
+
+        browseButton.addActionListener(event -> {
+            JFileChooser chooser = new JFileChooser();
+            chooser.setDialogTitle("选择测试客户端的 mods 目录");
+            chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+            chooser.setAcceptAllFileFilterUsed(false);
+            if (!directoryField.getText().isBlank()) {
+                chooser.setCurrentDirectory(Path.of(directoryField.getText()).toFile());
+            }
+            if (chooser.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
+                directoryField.setText(chooser.getSelectedFile().toPath().toAbsolutePath().normalize().toString());
+            }
+        });
+
+        generateButton.addActionListener(event -> {
+            if (directoryField.getText().isBlank()) {
+                JOptionPane.showMessageDialog(frame, "请先选择 mods 目录。", "缺少目录", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            Path modsDirectory;
+            try {
+                modsDirectory = Path.of(directoryField.getText()).toAbsolutePath().normalize();
+            } catch (Exception exception) {
+                JOptionPane.showMessageDialog(frame, "目录格式无效。", "错误", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+            Path output = modsDirectory.resolve("mods.txt");
+            generateButton.setEnabled(false);
+            log.append("\n开始计算 MD5：" + modsDirectory + "\n");
+            new SwingWorker<Integer, Void>() {
+                @Override
+                protected Integer doInBackground() throws Exception {
+                    return generate(modsDirectory, output);
+                }
+
+                @Override
+                protected void done() {
+                    generateButton.setEnabled(true);
+                    try {
+                        int count = get();
+                        log.append("完成，共 " + count + " 个 Mod。\n清单：" + output + "\n");
+                        Object[] options = Desktop.isDesktopSupported()
+                                ? new Object[]{"打开所在目录", "关闭"}
+                                : new Object[]{"关闭"};
+                        int choice = JOptionPane.showOptionDialog(
+                                frame,
+                                "mods.txt 已生成，共 " + count + " 个 Mod。",
+                                "生成成功",
+                                JOptionPane.DEFAULT_OPTION,
+                                JOptionPane.INFORMATION_MESSAGE,
+                                null,
+                                options,
+                                options[0]);
+                        if (choice == 0 && Desktop.isDesktopSupported()) {
+                            try {
+                                Desktop.getDesktop().open(modsDirectory.toFile());
+                            } catch (IOException exception) {
+                                log.append("无法打开目录：" + exception.getMessage() + "\n");
+                            }
+                        }
+                    } catch (Exception exception) {
+                        Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                        log.append("失败：" + cause.getMessage() + "\n");
+                        JOptionPane.showMessageDialog(frame, cause.getMessage(), "生成失败", JOptionPane.ERROR_MESSAGE);
+                    }
+                }
+            }.execute();
+        });
+
+        resourcePackButton.addActionListener(event -> {
+            JFileChooser chooser = new JFileChooser();
+            chooser.setDialogTitle("选择要发布的资源包 ZIP");
+            chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+            chooser.setAcceptAllFileFilterUsed(false);
+            chooser.setFileFilter(new FileNameExtensionFilter("Minecraft 资源包 (*.zip)", "zip"));
+            if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+                return;
+            }
+            Path resourcePack = chooser.getSelectedFile().toPath().toAbsolutePath().normalize();
+            Path output = resourcePack.getParent().resolve("resourcepacks.txt");
+            resourcePackButton.setEnabled(false);
+            log.append("\n开始计算资源包 MD5：" + resourcePack + "\n");
+            new SwingWorker<Void, Void>() {
+                @Override
+                protected Void doInBackground() throws Exception {
+                    generateResourcePack(resourcePack, output);
+                    return null;
+                }
+
+                @Override
+                protected void done() {
+                    resourcePackButton.setEnabled(true);
+                    try {
+                        get();
+                        log.append("资源包清单完成：" + output + "\n");
+                        Object[] options = Desktop.isDesktopSupported()
+                                ? new Object[]{"打开所在目录", "关闭"}
+                                : new Object[]{"关闭"};
+                        int choice = JOptionPane.showOptionDialog(
+                                frame,
+                                "resourcepacks.txt 已生成。\n请把它和资源包 ZIP 上传到同一云端目录。",
+                                "资源包清单生成成功",
+                                JOptionPane.DEFAULT_OPTION,
+                                JOptionPane.INFORMATION_MESSAGE,
+                                null,
+                                options,
+                                options[0]);
+                        if (choice == 0 && Desktop.isDesktopSupported()) {
+                            Desktop.getDesktop().open(resourcePack.getParent().toFile());
+                        }
+                    } catch (Exception exception) {
+                        Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                        log.append("资源包清单失败：" + cause.getMessage() + "\n");
+                        JOptionPane.showMessageDialog(
+                                frame, cause.getMessage(), "资源包清单生成失败", JOptionPane.ERROR_MESSAGE);
+                    }
+                }
+            }.execute();
+        });
+
+        serverListButton.addActionListener(event -> {
+            JFileChooser chooser = new JFileChooser();
+            chooser.setDialogTitle("选择测试客户端的 servers.dat");
+            chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+            chooser.setAcceptAllFileFilterUsed(true);
+            if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) {
+                return;
+            }
+            Path serversDat = chooser.getSelectedFile().toPath().toAbsolutePath().normalize();
+            Path output = serversDat.getParent().resolve("serverlist.txt");
+            serverListButton.setEnabled(false);
+            log.append("\n开始计算服务器列表 MD5：" + serversDat + "\n");
+            new SwingWorker<Void, Void>() {
+                @Override
+                protected Void doInBackground() throws Exception {
+                    generateServerList(serversDat, output);
+                    return null;
+                }
+
+                @Override
+                protected void done() {
+                    serverListButton.setEnabled(true);
+                    try {
+                        get();
+                        log.append("服务器列表清单完成：" + output + "\n");
+                        Object[] options = Desktop.isDesktopSupported()
+                                ? new Object[]{"打开所在目录", "关闭"}
+                                : new Object[]{"关闭"};
+                        int choice = JOptionPane.showOptionDialog(
+                                frame,
+                                "serverlist.txt 已生成。\n请把它和 servers.dat 上传到同一云端目录。",
+                                "服务器列表清单生成成功",
+                                JOptionPane.DEFAULT_OPTION,
+                                JOptionPane.INFORMATION_MESSAGE,
+                                null,
+                                options,
+                                options[0]);
+                        if (choice == 0 && Desktop.isDesktopSupported()) {
+                            Desktop.getDesktop().open(serversDat.getParent().toFile());
+                        }
+                    } catch (Exception exception) {
+                        Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                        log.append("服务器列表清单失败：" + cause.getMessage() + "\n");
+                        JOptionPane.showMessageDialog(
+                                frame, cause.getMessage(), "服务器列表清单生成失败", JOptionPane.ERROR_MESSAGE);
+                    }
+                }
+            }.execute();
+        });
+
+        frame.setVisible(true);
+    }
+
+    private static void printUsage() {
+        System.out.println("用法：");
+        System.out.println("  双击 JAR：打开图形界面");
+        System.out.println("  java -jar MCModSync.jar <mods目录> [mods.txt输出路径]");
+        System.out.println("  java -jar MCModSync.jar --resourcepack <资源包.zip> [resourcepacks.txt输出路径]");
+        System.out.println("  java -jar MCModSync.jar --serverlist <servers.dat> [serverlist.txt输出路径]");
+    }
+}
