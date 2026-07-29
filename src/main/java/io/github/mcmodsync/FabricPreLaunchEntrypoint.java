@@ -30,7 +30,7 @@ public final class FabricPreLaunchEntrypoint implements PreLaunchEntrypoint {
             return;
         }
 
-        log("MCModSync 1.6.10 Fabric 便携模式校验开始");
+        log("MCModSync 1.7.0 Fabric 便携模式校验开始");
         try {
             Path gameDirectory = locateFabricGameDirectory();
             // Always pin the system property first so a leftover modsync.gameDir
@@ -55,7 +55,10 @@ public final class FabricPreLaunchEntrypoint implements PreLaunchEntrypoint {
                 return;
             }
 
-            SyncProbeResult result = ModSyncCoordinator.probe(config, FabricPreLaunchEntrypoint::log);
+            SyncProbeResult result = ModSyncCoordinator.probe(
+                    config,
+                    FabricPreLaunchEntrypoint::log,
+                    new UserNotifier(true, config.gameDirectory()));
             System.setProperty("modsync.status", result.status().name());
             log("Fabric 便携模式只读校验结束: " + result.status());
 
@@ -85,7 +88,8 @@ public final class FabricPreLaunchEntrypoint implements PreLaunchEntrypoint {
             System.err.println("[MCModSync] 致命错误：无法保证同步内容完整，Minecraft 启动已中止。");
             failure.printStackTrace(System.err);
             UserNotifier.showFatalError(failure);
-            throw new RuntimeException("MCModSync Fabric 启动同步失败", failure);
+            exitProcess(0);
+            return;
         }
     }
 

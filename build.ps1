@@ -49,7 +49,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "tests failed with exit code $LASTEXITCODE"
 }
 
-$jarPath = Join-Path $distDirectory 'MCModSync-1.6.10.jar'
+$jarPath = Join-Path $distDirectory 'MCModSync-1.7.0.jar'
 $compileOnlyStubClass = Join-Path $mainClasses 'net\fabricmc\loader\api\entrypoint\PreLaunchEntrypoint.class'
 if (-not (Test-Path -LiteralPath $compileOnlyStubClass -PathType Leaf)) {
     throw "Expected compile-only Fabric API class not found: $compileOnlyStubClass"
@@ -90,13 +90,16 @@ $smokeOutput = & java '-Dmodsync.disableDialogs=true' '-Dmodsync.syncResourcePac
 $smokeExitCode = $LASTEXITCODE
 $ErrorActionPreference = $previousErrorAction
 $smokeText = $smokeOutput | Out-String
-if ($smokeExitCode -eq 0) {
-    throw 'legacy requireManifest=false unexpectedly bypassed cloud failure'
+if ($smokeExitCode -ne 0) {
+    throw 'legacy fail-open rejection did not exit normally'
 }
 if ($smokeText -notmatch 'STARTUP_BLOCKED') {
     throw 'legacy fail-open rejection did not emit STARTUP_BLOCKED'
 }
-Write-Output 'Legacy fail-open bypass rejection passed.'
+if ($smokeText -match 'Dummy main reached') {
+    throw 'legacy requireManifest=false unexpectedly reached the game main class'
+}
+Write-Output 'Legacy fail-open bypass rejection and normal exit passed.'
 
 Write-Output '[7/8] Verifying fatal errors really block startup...'
 $fatalDirectory = Join-Path $buildDirectory 'agent-fatal-game'
@@ -108,19 +111,22 @@ $fatalOutput = & java '-Dmodsync.disableDialogs=true' '-Dmodsync.syncResourcePac
 $fatalExitCode = $LASTEXITCODE
 $ErrorActionPreference = $previousErrorAction
 $fatalText = $fatalOutput | Out-String
-if ($fatalExitCode -eq 0) {
-    throw 'fatal javaagent test unexpectedly reached the game main class'
+if ($fatalExitCode -ne 0) {
+    throw 'fatal javaagent test did not exit normally'
 }
 if ($fatalText -notmatch 'STARTUP_BLOCKED') {
     throw 'fatal javaagent test did not emit STARTUP_BLOCKED'
 }
-Write-Output 'Fatal startup-block test passed.'
+if ($fatalText -match 'Dummy main reached') {
+    throw 'fatal javaagent test unexpectedly reached the game main class'
+}
+Write-Output 'Fatal startup-block normal-exit test passed.'
 
 Write-Output '[8/8] Copying deliverables...'
 $workspaceRoot = [System.IO.Directory]::GetParent([System.IO.Directory]::GetParent($projectRoot).FullName).FullName
 $outputsDirectory = Join-Path $workspaceRoot 'outputs'
 New-Item -ItemType Directory -Path $outputsDirectory -Force | Out-Null
-$jarOutputName = 'MCModSync-1.6.10.jar'
+$jarOutputName = 'MCModSync-1.7.0.jar'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.jar' -ErrorAction SilentlyContinue |
     Where-Object Name -ne $jarOutputName |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
@@ -132,7 +138,7 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.md' -Err
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $outputsDirectory $readmeDestinationName) -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'modsync.properties.example') -Destination (Join-Path $outputsDirectory 'modsync.properties.example') -Force
 
-$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.6.10-source.zip'
+$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.7.0-source.zip'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*-source.zip' -ErrorAction SilentlyContinue |
     Where-Object FullName -ne $sourceZip |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
@@ -144,7 +150,9 @@ Compress-Archive -Path @(
     (Join-Path $projectRoot 'build.ps1'),
     (Join-Path $projectRoot 'manifest.mf'),
     (Join-Path $projectRoot 'README.md'),
-    (Join-Path $projectRoot 'modsync.properties.example')
+    (Join-Path $projectRoot 'modsync.properties.example'),
+    (Join-Path $projectRoot 'LICENSE'),
+    (Join-Path $projectRoot 'docs')
 ) -DestinationPath $sourceZip -CompressionLevel Optimal
 
 Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $outputsDirectory $jarOutputName) |

@@ -2,6 +2,7 @@ package io.github.mcmodsync;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
 interface SyncObserver {
     SyncObserver NONE = new SyncObserver() {
@@ -13,6 +14,10 @@ interface SyncObserver {
 
     default UnknownModDecision decideUnknownClientMod(String fileName) throws IOException {
         return UnknownModDecision.BACKUP;
+    }
+
+    default Set<String> chooseRecommendedMods(RecommendedSelectionRequest request) throws IOException {
+        return request.initiallySelected();
     }
 
     default void beforeDownload(

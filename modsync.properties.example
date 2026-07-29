@@ -1,21 +1,24 @@
-# Copy this file to your Minecraft game directory as modsync.properties.
-# Replace every example.invalid address with a manifest you control.
+# 复制到游戏根目录并改名为 modsync.properties。
+# 把 example.invalid 替换为你自己控制的直链。
 manifest=https://example.invalid/mcmodsync/mods.txt
 
-# Optional manifest for mobile launchers such as Zalith/Pojav.
+# 仅 PojavLauncher、MCinaBox、FCL、Zalith Launcher 2 会判定为手机端。
+# 如需手机端使用另一份清单，取消下一行注释；通常一份 v3 清单即可通过不兼容平台区分。
 # mobileManifest=https://example.invalid/mcmodsync/mobile-mods.txt
 
-# Synchronize resource packs and server-list entries independently.
-syncResourcePacks=true
+# 不使用资源包同步时保持 false；启用后必须填写有效清单。
+syncResourcePacks=false
 resourcePackManifest=https://example.invalid/mcmodsync/resourcepacks.txt
 # mobileResourcePackManifest=https://example.invalid/mcmodsync/mobile-resourcepacks.txt
 
-syncServerList=true
+# 不使用服务器列表同步时保持 false；启用后必须填写有效清单。
+syncServerList=false
 serverListManifest=https://example.invalid/mcmodsync/serverlist.txt
 
-# Safety and network limits.
+# 安全策略。requireManifest=false 会被拒绝。
 strict=true
 requireManifest=true
+
 connectTimeoutSeconds=15
 requestTimeoutSeconds=300
 maxFileBytes=2147483648

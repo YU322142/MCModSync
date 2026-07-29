@@ -13,9 +13,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CountDownLatch;
@@ -35,6 +37,11 @@ public final class AllTests {
     private void run() throws Exception {
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
+        testV3ManifestMetadataAndDualHash();
+        testDesktopRecommendedSelectionAndCatalogUpdate();
+        testDeselectedRecommendedModIsBackedUp();
+        testNoRecommendedModsSelectedAllowsEmptyModsDirectory();
+        testMobileRecommendedDownloadsOncePerCatalogVersion();
         testPublisherManifestIncludesSyncTool();
         testSelfDowngradeIsRefused();
         testResourcePackManifestGenerationAndParsing();
@@ -64,6 +71,8 @@ public final class AllTests {
         testClientModIsPreservedWhenOfflineBlocks();
         testInvalidServerManagedModBlocksWhenOffline();
         testZalithMobileEnvironmentDetection();
+        testSupportedMobileLauncherAllowList();
+        testUnsupportedAndroidLauncherUsesDesktopLogic();
         testHeadlessProgressIsLoggedAndWritten();
         System.out.println("All tests passed: " + passed);
     }
@@ -85,6 +94,7 @@ public final class AllTests {
             check(parsed.entries().size() == 2, "应只扫描两个 JAR");
             check(parsed.entries().get(0).fileName().equals("a-mod.jar"), "应按文件名稳定排序");
             check(parsed.entries().get(0).md5().equals(Hashing.md5(first)), "第一个 MD5 应正确");
+            check(parsed.entries().get(0).sha256().equals(Hashing.sha256(first)), "第一个 SHA256 应正确");
             check(parsed.entries().get(1).md5().equals(Hashing.md5(second)), "第二个 MD5 应正确");
             pass("manifest generation and parsing");
         } finally {
@@ -107,7 +117,7 @@ public final class AllTests {
             writeFabricJar(jar, "demo_mod", "1.0");
             ModManifest generated = ModManifest.scan(mods);
             check(generated.entries().get(0).modId().equals("demo_mod"), "应从 fabric.mod.json 读取顶层 Mod ID");
-            check(generated.serialize().startsWith(ModManifest.MAGIC_V2), "新清单应使用 v2 格式");
+            check(generated.serialize().startsWith(ModManifest.MAGIC_V3), "新清单应使用 v3 格式");
             ModManifest.parse(generated.serialize()).ensureUniqueModIds();
 
             String v1 = ModManifest.MAGIC_V1 + "\n" + Hashing.md5(jar) + "\tdemo-1.0.jar\n";
@@ -121,6 +131,255 @@ public final class AllTests {
         } finally {
             deleteTree(root);
         }
+    }
+
+    private void testV3ManifestMetadataAndDualHash() throws Exception {
+        Path root = Files.createTempDirectory("modsync-v3-manifest-");
+        try {
+            byte[] requiredBytes = "required".getBytes(StandardCharsets.UTF_8);
+            byte[] recommendedBytes = "recommended".getBytes(StandardCharsets.UTF_8);
+            ManifestEntry required = new ManifestEntry(
+                    Hashing.sha256(requiredBytes),
+                    Hashing.md5(requiredBytes),
+                    "required_mod",
+                    "required.jar",
+                    ModKind.REQUIRED,
+                    Set.of(),
+                    "Required Mod",
+                    "1.0",
+                    "must load");
+            ManifestEntry recommended = new ManifestEntry(
+                    Hashing.sha256(recommendedBytes),
+                    Hashing.md5(recommendedBytes),
+                    "recommended_mod",
+                    "recommended.jar",
+                    ModKind.RECOMMENDED,
+                    Set.of(ClientPlatform.MOBILE, ClientPlatform.MAC),
+                    "Recommended Mod",
+                    "2.0",
+                    "optional graphics");
+            ModManifest parsed = ModManifest.parse(
+                    ModManifest.fromEntries("catalog-42", List.of(required, recommended)).serialize());
+            check(parsed.catalogVersion().equals("catalog-42"), "v3 应保留推荐清单版本");
+            check(parsed.entries().get(1).recommended(), "v3 应保留推荐分类");
+            check(parsed.entries().get(1).incompatiblePlatforms().contains(ClientPlatform.MOBILE),
+                    "v3 应保留不兼容平台");
+            check(parsed.entries().get(1).displayName().equals("Recommended Mod"), "v3 应保留显示名称");
+
+            Path requiredFile = root.resolve("required.jar");
+            Files.write(requiredFile, requiredBytes);
+            check(ModManifest.fileMatches(required, requiredFile), "MD5/SHA256 都正确时应匹配");
+            Files.writeString(requiredFile, "tampered", StandardCharsets.UTF_8);
+            check(!ModManifest.fileMatches(required, requiredFile), "任一哈希不符时应拒绝");
+            pass("v3 manifest metadata and dual hash");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testDesktopRecommendedSelectionAndCatalogUpdate() throws Exception {
+        Path root = Files.createTempDirectory("modsync-desktop-recommended-");
+        Map<String, String> previous = snapshotProperties("os.name", "modsync.forceMobile");
+        try {
+            System.setProperty("os.name", "Windows 11");
+            System.clearProperty("modsync.forceMobile");
+            RecommendedSelectionStore.resetSessionForTests();
+            byte[] requiredBytes = "required".getBytes(StandardCharsets.UTF_8);
+            byte[] recommendedBytes = "recommended".getBytes(StandardCharsets.UTF_8);
+            ManifestEntry required = testEntry(requiredBytes, "required_mod", "required.jar", ModKind.REQUIRED, Set.of());
+            ManifestEntry recommended = testEntry(
+                    recommendedBytes, "recommended_mod", "recommended.jar", ModKind.RECOMMENDED, Set.of());
+            ManifestEntry incompatible = testEntry(
+                    "linux-only".getBytes(StandardCharsets.UTF_8),
+                    "linux_only", "linux-only.jar", ModKind.RECOMMENDED, Set.of(ClientPlatform.WINDOWS));
+            AtomicInteger prompts = new AtomicInteger();
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public Set<String> chooseRecommendedMods(RecommendedSelectionRequest request) {
+                    prompts.incrementAndGet();
+                    check(request.initiallySelected().contains(recommended.selectionKey()),
+                            "兼容推荐模组应默认勾选");
+                    check(!request.initiallySelected().contains(incompatible.selectionKey()),
+                            "不兼容推荐模组不应默认勾选");
+                    return Set.of();
+                }
+            };
+            List<String> logs = new ArrayList<>();
+            ModManifest first = ModManifest.fromEntries("catalog-1", List.of(required, recommended, incompatible));
+            var firstResolution = RecommendedSelectionStore.resolve(
+                    first, root, Map.of(), URI.create("https://example.invalid/mods.txt"),
+                    RuntimeEnvironment.detect(), observer, logs::add);
+            check(firstResolution.effectiveManifest().entries().equals(List.of(required)),
+                    "取消全部后只应保留必须模组");
+            RecommendedSelectionStore.resolve(
+                    first, root, Map.of(), URI.create("https://example.invalid/mods.txt"),
+                    RuntimeEnvironment.detect(), observer, logs::add);
+            check(prompts.get() == 1, "相同清单版本应直接复用历史选择");
+
+            ModManifest updated = ModManifest.fromEntries("catalog-2", List.of(required, recommended));
+            RecommendedSelectionStore.resolve(
+                    updated, root, Map.of(), URI.create("https://example.invalid/mods.txt"),
+                    RuntimeEnvironment.detect(), observer, logs::add);
+            check(prompts.get() == 2, "清单版本更新后应重新选择");
+            check(logs.stream().anyMatch(line -> line.contains("catalog-1 -> catalog-2")),
+                    "清单版本更新应写入日志");
+            pass("desktop recommended selection and catalog update");
+        } finally {
+            restoreProperties(previous);
+            RecommendedSelectionStore.resetSessionForTests();
+            deleteTree(root);
+        }
+    }
+
+    private void testMobileRecommendedDownloadsOncePerCatalogVersion() throws Exception {
+        Path root = Files.createTempDirectory("modsync-mobile-recommended-once-");
+        Map<String, String> previous = snapshotProperties("modsync.forceMobile", "os.name");
+        try {
+            System.setProperty("modsync.forceMobile", "true");
+            System.setProperty("os.name", "Linux");
+            RecommendedSelectionStore.resetSessionForTests();
+            byte[] requiredBytes = "required".getBytes(StandardCharsets.UTF_8);
+            byte[] recommendedBytes = "recommended".getBytes(StandardCharsets.UTF_8);
+            ManifestEntry required = testEntry(requiredBytes, "required_mod", "required.jar", ModKind.REQUIRED, Set.of());
+            ManifestEntry recommended = testEntry(
+                    recommendedBytes, "recommended_mod", "recommended.jar", ModKind.RECOMMENDED, Set.of());
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path requiredFile = mods.resolve(required.fileName());
+            Files.write(requiredFile, requiredBytes);
+            Map<String, Path> local = Map.of(required.fileName(), requiredFile);
+            List<String> logs = new ArrayList<>();
+            ModManifest first = ModManifest.fromEntries("mobile-1", List.of(required, recommended));
+            var initial = RecommendedSelectionStore.resolve(
+                    first, root, local, URI.create("https://example.invalid/mods.txt"),
+                    RuntimeEnvironment.detect(), SyncObserver.NONE, logs::add);
+            check(initial.mobileNeedsCompletion(), "手机端首次应安排全部兼容推荐模组");
+            check(initial.effectiveManifest().entries().contains(recommended), "首次应包含推荐模组");
+            RecommendedSelectionStore.markMobileCompleted(initial);
+
+            var afterDeletion = RecommendedSelectionStore.resolve(
+                    first, root, local, URI.create("https://example.invalid/mods.txt"),
+                    RuntimeEnvironment.detect(), SyncObserver.NONE, logs::add);
+            check(!afterDeletion.effectiveManifest().entries().contains(recommended),
+                    "手机端推荐模组被删除后不得二次自动下载");
+            check(logs.stream().anyMatch(line -> line.contains("手动下载地址")),
+                    "删除推荐模组后应记录手动下载方式");
+
+            ModManifest updated = ModManifest.fromEntries("mobile-2", List.of(required, recommended));
+            var nextCatalog = RecommendedSelectionStore.resolve(
+                    updated, root, local, URI.create("https://example.invalid/mods.txt"),
+                    RuntimeEnvironment.detect(), SyncObserver.NONE, logs::add);
+            check(nextCatalog.mobileNeedsCompletion(), "新推荐清单版本应获得一次新的自动处理机会");
+            check(logs.stream().anyMatch(line -> line.contains("mobile-1 -> mobile-2")),
+                    "手机端推荐清单更新应写入日志");
+            pass("mobile recommended downloads once per catalog version");
+        } finally {
+            restoreProperties(previous);
+            RecommendedSelectionStore.resetSessionForTests();
+            deleteTree(root);
+        }
+    }
+
+    private void testDeselectedRecommendedModIsBackedUp() throws Exception {
+        Path root = Files.createTempDirectory("modsync-deselected-recommended-");
+        Map<String, String> previous = snapshotProperties("os.name", "modsync.forceMobile");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            System.setProperty("os.name", "Windows 11");
+            System.clearProperty("modsync.forceMobile");
+            RecommendedSelectionStore.resetSessionForTests();
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            byte[] requiredBytes = "required local".getBytes(StandardCharsets.UTF_8);
+            byte[] recommendedBytes = "recommended local".getBytes(StandardCharsets.UTF_8);
+            ManifestEntry required = testEntry(requiredBytes, "", "required.jar", ModKind.REQUIRED, Set.of());
+            ManifestEntry recommended = testEntry(
+                    recommendedBytes, "", "recommended.jar", ModKind.RECOMMENDED, Set.of());
+            Files.write(mods.resolve(required.fileName()), requiredBytes);
+            Files.write(mods.resolve(recommended.fileName()), recommendedBytes);
+            String manifest = ModManifest.fromEntries("desktop-backup-1", List.of(required, recommended)).serialize();
+            server.createContext("/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.start();
+            URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mods.txt");
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public Set<String> chooseRecommendedMods(RecommendedSelectionRequest request) {
+                    return Set.of();
+                }
+
+                @Override
+                public UnknownModDecision decideUnknownClientMod(String fileName) {
+                    return UnknownModDecision.KEEP_CLIENT;
+                }
+            };
+            SyncResult result = new ModSyncEngine(config(root, uri, true, true), message -> { }, observer)
+                    .synchronize();
+            check(result.status() == SyncResult.Status.UPDATED, "取消已安装推荐模组应触发更新事务");
+            check(!Files.exists(mods.resolve(recommended.fileName())), "取消的推荐模组应从 mods 移出");
+            try (var files = Files.walk(root.resolve(".modsync/backups"))) {
+                check(files.anyMatch(path -> path.getFileName().toString().equals(recommended.fileName())),
+                        "取消的推荐模组应保存在备份目录");
+            }
+            pass("deselected recommended mod is backed up");
+        } finally {
+            server.stop(0);
+            restoreProperties(previous);
+            RecommendedSelectionStore.resetSessionForTests();
+            deleteTree(root);
+        }
+    }
+
+    private void testNoRecommendedModsSelectedAllowsEmptyModsDirectory() throws Exception {
+        Path root = Files.createTempDirectory("modsync-no-recommended-selected-");
+        Map<String, String> previous = snapshotProperties("os.name", "modsync.forceMobile");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            System.setProperty("os.name", "Windows 11");
+            System.clearProperty("modsync.forceMobile");
+            RecommendedSelectionStore.resetSessionForTests();
+            Files.createDirectories(root.resolve("mods"));
+            ManifestEntry recommended = testEntry(
+                    "optional".getBytes(StandardCharsets.UTF_8),
+                    "optional_mod", "optional.jar", ModKind.RECOMMENDED, Set.of());
+            String manifest = ModManifest.fromEntries("empty-choice-1", List.of(recommended)).serialize();
+            server.createContext("/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.start();
+            URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/mods.txt");
+            SyncObserver observer = new SyncObserver() {
+                @Override
+                public Set<String> chooseRecommendedMods(RecommendedSelectionRequest request) {
+                    return Set.of();
+                }
+            };
+            SyncResult result = new ModSyncEngine(config(root, uri, true, true), message -> { }, observer)
+                    .synchronize();
+            check(result.status() == SyncResult.Status.UNCHANGED,
+                    "不选择任何推荐模组时应允许空 mods 目录继续启动");
+            pass("no recommended mods selected allows empty mods directory");
+        } finally {
+            server.stop(0);
+            restoreProperties(previous);
+            RecommendedSelectionStore.resetSessionForTests();
+            deleteTree(root);
+        }
+    }
+
+    private static ManifestEntry testEntry(
+            byte[] bytes,
+            String modId,
+            String fileName,
+            ModKind kind,
+            Set<ClientPlatform> incompatible) {
+        return new ManifestEntry(
+                Hashing.sha256(bytes),
+                Hashing.md5(bytes),
+                modId,
+                fileName,
+                kind,
+                incompatible,
+                modId,
+                "1.0",
+                "test mod");
     }
 
     private void testPublisherManifestIncludesSyncTool() throws Exception {
@@ -1591,6 +1850,57 @@ public final class AllTests {
         } finally {
             restoreProperties(previous);
             UserNotifier.resetDialogsAvailabilityForTests();
+        }
+    }
+
+    private void testSupportedMobileLauncherAllowList() {
+        Map<String, String> previous = snapshotProperties(
+                "minecraft.launcher.brand",
+                "net.minecraft.clientmodname",
+                "pojav.path.minecraft",
+                "modsync.forceMobile");
+        try {
+            System.clearProperty("modsync.forceMobile");
+            System.clearProperty("pojav.path.minecraft");
+            for (String launcher : List.of("PojavLauncher", "MCinaBox", "FCL")) {
+                System.setProperty("minecraft.launcher.brand", launcher);
+                System.setProperty("net.minecraft.clientmodname", launcher);
+                check(RuntimeEnvironment.detect().mobile(), launcher + " 应识别为手机端");
+            }
+            pass("supported mobile launcher allow list");
+        } finally {
+            restoreProperties(previous);
+        }
+    }
+
+    private void testUnsupportedAndroidLauncherUsesDesktopLogic() {
+        Map<String, String> previous = snapshotProperties(
+                "os.name",
+                "os.version",
+                "awt.toolkit",
+                "java.awt.graphicsenv",
+                "minecraft.launcher.brand",
+                "net.minecraft.clientmodname",
+                "pojav.path.minecraft",
+                "user.home",
+                "java.io.tmpdir",
+                "modsync.forceMobile");
+        try {
+            System.setProperty("os.name", "Linux");
+            System.setProperty("os.version", "Android-14");
+            System.setProperty("awt.toolkit", "example.cacio.Toolkit");
+            System.setProperty("java.awt.graphicsenv", "example.cacio.GraphicsEnvironment");
+            System.setProperty("minecraft.launcher.brand", "Other Android Launcher");
+            System.setProperty("net.minecraft.clientmodname", "Other Android Launcher");
+            System.clearProperty("pojav.path.minecraft");
+            System.setProperty("user.home", "/storage/emulated/0/Android/data/other.launcher/files");
+            System.setProperty("java.io.tmpdir", "/data/user/0/other.launcher/cache");
+            System.clearProperty("modsync.forceMobile");
+            check(!RuntimeEnvironment.detect().mobile(),
+                    "未列入白名单的 Android/Cacio 启动器必须按电脑端处理");
+            pass("unsupported Android launcher uses desktop logic");
+        } finally {
+            restoreProperties(previous);
         }
     }
 

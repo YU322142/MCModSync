@@ -1,161 +1,225 @@
 # MCModSync
 
-MCModSync 是一个 Fabric 客户端同步工具：游戏启动前，从你自行托管的 MD5 清单下载并校验 Mod、资源包和服务器列表。
+MCModSync 1.7.0 是一个 Fabric 客户端启动前同步工具。服主可以在同一份 v3 Mod 清单中区分“必须模组”和“推荐模组”，设置推荐模组的不兼容平台，并让客户端下载后同时校验 MD5 与 SHA256。资源包和服务器列表仍可独立同步。
 
 > [!WARNING]
-> **AI 辅助生成代码警示：** 本项目包含 AI 辅助生成或修改的代码与文档。AI 生成内容可能存在逻辑错误、兼容性问题或未知安全风险，不能视为安全审计结论。请在公开部署前自行审阅代码、扫描依赖、在隔离测试实例完整验证，并备份客户端。使用者自行负责清单、下载文件和服务器的可信性与安全性。
+> **AI 辅助生成代码警示：** 本项目包含 AI 辅助生成或修改的代码与文档。AI 生成内容可能存在逻辑错误、兼容性问题或未知安全风险，不能视为安全审计结论。公开部署前请自行审阅代码、扫描依赖、在隔离测试实例完整验证并保留可恢复备份。使用者自行负责云端清单、下载文件和托管服务器的可信性与安全性。
 
 > [!IMPORTANT]
-> 此公开版本不含原部署的站点、凭据、令牌、私有路径或个人作者信息。所有内置地址均为不可用的 `example.invalid` 占位符；**未配置你自己的地址时，工具会阻止启动，而不会连接任何真实服务。**
+> 公开源码不包含生产站点、凭据、令牌、私有路径或个人信息。所有内置 URL 都是不可访问的 `example.invalid` 占位符，必须换成你自己的直链。
 
-## 适用场景与前提
+## 核心规则
 
-- 适用于 Fabric Loader `0.16+`、Minecraft `1.21.11+`、Java `21+` 的客户端实例。
-- 你必须有可通过 HTTP/HTTPS 访问的文件托管空间；每位玩家的设备都要能访问它。
-- 只把你有权分发的 Mod、资源包和服务器列表放入清单。
-- `strict=true` 和 `requireManifest=true` 是推荐默认值：清单不可用、格式错误或校验失败时，客户端会停止启动。
+### 必须模组
 
-## 给服主的快速开始
+- Windows、Mac、Linux 和手机端都必须安装。
+- 启动前检查本地文件；缺失、MD5 不符或 SHA256 不符时自动下载/修复。
+- 必须清单不可用、下载失败或双哈希校验失败时阻止进入游戏。
+- 阻止启动和“更新完成后需要重启”均以退出码 `0` 正常结束，让启动器显示正常退出而不是游戏崩溃。
 
-下面假定你的托管目录为 `https://files.example.com/minecraft/`。这是示例，请替换为你自己的域名和路径。
+### 推荐模组（电脑端）
 
-### 1. 准备发布文件
+- 首次遇到推荐清单或 `catalog-version` 变化时，在启动前显示选择窗口。
+- 所有兼容当前平台的推荐模组默认勾选。
+- 云端标记为不兼容当前平台的条目自动取消勾选并禁止勾选。
+- 支持“一键取消所有推荐模组”；一个都不选也允许启动。
+- 关闭选择窗口等同于“按当前勾选继续”，不会取消启动流程。
+- 选择保存在 `.modsync/recommended-selection.properties`；同一清单版本以后直接复用。
+- 取消已安装的推荐模组时，JAR 会安全移出 `mods` 并保存到 `.modsync/backups`，不会永久删除。
+- 清单版本变化会在日志输出旧版本和新版本，然后重新显示选择窗口。
 
-在一份**已测试完成**的客户端中，准备以下内容：
+### 推荐模组（手机端）
 
-```text
-发布目录/
-├─ mods/                     # 要同步给玩家的 .jar
-├─ resourcepacks/            # 可选：要同步的 .zip 资源包
-└─ servers.dat               # 可选：要同步的服务器列表
-```
+- 不显示选择窗口，自动选择当前手机端兼容的全部推荐模组。
+- 同一 `catalog-version` 只自动处理一次。
+- 用户之后删除或损坏推荐模组时，不会在同一清单版本内二次下载；日志会输出名称、文件名、手动下载直链、SHA256 和应放入的 `mods` 路径。
+- `catalog-version` 更新时日志会提示版本变化，并把它视为新的发布批次，获得一次新的自动处理机会。
+- 推荐模组缺失不会阻止启动；必须模组仍严格检查。
 
-不要把玩家的私人 Mod、存档、日志、账号文件或 `options.txt` 放入发布目录。发布前先在独立测试实例启动一次，确认这些 Mod 可以共存。
+## 支持的平台
 
-### 2. 生成清单
+推荐模组兼容性使用四个平台：`windows`、`mac`、`linux`、`mobile`。
 
-构建得到的 JAR 同时也是清单生成器。命令中的路径可使用绝对路径；有空格时请保留双引号。
+只有以下启动器被识别为手机端：
+
+- PojavLauncher
+- MCinaBox
+- FCL（Fold Craft Launcher）
+- Zalith Launcher 2
+
+其他启动器即使运行在 Android、Cacio AWT 或伪装的 Linux 环境中，也按电脑端处理。
+
+## 环境要求
+
+- Java 21 或更新版本
+- Fabric Loader 0.16 或更新版本
+- Minecraft 1.21.11 或更新版本
+- 玩家设备能够直接访问你的 HTTP/HTTPS 文件地址
+
+只分发你有权分发的 Mod 和资源。发布前必须在备用实例验证依赖和兼容性。
+
+## 一、生成必须/推荐 Mod 清单
+
+### 图形界面（推荐）
+
+1. 运行或双击 `MCModSync-1.7.0.jar`。
+2. 点击“选择 mods 目录”，选择已经测试完成的发布目录。
+3. 点击“编辑必须/推荐模组并生成清单”。
+4. 工具读取每个 JAR 的 `fabric.mod.json`，并计算 MD5、SHA256。
+5. 在表格中设置每个条目的类型：
+   - `required`：必须模组；
+   - `recommended`：推荐模组。
+6. 对推荐模组勾选“不兼容的平台”。这是排除列表，不勾选表示所有平台兼容。
+7. 核对显示名称、版本和描述；这些内容会显示在电脑端的启动前选择窗口。
+8. 设置新的“推荐清单版本”。每次改变推荐列表、默认组合、兼容平台、名称、版本或描述时都要增加它。
+9. 点击“生成 v3 清单”，得到 `mods.txt`。
+
+表格中的“所选设为必须模组”“所选设为推荐模组”可以批量修改；没有选择行时会应用到全部条目。
+
+### 命令行
 
 ```powershell
-# 为 mods 目录生成 mods.txt
-java -jar MCModSync-1.6.10.jar "D:\Publish\mods"
-
-# 可选：为一个资源包生成 resourcepacks.txt
-java -jar MCModSync-1.6.10.jar --resourcepack "D:\Publish\resourcepacks\server-pack.zip"
-
-# 可选：为 servers.dat 生成 serverlist.txt
-java -jar MCModSync-1.6.10.jar --serverlist "D:\Publish\servers.dat"
+java -jar MCModSync-1.7.0.jar "D:\Publish\mods" "D:\Publish\mods.txt"
 ```
 
-无参数运行 JAR 会打开图形化清单生成器。每次更换、增删或重命名任何发布文件后，都必须重新生成对应的清单。
+命令行批量生成时所有条目默认是 `required`。需要配置推荐类型、显示信息和不兼容平台时，应使用图形界面编辑器。
 
-生成的清单会记录 MD5：客户端下载完成后会再次校验，内容不一致的文件不会被当作成功同步。
+### v3 清单格式
 
-### 3. 上传到文件托管空间
+一般不要手写清单。排错时可参考：
 
-将文件和对应清单上传到同一公开目录。例如：
+```text
+# mcmod-sync-v3
+# catalog-version=2026-07-29-01
+# SHA256\tMD5\tMod ID\t文件名\t类型\t不兼容平台\t名称\t版本\t描述
+<SHA256>\t<MD5>\tsodium\tsodium.jar\trequired\t-\tSodium\t1.0\t渲染优化
+<SHA256>\t<MD5>\tiris\tiris.jar\trecommended\tmobile,mac\tIris\t1.0\t光影支持
+```
+
+旧 v1/v2 清单仍可读取，但旧格式没有 SHA256、推荐分类和平台信息，所有条目都会按必须模组处理。新发布应使用 v3。
+
+## 二、上传文件
+
+把 `mods.txt` 和其中列出的所有 JAR 放在同一公开目录：
 
 ```text
 https://files.example.com/minecraft/
 ├─ mods.txt
-├─ fabric-api-*.jar
-├─ your-mod-*.jar
-├─ resourcepacks.txt          # 可选
-├─ server-pack.zip            # 可选
-├─ serverlist.txt             # 可选
-└─ servers.dat                # 可选
+├─ fabric-api.jar
+├─ sodium.jar
+└─ iris.jar
 ```
 
-清单中的文件名必须与托管文件名完全一致。客户端会以清单 URL 所在目录为基准解析下载文件，因此将清单与其文件放在同一目录最简单可靠。确认浏览器能直接下载文件，而不是跳转到需要登录、验证码或网页预览的页面。
+客户端下载地址由 `mods.txt` 的目录加文件名组成。链接必须直接返回文件内容，不能要求登录、验证码，也不能返回网页预览。上传更新时应先上传 JAR，确认可下载后再上传新清单，避免客户端读到尚未完整发布的版本。
 
-### 4. 配置玩家客户端
+## 三、配置玩家客户端
 
-1. 将 `MCModSync-1.6.10.jar` 放入玩家客户端实例的 `mods` 目录。
-2. 将仓库中的 [`modsync.properties.example`](modsync.properties.example) 复制到**游戏根目录**（即包含 `mods` 文件夹的目录）。
+1. 将 `MCModSync-1.7.0.jar` 放入实例的 `mods` 目录。
+2. 把 [`modsync.properties.example`](modsync.properties.example) 复制到游戏根目录，即包含 `mods` 的目录。
 3. 将复制件改名为 `modsync.properties`。
-4. 将其中的示例地址改成你的真实地址，例如：
+4. 把占位 URL 改成你的真实地址：
 
 ```properties
 manifest=https://files.example.com/minecraft/mods.txt
 
-syncResourcePacks=true
-resourcePackManifest=https://files.example.com/minecraft/resourcepacks.txt
-
-syncServerList=true
-serverListManifest=https://files.example.com/minecraft/serverlist.txt
+syncResourcePacks=false
+syncServerList=false
 
 strict=true
 requireManifest=true
 ```
 
-`modsync.properties` 是部署私密配置，可能包含内部域名或带签名的 URL；不要把它提交到公开 Git 仓库。项目的 `.gitignore` 已默认忽略此文件。
+不使用资源包或服务器列表时，必须把对应开关设为 `false`。真实 `modsync.properties` 可能包含内部域名或签名 URL，已经被 `.gitignore` 忽略，不要提交到公共仓库。
 
-### 5. 首次验证
+## 卸载或停用
 
-先用一个备用客户端进行以下检查：
+1. 完全退出 Minecraft 和启动器中的 Java 进程。
+2. 从实例的 `mods` 目录移除 `MCModSync-1.7.0.jar`。如果曾使用 `-javaagent:` 方式安装，还必须从启动器的 JVM 参数中删除对应的 `-javaagent:<路径>`。
+3. 删除或移走游戏根目录的 `modsync.properties`。
+4. 先检查 `.modsync/backups` 中是否有需要恢复的推荐模组或旧版本文件；确认不再需要后，才删除整个 `.modsync` 目录。该目录还包含推荐选择状态和日志，提前删除会让仍在运行的 MCModSync 把当前清单当作首次处理。
 
-1. 退出 Minecraft 和启动器，备份整个实例，尤其是 `mods`、`resourcepacks`、`servers.dat`。
-2. 启动客户端，确认能下载所有文件并完成 MD5 校验。
-3. 关闭并再启动一次，确认没有重复下载。
-4. 故意将清单地址改成不存在的地址，确认客户端会安全阻止启动；验证后恢复正确配置。
-5. 再将真实地址指向玩家可访问的网络，才向全体玩家发布。
+卸载 MCModSync 不会自动删除已同步的其他 Mod，也不会自动把备份放回 `mods`。需要恢复某个文件时，应在游戏完全退出后从 `.modsync/backups/<批次>/` 手动移回，并自行确认依赖兼容。整合包维护者还应从分发包和安装脚本中移除 MCModSync，避免下一次更新再次安装。
 
-## 配置项说明
+## 四、资源包和服务器列表（可选）
+
+```powershell
+java -jar MCModSync-1.7.0.jar --resourcepack "D:\Publish\server-pack.zip"
+java -jar MCModSync-1.7.0.jar --serverlist "D:\Publish\servers.dat"
+```
+
+分别生成 `resourcepacks.txt`、`serverlist.txt`。将清单和对应的 ZIP/`servers.dat` 放在同一云端目录，并在配置中启用：
+
+```properties
+syncResourcePacks=true
+resourcePackManifest=https://files.example.com/minecraft/resourcepacks.txt
+
+syncServerList=true
+serverListManifest=https://files.example.com/minecraft/serverlist.txt
+```
+
+本次新增的 SHA256 双校验只应用于 Mod v3 清单；资源包和服务器列表仍使用各自的 MD5 清单格式。
+
+## 五、首次测试
+
+1. 备份整个实例，特别是 `mods`、`resourcepacks`、`servers.dat` 和 `.modsync`。
+2. 用全新电脑端实例启动，确认推荐选择窗口、全选和一键取消可用。
+3. 取消一个已经安装的推荐模组，确认它被移动到 `.modsync/backups`。
+4. 不选择任何推荐模组，确认仍能启动。
+5. 用四种受支持手机启动器中的实际目标启动器测试一次；删除一个已自动安装的推荐模组，再启动并确认只记录手动安装提示、不二次下载。
+6. 修改 `catalog-version`，确认日志出现 `旧版本 -> 新版本`；电脑端应重新询问，手机端应执行新批次的一次自动处理。
+7. 破坏一个必须模组或把必须清单 URL 改成无效地址，确认游戏不会进入，并且启动器显示正常退出而不是崩溃。
+
+## 配置项
 
 | 配置项 | 作用 | 建议 |
 | --- | --- | --- |
-| `manifest` | Mod 清单 URL | 必填，指向 `mods.txt` |
-| `mobileManifest` | 手机启动器的 Mod 清单 URL | 可选；未设置时使用 `manifest` 的默认逻辑 |
+| `manifest` | Mod v3 清单 URL | 必填 |
+| `mobileManifest` | 手机启动器使用的另一份 Mod 清单 | 可选；通常使用同一份即可 |
 | `syncResourcePacks` | 是否同步资源包 | 不使用时设为 `false` |
-| `resourcePackManifest` | 资源包清单 URL | 启用资源包同步时必填 |
+| `resourcePackManifest` | 资源包清单 URL | 启用时必填 |
 | `mobileResourcePackManifest` | 手机端资源包清单 URL | 可选 |
 | `syncServerList` | 是否同步服务器列表 | 不使用时设为 `false` |
-| `serverListManifest` | 服务器列表清单 URL | 启用服务器列表同步时必填 |
-| `strict` | 对服务器移除的已管理 Mod 采取严格策略 | 推荐 `true` |
-| `requireManifest` | 清单不可用时阻止启动 | 推荐且默认 `true` |
+| `serverListManifest` | 服务器列表清单 URL | 启用时必填 |
+| `strict` | 服务器移除旧管理 Mod 时执行严格处理 | 推荐 `true` |
+| `requireManifest` | 清单不可用时阻止启动 | 安全策略固定要求为 `true` |
 | `connectTimeoutSeconds` | 建连超时秒数 | 默认 `15` |
-| `requestTimeoutSeconds` | 单次请求总超时秒数 | 默认 `300` |
-| `maxFileBytes` | 允许下载的单文件最大字节数 | 按你的最大文件调整 |
-| `fileOperationRetries` | 文件被占用时的重试次数 | 默认 `12` |
+| `requestTimeoutSeconds` | 请求总超时秒数 | 默认 `300` |
+| `maxFileBytes` | 单文件最大字节数 | 默认 2 GiB |
+| `fileOperationRetries` | 文件占用时的重试次数 | 默认 `12` |
 
-如果不需要资源包和服务器列表功能，请同时设置 `syncResourcePacks=false`、`syncServerList=false`。不要仅删除 URL 而保留相应同步开关为 `true`，否则启动会因无法获取必需清单而失败。
+## 状态、备份和日志
 
-## 清单格式
+- 推荐选择：`.modsync/recommended-selection.properties`
+- 同步历史：`.modsync/server-manifest.txt`
+- 自动备份：`.modsync/backups/`
+- 无弹窗环境状态：`.modsync/ui-status.txt`
+- 下载进度：`.modsync/progress.log`
+- 退出后更新日志：`.modsync/helper.log`
+- Minecraft 日志：`logs/latest.log`
 
-一般不应手写清单，应使用 JAR 生成器。用于排错时，Mod 清单（v2）的每条记录为：
-
-```text
-# mcmod-sync-v2
-<MD5>\t<fabric-mod-id 或 ->\t<jar 文件名>
-```
-
-资源包清单记录为 `<MD5>\t<zip 文件名>`，服务器列表清单只允许一个 `servers.dat` 条目。文件名不能包含路径分隔符或 Windows 禁用字符。
-
-## 手机端
-
-工具会尝试识别 Zalith、Pojav 等手机运行环境。若手机端与桌面端需要不同的 Mod 或资源包，可配置 `mobileManifest`、`mobileResourcePackManifest`；否则使用同一套清单即可。请务必在目标手机启动器上单独测试，因为 Java 运行时、内存限制和文件权限可能不同。
+不要直接编辑状态文件。需要在测试客户端完全重置推荐选择时，应先备份 `.modsync`，关闭所有游戏/Java 进程，再移走 `recommended-selection.properties`。
 
 ## 常见问题
 
-**启动被阻止，提示无法取得清单**：检查 URL、DNS、HTTPS 证书、访问权限和防火墙；用玩家所在网络的浏览器直接打开 `mods.txt` 验证。
+**清单版本更新但电脑端没有弹窗**：确认 `catalog-version` 确实变化，并检查是否被无弹窗/headless 参数禁用了 Swing。日志会记录平台、版本变化和回退行为。
 
-**每次启动都重新下载**：通常是托管文件内容改变后没有重新生成清单，或 CDN 缓存仍返回旧的清单/文件。重新生成并同时上传文件和清单，必要时刷新 CDN 缓存。
+**手机端删除推荐模组后没有自动恢复**：这是设计行为。同一清单版本只自动处理一次，请按日志中的直链和 SHA256 手动安装；或者发布新的 `catalog-version`。
 
-**下载到 HTML 页面而不是 JAR/ZIP**：文件托管链接不是直链，或需要登录。改用能返回原始文件字节的公开下载 URL。
+**取消推荐模组后找不到文件**：查看 `.modsync/backups`。取消操作是安全移出，不是永久删除。
 
-**想临时关闭某项同步**：在 `modsync.properties` 将相应 `syncResourcePacks` 或 `syncServerList` 设为 `false`，不要删除整个配置文件。
+**启动被阻止**：检查必须清单 URL、HTTPS 证书、直链权限、文件名和双哈希。错误会记录在启动器日志；进程仍以正常退出码结束。
 
-更多操作细节见 [中文使用指南](docs/中文使用指南.md)。
+**每次都重新下载**：通常是云端文件内容与清单哈希不同，或 CDN 混用了新旧版本。重新生成清单并清理 CDN 缓存。
+
+完整运维流程见 [中文使用指南](docs/中文使用指南.md)。
 
 ## 从源码构建
-
-在 Windows 和 Java 21 环境中运行：
 
 ```powershell
 ./build.ps1
 ```
 
-它会编译、运行测试并将 JAR 写入 `build/dist/`。
+脚本会编译、运行全部测试并输出 `build/dist/MCModSync-1.7.0.jar`。
 
 ## 许可证
 

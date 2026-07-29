@@ -102,7 +102,28 @@ final class ModSyncEngine {
 
             ModManifest previousManifest = loadServerHistory(stateDirectory);
             Map<String, Path> local = listLocalMods(modsDirectory);
+            ModManifest fullManifest = desiredManifest;
+            RecommendedSelectionStore.Resolution selection = RecommendedSelectionStore.resolve(
+                    desiredManifest,
+                    gameDirectory,
+                    local,
+                    config.manifestUri(),
+                    RuntimeEnvironment.detect(),
+                    observer,
+                    logger);
+            desiredManifest = selection.effectiveManifest();
             desiredManifest = protectFromSelfDowngrade(desiredManifest, local.values());
+            Set<String> excludedNames = new HashSet<>();
+            Set<String> excludedIds = new HashSet<>();
+            for (ManifestEntry entry : fullManifest.entries()) {
+                if (entry.recommended()
+                        && selection.excludedRecommendedKeys().contains(entry.selectionKey())) {
+                    excludedNames.add(key(entry.fileName()));
+                    if (!entry.modId().isBlank()) {
+                        excludedIds.add(entry.modId());
+                    }
+                }
+            }
             Map<String, ManifestEntry> desiredByName = new HashMap<>();
             Set<String> desiredIds = new HashSet<>();
             for (ManifestEntry desired : desiredManifest.entries()) {
@@ -111,7 +132,7 @@ final class ModSyncEngine {
                     desiredIds.add(desired.modId());
                 }
                 Path existing = local.get(key(desired.fileName()));
-                if (existing == null || !Hashing.md5(existing).equals(desired.md5())) {
+                if (existing == null || !ModManifest.fileMatches(desired, existing)) {
                     logger.accept("便携模式检测到需要下载或替换: " + desired.fileName());
                     return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
                 }
@@ -133,6 +154,11 @@ final class ModSyncEngine {
                     continue;
                 }
                 String localModId = FabricModMetadata.readModId(localEntry.getValue());
+                if (excludedNames.contains(localEntry.getKey()) || excludedIds.contains(localModId)) {
+                    logger.accept("便携模式检测到需要移出已取消/不兼容的推荐模组: "
+                            + localEntry.getValue().getFileName());
+                    return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
+                }
                 if (localModId.equals("mcmodsync") && !desiredIds.contains("mcmodsync")) {
                     continue;
                 }
@@ -228,7 +254,29 @@ final class ModSyncEngine {
         Map<String, ManifestEntry> desiredByModId = new HashMap<>();
         List<DownloadPlan> downloads = new ArrayList<>();
         int unchanged = 0;
+        ModManifest fullManifest = manifest;
+        RecommendedSelectionStore.Resolution selection = RecommendedSelectionStore.resolve(
+                fullManifest,
+                config.gameDirectory(),
+                local,
+                config.manifestUri(),
+                RuntimeEnvironment.detect(),
+                observer,
+                logger);
+        manifest = selection.effectiveManifest();
         manifest = protectFromSelfDowngrade(manifest, local.values());
+
+        Map<String, ManifestEntry> excludedRecommendedByName = new HashMap<>();
+        Map<String, ManifestEntry> excludedRecommendedByModId = new HashMap<>();
+        for (ManifestEntry entry : fullManifest.entries()) {
+            if (!entry.recommended() || !selection.excludedRecommendedKeys().contains(entry.selectionKey())) {
+                continue;
+            }
+            excludedRecommendedByName.put(key(entry.fileName()), entry);
+            if (!entry.modId().isBlank()) {
+                excludedRecommendedByModId.put(entry.modId(), entry);
+            }
+        }
 
         for (ManifestEntry entry : manifest.entries()) {
             String key = key(entry.fileName());
@@ -237,7 +285,7 @@ final class ModSyncEngine {
                 desiredByModId.put(entry.modId(), entry);
             }
             Path existing = local.get(key);
-            if (existing != null && Hashing.md5(existing).equals(entry.md5())) {
+            if (existing != null && ModManifest.fileMatches(entry, existing)) {
                 unchanged++;
             } else {
                 downloads.add(new DownloadPlan(entry, existing));
@@ -246,6 +294,7 @@ final class ModSyncEngine {
 
         List<Path> versionReplaced = new ArrayList<>();
         List<Path> serverRemoved = new ArrayList<>();
+        List<Path> deselectedRecommended = new ArrayList<>();
         List<Path> clientAdded = new ArrayList<>();
         List<Path> unknownWithoutSnapshot = new ArrayList<>();
         for (Map.Entry<String, Path> entry : local.entrySet()) {
@@ -255,7 +304,10 @@ final class ModSyncEngine {
                 if (modId.isEmpty() && previousEntry != null) {
                     modId = previousEntry.modId();
                 }
-                if (!modId.isEmpty() && desiredByModId.containsKey(modId)) {
+                if (excludedRecommendedByName.containsKey(entry.getKey())
+                        || (!modId.isEmpty() && excludedRecommendedByModId.containsKey(modId))) {
+                    deselectedRecommended.add(entry.getValue());
+                } else if (!modId.isEmpty() && desiredByModId.containsKey(modId)) {
                     versionReplaced.add(entry.getValue());
                 } else if (modId.equals("mcmodsync")) {
                     // Never remove the updater merely because an older cloud
@@ -279,6 +331,7 @@ final class ModSyncEngine {
                 String.CASE_INSENSITIVE_ORDER);
         versionReplaced.sort(fileNameOrder);
         serverRemoved.sort(fileNameOrder);
+        deselectedRecommended.sort(fileNameOrder);
         clientAdded.sort(fileNameOrder);
         unknownWithoutSnapshot.sort(fileNameOrder);
 
@@ -297,6 +350,7 @@ final class ModSyncEngine {
         List<Path> extras = new ArrayList<>();
         extras.addAll(versionReplaced);
         extras.addAll(rejectedUnknown);
+        extras.addAll(deselectedRecommended);
         List<Path> retainedServerRemoved = new ArrayList<>();
         if (!serverRemoved.isEmpty() && config.strict()) {
             SyncObserver.RemovalDecision decision = observer.decideServerRemoved(
@@ -313,18 +367,28 @@ final class ModSyncEngine {
         if (!clientAdded.isEmpty()) {
             logger.accept("检测到 " + clientAdded.size() + " 个用户客户端 Mod，将全部保留。");
         }
+        if (!deselectedRecommended.isEmpty()) {
+            logger.accept("推荐模组已取消选择或与当前平台不兼容，将自动移出并备份: "
+                    + deselectedRecommended.stream()
+                            .map(path -> path.getFileName().toString())
+                            .reduce((left, right) -> left + ", " + right)
+                            .orElse(""));
+        }
 
         if (downloads.isEmpty() && extras.isEmpty()) {
             refreshAndVerifyLocalSnapshot(modsDirectory);
             persistServerHistory(manifest, stateDirectory, modsDirectory);
+            RecommendedSelectionStore.markMobileCompleted(selection);
             logger.accept("服务器管理的 Mod 与云端清单一致，共 " + unchanged + " 个文件；客户端 Mod 已保留。");
             return new SyncResult(SyncResult.Status.UNCHANGED, 0, 0, unchanged);
         }
 
         logger.accept("需要下载 " + downloads.size() + " 个文件，自动替换旧版本 " + versionReplaced.size()
                 + " 个，首次确认非纯客户端 Mod " + rejectedUnknown.size()
+                + " 个，取消/不兼容推荐模组 " + deselectedRecommended.size()
                 + " 个，用户选择移出服务器已移除文件 "
-                + (extras.size() - versionReplaced.size() - rejectedUnknown.size()) + " 个。");
+                + (extras.size() - versionReplaced.size() - rejectedUnknown.size()
+                        - deselectedRecommended.size()) + " 个。");
         observer.beforeDownload(
                 downloads.stream().map(plan -> plan.entry().fileName()).toList(),
                 versionReplaced.stream().map(path -> path.getFileName().toString()).toList(),
@@ -394,6 +458,7 @@ final class ModSyncEngine {
             observer.phaseChanged("正在生成并校验本地 Mod 清单……");
             refreshAndVerifyLocalSnapshot(modsDirectory);
             persistServerHistory(manifest, stateDirectory, modsDirectory);
+            RecommendedSelectionStore.markMobileCompleted(selection);
         } finally {
             deleteTreeBestEffort(stagingDirectory);
         }
@@ -416,9 +481,15 @@ final class ModSyncEngine {
         for (ManifestEntry entry : manifest.entries()) {
             if (isOutdatedSelfEntry(entry, newest.version())) {
                 effective.add(new ManifestEntry(
+                        Hashing.sha256(newest.path()),
                         Hashing.md5(newest.path()),
                         "mcmodsync",
-                        newest.path().getFileName().toString()));
+                        newest.path().getFileName().toString(),
+                        entry.kind(),
+                        entry.incompatiblePlatforms(),
+                        entry.displayName(),
+                        newest.version(),
+                        entry.description()));
                 protectedEntry = true;
                 logger.accept("忽略云端较旧的 MCModSync " + versionIn(entry.fileName())
                         + "；保留本地 " + newest.version() + "，防止同步器降级");
@@ -426,7 +497,7 @@ final class ModSyncEngine {
                 effective.add(entry);
             }
         }
-        return protectedEntry ? ModManifest.fromEntries(effective) : manifest;
+        return protectedEntry ? manifest.withEntries(effective) : manifest;
     }
 
     private static LocalSelf newestLocalSync(Iterable<Path> localFiles) {
@@ -519,6 +590,11 @@ final class ModSyncEngine {
             Path stateDirectory,
             Path modsDirectory) throws IOException {
         Path historyPath = stateDirectory.resolve("server-manifest.txt");
+        if (manifest.entries().isEmpty()) {
+            Files.deleteIfExists(historyPath);
+            logger.accept("当前没有云端管理的已选 Mod；已清除旧的服务器清单历史。");
+            return;
+        }
         writeSnapshotAtomically(manifest, historyPath);
         ModManifest saved = ModManifest.parse(Files.readString(historyPath, StandardCharsets.UTF_8));
         saved.verifyManagedFiles(modsDirectory);
@@ -531,7 +607,7 @@ final class ModSyncEngine {
         ModManifest serverHistory = loadServerHistory(stateDirectory);
         if (serverHistory != null) {
             try {
-                serverHistory.verifyManagedFiles(modsDirectory);
+                serverHistory.requiredOnly().verifyManagedFiles(modsDirectory);
             } catch (IOException exception) {
                 logger.accept("警告：服务器管理的本地 Mod 校验失败，将尝试使用云端清单修复。原因: "
                         + exception.getMessage());
@@ -544,10 +620,10 @@ final class ModSyncEngine {
             writeSnapshotAtomically(generated, snapshotPath);
             ModManifest.parse(Files.readString(snapshotPath, StandardCharsets.UTF_8)).verifySnapshot(modsDirectory);
             if (existed) {
-                logger.accept("本地 mods.txt 已按当前服务器 Mod 与客户端自定义 Mod 重建，MD5 校验通过。");
+                logger.accept("本地 mods.txt 已按当前服务器 Mod 与客户端自定义 Mod 重建，MD5/SHA256 校验通过。");
                 return new LocalSnapshot(LocalSnapshotStatus.EXISTING_VALID, "");
             }
-            logger.accept("本地 mods.txt 不存在，已自动生成并完成 MD5 校验: " + snapshotPath);
+            logger.accept("本地 mods.txt 不存在，已自动生成并完成 MD5/SHA256 校验: " + snapshotPath);
             return new LocalSnapshot(LocalSnapshotStatus.GENERATED_VALID, "");
         } catch (IOException exception) {
             if (isModsDirectoryEmpty(modsDirectory)) {
@@ -559,11 +635,16 @@ final class ModSyncEngine {
     }
 
     private void refreshAndVerifyLocalSnapshot(Path modsDirectory) throws IOException {
-        ModManifest snapshot = ModManifest.scan(modsDirectory);
         Path snapshotPath = modsDirectory.resolve("mods.txt");
+        if (isModsDirectoryEmpty(modsDirectory)) {
+            Files.deleteIfExists(snapshotPath);
+            logger.accept("最终 mods 目录为空；未生成本地 mods.txt，允许在不选择推荐模组时继续启动。");
+            return;
+        }
+        ModManifest snapshot = ModManifest.scan(modsDirectory);
         writeSnapshotAtomically(snapshot, snapshotPath);
         ModManifest.parse(Files.readString(snapshotPath, StandardCharsets.UTF_8)).verifySnapshot(modsDirectory);
-        logger.accept("本地 mods.txt 已按最终 Mod 组合更新并校验通过。");
+        logger.accept("本地 mods.txt 已按最终 Mod 组合更新并完成 MD5/SHA256 校验。");
     }
 
     private void writeSnapshotAtomically(ModManifest manifest, Path snapshotPath) throws IOException {
@@ -637,7 +718,7 @@ final class ModSyncEngine {
                 movedOriginals.add(new MovedOriginal(original, temporary));
             }
 
-            // 只有所有旧文件都可移动后，才安装已完成 MD5 校验的新文件。
+            // 只有所有旧文件都可移动后，才安装已完成 MD5/SHA256 校验的新文件。
             for (DownloadPlan plan : downloads) {
                 Path target = modsDirectory.resolve(plan.entry().fileName()).normalize();
                 ensureDirectChild(modsDirectory, target);
@@ -702,7 +783,7 @@ final class ModSyncEngine {
                 config.manifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.6.10",
+                "MCModSync/1.7.0",
                 "Mod 清单",
                 logger);
         return decodeUtf8Strict(bytes);
@@ -717,7 +798,7 @@ final class ModSyncEngine {
         URI fileUri = config.manifestUri().resolve("./" + Rfc3986.encodePathSegment(entry.fileName()));
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.6.10")
+                .header("User-Agent", "MCModSync/1.7.0")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -773,7 +854,7 @@ final class ModSyncEngine {
         Path staged = stagingDirectory.resolve(plan.entry().fileName() + ".part");
         downloadMod(plan.entry(), staged, fileIndex, fileCount, tracker);
         if (!parallel) {
-            observer.phaseChanged("正在校验 MD5：[" + fileIndex + "/" + fileCount + "] "
+            observer.phaseChanged("正在校验 MD5/SHA256：[" + fileIndex + "/" + fileCount + "] "
                     + plan.entry().fileName());
         }
         String actualMd5 = Hashing.md5(staged);
@@ -781,6 +862,14 @@ final class ModSyncEngine {
             throw new IOException(
                     "下载文件 MD5 不符: " + plan.entry().fileName()
                             + "，期望 " + plan.entry().md5() + "，实际 " + actualMd5);
+        }
+        if (!plan.entry().sha256().isBlank()) {
+            String actualSha256 = Hashing.sha256(staged);
+            if (!actualSha256.equals(plan.entry().sha256())) {
+                throw new IOException(
+                        "下载文件 SHA256 不符: " + plan.entry().fileName()
+                                + "，期望 " + plan.entry().sha256() + "，实际 " + actualSha256);
+            }
         }
         plan.stagedFile(staged);
     }
@@ -792,7 +881,7 @@ final class ModSyncEngine {
                     "./" + Rfc3986.encodePathSegment(plan.entry().fileName()));
             HttpRequest request = HttpRequest.newBuilder(fileUri)
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.6.10")
+                    .header("User-Agent", "MCModSync/1.7.0")
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {

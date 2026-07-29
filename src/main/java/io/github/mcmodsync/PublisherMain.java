@@ -25,6 +25,8 @@ import java.awt.Insets;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
 
 public final class PublisherMain {
     private PublisherMain() {
@@ -52,7 +54,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.6.10");
+            System.out.println("MCModSync 1.7.0");
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--serverlist")) {
@@ -153,7 +155,7 @@ public final class PublisherMain {
 
         JTextField directoryField = new JTextField();
         JButton browseButton = new JButton("选择 mods 目录");
-        JButton generateButton = new JButton("核对 MD5 并生成 mods.txt");
+        JButton generateButton = new JButton("编辑必须/推荐模组并生成清单");
         JButton resourcePackButton = new JButton("为资源包生成 resourcepacks.txt…");
         JButton serverListButton = new JButton("为服务器列表生成 serverlist.txt…");
         JTextArea log = new JTextArea();
@@ -216,25 +218,35 @@ public final class PublisherMain {
             }
             Path output = modsDirectory.resolve("mods.txt");
             generateButton.setEnabled(false);
-            log.append("\n开始计算 MD5：" + modsDirectory + "\n");
-            new SwingWorker<Integer, Void>() {
+            log.append("\n开始读取 Mod 信息并计算 MD5/SHA256：" + modsDirectory + "\n");
+            new SwingWorker<ModManifest, Void>() {
                 @Override
-                protected Integer doInBackground() throws Exception {
-                    return generate(modsDirectory, output);
+                protected ModManifest doInBackground() throws Exception {
+                    ModManifest scanned = ModManifest.scan(modsDirectory);
+                    scanned.ensureUniqueModIds();
+                    return mergeExistingCatalog(scanned, output);
                 }
 
                 @Override
                 protected void done() {
                     generateButton.setEnabled(true);
                     try {
-                        int count = get();
+                        ModManifest scanned = get();
+                        var edited = CatalogEditorDialog.edit(frame, scanned);
+                        if (edited.isEmpty()) {
+                            log.append("已取消生成 Mod 清单。\n");
+                            return;
+                        }
+                        edited.get().write(output);
+                        int count = edited.get().entries().size();
                         log.append("完成，共 " + count + " 个 Mod。\n清单：" + output + "\n");
                         Object[] options = Desktop.isDesktopSupported()
                                 ? new Object[]{"打开所在目录", "关闭"}
                                 : new Object[]{"关闭"};
                         int choice = JOptionPane.showOptionDialog(
                                 frame,
-                                "mods.txt 已生成，共 " + count + " 个 Mod。",
+                                "v3 mods.txt 已生成，共 " + count + " 个 Mod。\n"
+                                        + "已包含 MD5、SHA256、必须/推荐分类和平台兼容信息。",
                                 "生成成功",
                                 JOptionPane.DEFAULT_OPTION,
                                 JOptionPane.INFORMATION_MESSAGE,
@@ -359,6 +371,47 @@ public final class PublisherMain {
         });
 
         frame.setVisible(true);
+    }
+
+    private static ModManifest mergeExistingCatalog(ModManifest scanned, Path output) {
+        if (!Files.isRegularFile(output)) {
+            return scanned;
+        }
+        try {
+            ModManifest previous = ModManifest.parse(Files.readString(output));
+            if (!previous.supportsRecommendations()) {
+                return scanned;
+            }
+            Map<String, ManifestEntry> byId = new HashMap<>();
+            Map<String, ManifestEntry> byName = new HashMap<>();
+            for (ManifestEntry entry : previous.entries()) {
+                if (!entry.modId().isBlank()) {
+                    byId.put(entry.modId(), entry);
+                }
+                byName.put(entry.fileName().toLowerCase(java.util.Locale.ROOT), entry);
+            }
+            var merged = scanned.entries().stream().map(current -> {
+                ManifestEntry old = !current.modId().isBlank()
+                        ? byId.get(current.modId())
+                        : byName.get(current.fileName().toLowerCase(java.util.Locale.ROOT));
+                if (old == null) {
+                    return current;
+                }
+                return new ManifestEntry(
+                        current.sha256(),
+                        current.md5(),
+                        current.modId(),
+                        current.fileName(),
+                        old.kind(),
+                        old.incompatiblePlatforms(),
+                        old.displayName(),
+                        current.version().isBlank() ? old.version() : current.version(),
+                        old.description().isBlank() ? current.description() : old.description());
+            }).toList();
+            return ModManifest.fromEntries(previous.catalogVersion(), merged);
+        } catch (IOException | IllegalArgumentException exception) {
+            return scanned;
+        }
     }
 
     private static void printUsage() {

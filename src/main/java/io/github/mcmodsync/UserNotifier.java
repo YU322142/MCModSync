@@ -3,6 +3,7 @@ package io.github.mcmodsync;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -16,13 +17,20 @@ import javax.swing.WindowConstants;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.FlowLayout;
 import java.awt.GraphicsEnvironment;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.lang.reflect.InvocationTargetException;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -224,6 +232,120 @@ final class UserNotifier implements SyncObserver {
     }
 
     @Override
+    public Set<String> chooseRecommendedMods(RecommendedSelectionRequest request) throws IOException {
+        if (mobileRuntime) {
+            return request.initiallySelected();
+        }
+        if (!dialogsAvailable()) {
+            String detail = "当前桌面环境无法显示选择窗口，将采用所有兼容推荐模组。清单版本: "
+                    + request.catalogVersion();
+            reportPhase("推荐模组使用默认选择", detail);
+            System.out.println("[MCModSync] " + detail);
+            return request.initiallySelected();
+        }
+
+        AtomicReference<Set<String>> selected = new AtomicReference<>();
+        runOnUiThread(() -> selected.set(showRecommendedSelectionDialog(request)));
+        return selected.get() == null ? request.initiallySelected() : selected.get();
+    }
+
+    private static Set<String> showRecommendedSelectionDialog(RecommendedSelectionRequest request) {
+        Map<ManifestEntry, JCheckBox> checkboxes = new LinkedHashMap<>();
+        JPanel list = new JPanel();
+        list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
+        list.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
+
+        for (ManifestEntry entry : request.recommendedMods()) {
+            boolean compatible = entry.compatibleWith(request.platform());
+            JCheckBox checkbox = new JCheckBox();
+            checkbox.setSelected(compatible && request.initiallySelected().contains(entry.selectionKey()));
+            checkbox.setEnabled(compatible);
+            String version = entry.version().isBlank() ? "未知版本" : entry.version();
+            String description = entry.description().isBlank() ? "无描述" : escapeHtml(entry.description());
+            String compatibility = compatible
+                    ? "兼容当前平台"
+                    : "不兼容 " + request.platform().displayName() + "，禁止选择";
+            checkbox.setText("<html><b>" + escapeHtml(entry.displayName()) + "</b>  "
+                    + escapeHtml(version) + "<br>"
+                    + "<span style='color:#555'>" + description + "</span><br>"
+                    + "<span style='color:" + (compatible ? "#267a35" : "#b42318") + "'>"
+                    + compatibility + "</span>  <span style='color:#777'>" + escapeHtml(entry.fileName())
+                    + "</span><br><br></html>");
+            list.add(checkbox);
+            checkboxes.put(entry, checkbox);
+        }
+
+        JLabel heading = new JLabel("<html><b>选择本客户端要安装的推荐模组</b><br>"
+                + "平台：" + request.platform().displayName()
+                + "　推荐清单：" + escapeHtml(request.catalogVersion())
+                + (request.previousCatalogVersion().isBlank()
+                        ? ""
+                        : "（原版本 " + escapeHtml(request.previousCatalogVersion()) + "）")
+                + "<br>关闭窗口也会按照当前勾选状态继续同步。</html>");
+        heading.setBorder(BorderFactory.createEmptyBorder(12, 12, 8, 12));
+
+        JButton selectCompatible = new JButton("选择全部兼容模组");
+        JButton clear = new JButton("一键取消所有推荐模组");
+        JButton continueButton = new JButton("按当前选择继续");
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        actions.add(selectCompatible);
+        actions.add(clear);
+        actions.add(continueButton);
+
+        JPanel content = new JPanel(new BorderLayout());
+        content.add(heading, BorderLayout.NORTH);
+        JScrollPane scroll = new JScrollPane(list);
+        scroll.setPreferredSize(new Dimension(760, 480));
+        content.add(scroll, BorderLayout.CENTER);
+        content.add(actions, BorderLayout.SOUTH);
+
+        JDialog owner = activeDownloadDialog != null && activeDownloadDialog.isDisplayable()
+                ? activeDownloadDialog
+                : null;
+        JDialog dialog = new JDialog(owner, "MCModSync 推荐模组选择", true);
+        dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+        dialog.setAlwaysOnTop(true);
+        dialog.setAutoRequestFocus(true);
+        dialog.add(content);
+        dialog.pack();
+        dialog.setLocationRelativeTo(null);
+
+        AtomicReference<Set<String>> result = new AtomicReference<>();
+        Runnable finish = () -> {
+            Set<String> current = new LinkedHashSet<>();
+            for (Map.Entry<ManifestEntry, JCheckBox> item : checkboxes.entrySet()) {
+                if (item.getValue().isEnabled() && item.getValue().isSelected()) {
+                    current.add(item.getKey().selectionKey());
+                }
+            }
+            result.set(Set.copyOf(current));
+            dialog.dispose();
+        };
+        selectCompatible.addActionListener(event -> checkboxes.values().forEach(box -> {
+            if (box.isEnabled()) {
+                box.setSelected(true);
+            }
+        }));
+        clear.addActionListener(event -> checkboxes.values().forEach(box -> box.setSelected(false)));
+        continueButton.addActionListener(event -> finish.run());
+        dialog.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent event) {
+                finish.run();
+            }
+        });
+        dialog.setVisible(true);
+        return result.get() == null ? request.initiallySelected() : result.get();
+    }
+
+    private static String escapeHtml(String value) {
+        return value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;");
+    }
+
+    @Override
     public void beforeDownload(
             List<String> downloads,
             List<String> replacedOldVersions,
@@ -395,7 +517,7 @@ final class UserNotifier implements SyncObserver {
                     activePlanArea.setText("下载/替换：" + downloaded + "\n"
                             + "移入备份：" + quarantined + "\n"
                             + "无需更改：" + unchanged + "\n\n"
-                            + "所有下载文件均已通过 MD5 校验并安全提交。\n"
+                            + "Mod 已通过 MD5/SHA256，资源包和服务器列表已通过各自清单校验并安全提交。\n"
                             + "本窗口和下载辅助 Java 进程将在 5 秒后自动关闭。\n"
                             + "之后请回到启动器再点击一次启动；下次校验一致后会直接进入游戏。");
                     activePlanArea.setCaretPosition(0);
@@ -531,7 +653,7 @@ final class UserNotifier implements SyncObserver {
         } else {
             retainedClientMods.forEach(name -> result.append("  * ").append(name).append('\n'));
         }
-        result.append("\n正在自动下载。所有文件都会通过 MD5 校验后才提交，无需确认。");
+        result.append("\n正在自动下载。Mod 会同时通过 MD5/SHA256 校验后才提交，无需确认。");
         return result.toString();
     }
 

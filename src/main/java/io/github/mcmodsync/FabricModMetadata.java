@@ -25,6 +25,18 @@ final class FabricModMetadata {
         return readTopLevelString(jar, "version");
     }
 
+    static String readName(Path jar) {
+        return readTopLevelString(jar, "name");
+    }
+
+    static String readDescription(Path jar) {
+        return readTopLevelString(jar, "description")
+                .replace('\r', ' ')
+                .replace('\n', ' ')
+                .replace('\t', ' ')
+                .strip();
+    }
+
     private static String readTopLevelString(Path jar, String field) {
         try (ZipFile zip = new ZipFile(jar.toFile())) {
             ZipEntry entry = zip.getEntry("fabric.mod.json");

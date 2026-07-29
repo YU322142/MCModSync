@@ -132,27 +132,30 @@ final class RuntimeEnvironment {
                 || !isBlank(env.get("POJAV_HOME"))
                 || !isBlank(properties.get("pojav.path.minecraft"))
                 || !isBlank(properties.get("pojav.path.private.account"))
-                || containsAny(pojavMinecraft, "pojav", "zalith", "android/data");
+                || containsAny(launcherLower, "pojavlauncher", "pojav launcher")
+                || containsAny(pojavMinecraft, "pojav");
         boolean zalithFingerprint = !isBlank(env.get("ZALITH_VERSION_CODE"))
-                || containsAny(launcherLower, "zalith")
-                || containsAny(javaHome, "zalithlauncher")
-                || containsAny(userHome, "zalithlauncher")
-                || containsAny(libraryPath, "zalithlauncher")
-                || containsAny(classPath, "zalithlauncher")
-                || containsAny(lower(env.get("HOME")), "zalithlauncher")
-                || containsAny(lower(env.get("MOD_ANDROID_RUNTIME")), "zalith");
+                || containsAny(launcherLower, "zalith launcher 2", "zalithlauncher2", "zalithlauncher.v2")
+                || containsAny(javaHome, "zalithlauncher.v2")
+                || containsAny(userHome, "zalithlauncher.v2")
+                || containsAny(libraryPath, "zalithlauncher.v2")
+                || containsAny(classPath, "zalithlauncher.v2")
+                || containsAny(lower(env.get("HOME")), "zalithlauncher.v2");
         boolean foldCraftFingerprint = !isBlank(env.get("FCL_HOME"))
                 || containsAny(launcherLower, "foldcraft", "fcl")
                 || containsAny(javaHome, "foldcraftlauncher", "fcl");
+        boolean mcinaboxFingerprint = containsAny(launcherLower, "mcinabox")
+                || containsAny(javaHome, "mcinabox")
+                || containsAny(userHome, "mcinabox")
+                || containsAny(libraryPath, "mcinabox")
+                || containsAny(classPath, "mcinabox")
+                || containsAny(lower(env.get("HOME")), "mcinabox");
         boolean awtStubFingerprint = !isBlank(env.get("AWTSTUB_WIDTH"))
                 || !isBlank(env.get("AWTSTUB_HEIGHT"))
                 || !isBlank(properties.get("glfwstub.windowWidth"));
         boolean cacioAwt = containsAny(toolkit, "cacio")
                 || containsAny(graphicsEnv, "cacio")
                 || containsAny(classPath, "cacio");
-        boolean mobileLauncherName = containsAny(
-                launcherLower,
-                "zalith", "pojav", "foldcraft", "boardwalk", "hmcl-pe", "holy-ml", "hmcl pe");
         boolean androidRuntimeMod = !isBlank(env.get("MOD_ANDROID_RUNTIME"));
         boolean forkedGuiDisabled = "true".equalsIgnoreCase(properties.get("loader.disable_forked_guis"));
 
@@ -174,14 +177,14 @@ final class RuntimeEnvironment {
         if (foldCraftFingerprint) {
             signals.add("Fold Craft / FCL fingerprint matched");
         }
+        if (mcinaboxFingerprint) {
+            signals.add("MCinaBox fingerprint matched");
+        }
         if (awtStubFingerprint) {
             signals.add("AWT/GLFW stub window metrics present");
         }
         if (cacioAwt) {
             signals.add("Cacio AWT toolkit (mobile pseudo-desktop)");
-        }
-        if (mobileLauncherName) {
-            signals.add("launcher brand=" + launcherBrand);
         }
         if (androidRuntimeMod) {
             signals.add("MOD_ANDROID_RUNTIME set");
@@ -190,17 +193,13 @@ final class RuntimeEnvironment {
             signals.add("loader.disable_forked_guis=true");
         }
 
+        // Mobile behavior is intentionally restricted to the four supported
+        // launchers. Generic Android/Cacio signals alone stay on desktop logic.
         boolean mobile = forceMobile
-                || androidOsName
-                || androidOsVersion
-                || androidPath
                 || pojavFingerprint
                 || zalithFingerprint
                 || foldCraftFingerprint
-                || awtStubFingerprint
-                || cacioAwt
-                || mobileLauncherName
-                || androidRuntimeMod;
+                || mcinaboxFingerprint;
 
         boolean headlessGraphics;
         try {
@@ -233,8 +232,9 @@ final class RuntimeEnvironment {
         String resolvedLauncher = !isBlank(launcherBrand)
                 ? launcherBrand
                 : (zalithFingerprint ? "Zalith Launcher"
-                        : pojavFingerprint ? "Pojav-compatible"
+                        : pojavFingerprint ? "PojavLauncher"
                         : foldCraftFingerprint ? "Fold Craft Launcher"
+                        : mcinaboxFingerprint ? "MCinaBox"
                         : mobile ? "mobile" : "desktop");
 
         for (Map.Entry<String, String> entry : env.entrySet()) {

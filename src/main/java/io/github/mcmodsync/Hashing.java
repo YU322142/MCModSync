@@ -32,11 +32,37 @@ final class Hashing {
         return hex(digest.digest(bytes));
     }
 
+    static String sha256(Path path) throws IOException {
+        MessageDigest digest = sha256Digest();
+        byte[] buffer = new byte[64 * 1024];
+        try (InputStream input = Files.newInputStream(path)) {
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                if (read > 0) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+        }
+        return hex(digest.digest());
+    }
+
+    static String sha256(byte[] bytes) {
+        return hex(sha256Digest().digest(bytes));
+    }
+
     private static MessageDigest md5Digest() {
         try {
             return MessageDigest.getInstance("MD5");
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException("当前 Java 环境不支持 MD5", exception);
+        }
+    }
+
+    private static MessageDigest sha256Digest() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前 Java 环境不支持 SHA-256", exception);
         }
     }
 

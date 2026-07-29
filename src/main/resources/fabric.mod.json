@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "mcmodsync",
-  "version": "1.6.10",
+  "version": "1.7.0",
   "name": "MCModSync",
-  "description": "在游戏启动时根据云端 MD5 清单同步 Mod、资源包和服务器列表。",
+  "description": "启动前按云端清单同步必须/推荐 Mod、资源包和服务器列表，并校验 MD5/SHA256。",
   "authors": ["MCModSync Contributors"],
   "environment": "client",
   "entrypoints": {

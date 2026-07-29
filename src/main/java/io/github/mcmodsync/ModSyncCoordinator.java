@@ -2,6 +2,7 @@ package io.github.mcmodsync;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 
 final class ModSyncCoordinator {
@@ -9,6 +10,11 @@ final class ModSyncCoordinator {
     }
 
     static SyncProbeResult probe(ModSyncConfig config, Consumer<String> logger)
+            throws IOException, InterruptedException {
+        return probe(config, logger, SyncObserver.NONE);
+    }
+
+    static SyncProbeResult probe(ModSyncConfig config, Consumer<String> logger, SyncObserver observer)
             throws IOException, InterruptedException {
         boolean skippedOffline = false;
         List<BakaXLLayout.Target> targets = BakaXLLayout.syncTargets(config.gameDirectory());
@@ -18,7 +24,9 @@ final class ModSyncCoordinator {
                     + target.label() + ": " + target.gameDirectory());
             SyncProbeResult result = new ModSyncEngine(
                     config.forGameDirectory(target.gameDirectory()),
-                    prefixedLogger(logger, target.label())).probeWithoutJarChanges();
+                    prefixedLogger(logger, target.label()),
+                    forwardingObserver(observer, target.label() + " / Mod", index + 1, targets.size()))
+                    .probeWithoutJarChanges();
             if (result.status() == SyncProbeResult.Status.CHANGES_REQUIRED) {
                 return result;
             }
@@ -160,6 +168,11 @@ final class ModSyncCoordinator {
             @Override
             public UnknownModDecision decideUnknownClientMod(String fileName) throws IOException {
                 return delegate.decideUnknownClientMod(fileName);
+            }
+
+            @Override
+            public Set<String> chooseRecommendedMods(RecommendedSelectionRequest request) throws IOException {
+                return delegate.chooseRecommendedMods(request);
             }
 
             @Override

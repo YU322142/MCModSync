@@ -13,7 +13,7 @@ public final class ModSyncAgent {
 
     public static void premain(String agentArguments, Instrumentation instrumentation) {
         System.setProperty("modsync.agent.active", "true");
-        log("MCModSync 1.6.10 启动前校验开始");
+        log("MCModSync 1.7.0 启动前校验开始");
         try {
             ModSyncConfig config = ModSyncConfig.fromEnvironment(agentArguments);
             System.setProperty("modsync.gameDir", config.gameDirectory().toString());
@@ -36,7 +36,11 @@ public final class ModSyncAgent {
             System.err.println("[MCModSync] 致命错误：无法保证同步内容完整，Minecraft 启动已中止。");
             failure.printStackTrace(System.err);
             UserNotifier.showFatalError(failure);
-            throw new RuntimeException("MCModSync 启动前同步失败", failure);
+            releaseGuard();
+            if (Boolean.getBoolean("modsync.disableProcessExit")) {
+                throw new RuntimeException("MCModSync 已阻止启动；测试模式禁用了正常退出", failure);
+            }
+            System.exit(0);
         }
     }
 
