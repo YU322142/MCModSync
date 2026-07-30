@@ -22,6 +22,10 @@ enum ClientPlatform {
         return displayName;
     }
 
+    String displayName(DisplayLanguage language) {
+        return this == MOBILE ? language.text("手机端", "Mobile") : displayName;
+    }
+
     static ClientPlatform current(RuntimeEnvironment environment) {
         if (environment.mobile()) {
             return MOBILE;

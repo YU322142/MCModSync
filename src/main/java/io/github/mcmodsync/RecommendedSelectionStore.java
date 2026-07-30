@@ -43,6 +43,7 @@ final class RecommendedSelectionStore {
         }
 
         ClientPlatform platform = ClientPlatform.current(environment);
+        DisplayLanguage language = DisplayLanguage.detect(gameDirectory);
         Path statePath = statePath(gameDirectory);
         SavedSelection saved = load(statePath);
         boolean sameCatalog = saved != null
@@ -50,9 +51,14 @@ final class RecommendedSelectionStore {
                 && saved.platform() == platform
                 && saved.mobile() == environment.mobile();
         if (saved != null && !saved.catalogVersion().equals(manifest.catalogVersion())) {
-            logger.accept("推荐清单版本更新: " + saved.catalogVersion() + " -> " + manifest.catalogVersion());
+            logger.accept(language.text(
+                    "推荐清单版本更新: ",
+                    "Recommended catalog version updated: ")
+                    + saved.catalogVersion() + " -> " + manifest.catalogVersion());
         } else if (saved == null) {
-            logger.accept("首次读取推荐清单，版本: " + manifest.catalogVersion());
+            logger.accept(language.text(
+                    "首次读取推荐清单，版本: ",
+                    "First recommended catalog, version: ") + manifest.catalogVersion());
         }
 
         Set<String> compatibleDefaults = new LinkedHashSet<>();
@@ -96,7 +102,11 @@ final class RecommendedSelectionStore {
             mobileCompleted = false;
             save(statePath, new SavedSelection(
                     manifest.catalogVersion(), platform, true, false, selected));
-            logger.accept("手机端推荐清单将自动处理一次，共 " + selected.size() + " 个兼容推荐模组");
+            logger.accept(language.text(
+                    "手机端推荐清单将自动处理一次，共 ",
+                    "The mobile recommended catalog will be processed once; ")
+                    + selected.size()
+                    + language.text(" 个兼容推荐模组", " compatible recommended mod(s)"));
         }
 
         // A stale/tampered saved state can never override cloud incompatibility.
@@ -124,7 +134,7 @@ final class RecommendedSelectionStore {
                 }
                 if (!matches) {
                     excluded.add(selectionKey);
-                    logManualMobileInstall(entry, manifestUri, gameDirectory, logger);
+                    logManualMobileInstall(entry, manifestUri, gameDirectory, language, logger);
                     continue;
                 }
             }
@@ -144,13 +154,20 @@ final class RecommendedSelectionStore {
             ManifestEntry entry,
             URI manifestUri,
             Path gameDirectory,
+            DisplayLanguage language,
             Consumer<String> logger) {
         URI download = manifestUri.resolve("./" + Rfc3986.encodePathSegment(entry.fileName()));
-        logger.accept("手机端推荐模组已被删除或校验失败，不会再次自动下载: "
+        logger.accept(language.text(
+                "手机端推荐模组已被删除或校验失败，不会再次自动下载: ",
+                "A mobile recommended mod was deleted or failed verification and will not be downloaded again: ")
                 + entry.displayName() + " (" + entry.fileName() + ")");
-        logger.accept("手动下载地址: " + download);
-        logger.accept("手动安装方式: 下载后校验 SHA256=" + entry.sha256()
-                + "，再将文件放入 " + gameDirectory.resolve("mods"));
+        logger.accept(language.text("手动下载地址: ", "Manual download: ") + download);
+        logger.accept(language.text(
+                "手动安装方式: 下载后校验 SHA256=",
+                "Manual installation: verify SHA256=")
+                + entry.sha256()
+                + language.text("，再将文件放入 ", ", then place the file in ")
+                + gameDirectory.resolve("mods"));
     }
 
     static void markMobileCompleted(Resolution resolution) throws IOException {

@@ -12,7 +12,8 @@ record ManifestEntry(
         Set<ClientPlatform> incompatiblePlatforms,
         String displayName,
         String version,
-        String description) {
+        String descriptionZh,
+        String descriptionEn) {
 
     ManifestEntry {
         sha256 = clean(sha256);
@@ -25,11 +26,35 @@ record ManifestEntry(
                 : Set.copyOf(incompatiblePlatforms);
         displayName = fallback(clean(displayName), modId, fileName);
         version = clean(version);
-        description = cleanMultiline(description);
+        descriptionZh = cleanMultiline(descriptionZh);
+        descriptionEn = cleanMultiline(descriptionEn);
+    }
+
+    ManifestEntry(
+            String sha256,
+            String md5,
+            String modId,
+            String fileName,
+            ModKind kind,
+            Set<ClientPlatform> incompatiblePlatforms,
+            String displayName,
+            String version,
+            String legacyDescription) {
+        this(
+                sha256,
+                md5,
+                modId,
+                fileName,
+                kind,
+                incompatiblePlatforms,
+                displayName,
+                version,
+                legacyDescriptionZh(legacyDescription),
+                legacyDescriptionEn(legacyDescription));
     }
 
     ManifestEntry(String md5, String modId, String fileName) {
-        this("", md5, modId, fileName, ModKind.REQUIRED, Set.of(), modId, "", "");
+        this("", md5, modId, fileName, ModKind.REQUIRED, Set.of(), modId, "", "", "");
     }
 
     boolean recommended() {
@@ -42,6 +67,12 @@ record ManifestEntry(
 
     String selectionKey() {
         return modId.isBlank() ? fileName.toLowerCase(Locale.ROOT) : modId;
+    }
+
+    String localizedDescription(DisplayLanguage language) {
+        String preferred = language == DisplayLanguage.ZH_CN ? descriptionZh : descriptionEn;
+        String fallback = language == DisplayLanguage.ZH_CN ? descriptionEn : descriptionZh;
+        return preferred.isBlank() ? fallback : preferred;
     }
 
     private static String clean(String value) {
@@ -60,5 +91,20 @@ record ManifestEntry(
             return modId;
         }
         return fileName;
+    }
+
+    private static String legacyDescriptionZh(String value) {
+        String cleaned = cleanMultiline(value);
+        return containsHan(cleaned) ? cleaned : "";
+    }
+
+    private static String legacyDescriptionEn(String value) {
+        String cleaned = cleanMultiline(value);
+        return containsHan(cleaned) ? "" : cleaned;
+    }
+
+    private static boolean containsHan(String value) {
+        return value.codePoints().anyMatch(codePoint ->
+                Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
     }
 }

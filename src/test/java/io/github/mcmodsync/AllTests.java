@@ -37,7 +37,10 @@ public final class AllTests {
     private void run() throws Exception {
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
-        testV3ManifestMetadataAndDualHash();
+        testV4ManifestBilingualMetadataAndDualHash();
+        testV3ManifestBackwardCompatibility();
+        testCatalogTypeCheckboxesAreMutuallyExclusive();
+        testDisplayLanguageDetection();
         testDesktopRecommendedSelectionAndCatalogUpdate();
         testDeselectedRecommendedModIsBackedUp();
         testNoRecommendedModsSelectedAllowsEmptyModsDirectory();
@@ -117,7 +120,7 @@ public final class AllTests {
             writeFabricJar(jar, "demo_mod", "1.0");
             ModManifest generated = ModManifest.scan(mods);
             check(generated.entries().get(0).modId().equals("demo_mod"), "应从 fabric.mod.json 读取顶层 Mod ID");
-            check(generated.serialize().startsWith(ModManifest.MAGIC_V3), "新清单应使用 v3 格式");
+            check(generated.serialize().startsWith(ModManifest.MAGIC_V4), "新清单应使用 v4 格式");
             ModManifest.parse(generated.serialize()).ensureUniqueModIds();
 
             String v1 = ModManifest.MAGIC_V1 + "\n" + Hashing.md5(jar) + "\tdemo-1.0.jar\n";
@@ -133,8 +136,8 @@ public final class AllTests {
         }
     }
 
-    private void testV3ManifestMetadataAndDualHash() throws Exception {
-        Path root = Files.createTempDirectory("modsync-v3-manifest-");
+    private void testV4ManifestBilingualMetadataAndDualHash() throws Exception {
+        Path root = Files.createTempDirectory("modsync-v4-manifest-");
         try {
             byte[] requiredBytes = "required".getBytes(StandardCharsets.UTF_8);
             byte[] recommendedBytes = "recommended".getBytes(StandardCharsets.UTF_8);
@@ -147,7 +150,8 @@ public final class AllTests {
                     Set.of(),
                     "Required Mod",
                     "1.0",
-                    "must load");
+                    "必须加载",
+                    "Must load");
             ManifestEntry recommended = new ManifestEntry(
                     Hashing.sha256(recommendedBytes),
                     Hashing.md5(recommendedBytes),
@@ -157,22 +161,92 @@ public final class AllTests {
                     Set.of(ClientPlatform.MOBILE, ClientPlatform.MAC),
                     "Recommended Mod",
                     "2.0",
-                    "optional graphics");
+                    "可选图形增强",
+                    "Optional graphics");
             ModManifest parsed = ModManifest.parse(
                     ModManifest.fromEntries("catalog-42", List.of(required, recommended)).serialize());
-            check(parsed.catalogVersion().equals("catalog-42"), "v3 应保留推荐清单版本");
-            check(parsed.entries().get(1).recommended(), "v3 应保留推荐分类");
+            check(parsed.serialize().startsWith(ModManifest.MAGIC_V4), "新清单应序列化为 v4");
+            check(parsed.catalogVersion().equals("catalog-42"), "v4 应保留推荐清单版本");
+            check(parsed.entries().get(1).recommended(), "v4 应保留推荐分类");
             check(parsed.entries().get(1).incompatiblePlatforms().contains(ClientPlatform.MOBILE),
-                    "v3 应保留不兼容平台");
-            check(parsed.entries().get(1).displayName().equals("Recommended Mod"), "v3 应保留显示名称");
+                    "v4 应保留不兼容平台");
+            check(parsed.entries().get(1).displayName().equals("Recommended Mod"), "v4 应保留显示名称");
+            check(parsed.entries().get(1).descriptionZh().equals("可选图形增强"), "v4 应保留中文描述");
+            check(parsed.entries().get(1).descriptionEn().equals("Optional graphics"), "v4 应保留英文描述");
+            check(parsed.entries().get(1).localizedDescription(DisplayLanguage.ZH_CN).equals("可选图形增强"),
+                    "中文界面应使用中文描述");
+            check(parsed.entries().get(1).localizedDescription(DisplayLanguage.EN_US).equals("Optional graphics"),
+                    "英文界面应使用英文描述");
 
             Path requiredFile = root.resolve("required.jar");
             Files.write(requiredFile, requiredBytes);
             check(ModManifest.fileMatches(required, requiredFile), "MD5/SHA256 都正确时应匹配");
             Files.writeString(requiredFile, "tampered", StandardCharsets.UTF_8);
             check(!ModManifest.fileMatches(required, requiredFile), "任一哈希不符时应拒绝");
-            pass("v3 manifest metadata and dual hash");
+            pass("v4 bilingual manifest metadata and dual hash");
         } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testV3ManifestBackwardCompatibility() {
+        byte[] bytes = "legacy-v3".getBytes(StandardCharsets.UTF_8);
+        String v3 = ModManifest.MAGIC_V3 + "\n"
+                + "# catalog-version=legacy-3\n"
+                + Hashing.sha256(bytes) + "\t" + Hashing.md5(bytes)
+                + "\tlegacy_mod\tlegacy.jar\trecommended\tmobile\tLegacy Mod\t1.0\tLegacy description\n";
+        ModManifest parsed = ModManifest.parse(v3);
+        check(parsed.entries().get(0).recommended(), "v3 推荐分类应继续可读");
+        check(parsed.entries().get(0).descriptionEn().equals("Legacy description"),
+                "v3 单描述应迁移到英文描述");
+        check(parsed.entries().get(0).localizedDescription(DisplayLanguage.ZH_CN).equals("Legacy description"),
+                "中文描述缺失时应回退旧版描述");
+        pass("v3 manifest remains backward compatible");
+    }
+
+    private void testCatalogTypeCheckboxesAreMutuallyExclusive() {
+        CatalogEditorDialog.CatalogTableModel model = new CatalogEditorDialog.CatalogTableModel();
+        model.addRow(new Object[]{
+                "demo.jar", true, false, "Demo", "1.0",
+                false, false, false, false, "中文", "English"
+        });
+        model.setValueAt(Boolean.TRUE, 0, CatalogEditorDialog.RECOMMENDED_COLUMN);
+        check(!Boolean.TRUE.equals(model.getValueAt(0, CatalogEditorDialog.REQUIRED_COLUMN)),
+                "勾选推荐后必须自动取消必须");
+        check(Boolean.TRUE.equals(model.getValueAt(0, CatalogEditorDialog.RECOMMENDED_COLUMN)),
+                "推荐复选框应保持勾选");
+        check(model.isCellEditable(0, CatalogEditorDialog.MOBILE_COLUMN),
+                "推荐模组应允许编辑不兼容平台");
+        model.setValueAt(Boolean.TRUE, 0, CatalogEditorDialog.MOBILE_COLUMN);
+        model.setValueAt(Boolean.FALSE, 0, CatalogEditorDialog.RECOMMENDED_COLUMN);
+        check(Boolean.TRUE.equals(model.getValueAt(0, CatalogEditorDialog.REQUIRED_COLUMN)),
+                "取消当前类型时应自动切换到另一类型，不能出现两者都不选");
+        check(!Boolean.TRUE.equals(model.getValueAt(0, CatalogEditorDialog.RECOMMENDED_COLUMN)),
+                "切换为必须后推荐必须取消");
+        check(!Boolean.TRUE.equals(model.getValueAt(0, CatalogEditorDialog.MOBILE_COLUMN)),
+                "切换为必须后应清除不兼容平台");
+        check(!model.isCellEditable(0, CatalogEditorDialog.MOBILE_COLUMN),
+                "必须模组不应允许编辑不兼容平台");
+        pass("catalog required/recommended checkboxes are mutually exclusive");
+    }
+
+    private void testDisplayLanguageDetection() throws Exception {
+        Path root = Files.createTempDirectory("modsync-language-");
+        Map<String, String> previous = snapshotProperties("modsync.language");
+        try {
+            System.clearProperty("modsync.language");
+            Files.writeString(root.resolve("options.txt"), "lang:en_us\n", StandardCharsets.UTF_8);
+            check(DisplayLanguage.detect(root) == DisplayLanguage.EN_US,
+                    "auto 应读取 Minecraft options.txt 的英文设置");
+            Files.writeString(root.resolve("modsync.properties"), "language=zh_cn\n", StandardCharsets.UTF_8);
+            check(DisplayLanguage.detect(root) == DisplayLanguage.ZH_CN,
+                    "modsync.properties 应覆盖 Minecraft 语言");
+            System.setProperty("modsync.language", "en_us");
+            check(DisplayLanguage.detect(root) == DisplayLanguage.EN_US,
+                    "系统属性应覆盖配置文件语言");
+            pass("Chinese and English display language detection");
+        } finally {
+            restoreProperties(previous);
             deleteTree(root);
         }
     }

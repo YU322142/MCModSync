@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "id": "mcmodsync",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "name": "MCModSync",
-  "description": "启动前按云端清单同步必须/推荐 Mod、资源包和服务器列表，并校验 MD5/SHA256。",
+  "description": "启动前同步必须/推荐 Mod、资源包和服务器列表；Pre-launch synchronization with MD5/SHA256 verification.",
   "authors": ["MCModSync Contributors"],
   "environment": "client",
   "entrypoints": {

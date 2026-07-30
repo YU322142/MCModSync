@@ -49,7 +49,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "tests failed with exit code $LASTEXITCODE"
 }
 
-$jarPath = Join-Path $distDirectory 'MCModSync-1.7.0.jar'
+$jarPath = Join-Path $distDirectory 'MCModSync-1.8.0.jar'
 $compileOnlyStubClass = Join-Path $mainClasses 'net\fabricmc\loader\api\entrypoint\PreLaunchEntrypoint.class'
 if (-not (Test-Path -LiteralPath $compileOnlyStubClass -PathType Leaf)) {
     throw "Expected compile-only Fabric API class not found: $compileOnlyStubClass"
@@ -126,7 +126,7 @@ Write-Output '[8/8] Copying deliverables...'
 $workspaceRoot = [System.IO.Directory]::GetParent([System.IO.Directory]::GetParent($projectRoot).FullName).FullName
 $outputsDirectory = Join-Path $workspaceRoot 'outputs'
 New-Item -ItemType Directory -Path $outputsDirectory -Force | Out-Null
-$jarOutputName = 'MCModSync-1.7.0.jar'
+$jarOutputName = 'MCModSync-1.8.0.jar'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.jar' -ErrorAction SilentlyContinue |
     Where-Object Name -ne $jarOutputName |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
@@ -138,7 +138,7 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.md' -Err
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $outputsDirectory $readmeDestinationName) -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'modsync.properties.example') -Destination (Join-Path $outputsDirectory 'modsync.properties.example') -Force
 
-$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.7.0-source.zip'
+$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.8.0-source.zip'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*-source.zip' -ErrorAction SilentlyContinue |
     Where-Object FullName -ne $sourceZip |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }

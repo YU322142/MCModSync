@@ -30,7 +30,7 @@ public final class FabricPreLaunchEntrypoint implements PreLaunchEntrypoint {
             return;
         }
 
-        log("MCModSync 1.7.0 Fabric 便携模式校验开始");
+        log("MCModSync 1.8.0 Fabric 便携模式校验开始");
         try {
             Path gameDirectory = locateFabricGameDirectory();
             // Always pin the system property first so a leftover modsync.gameDir

@@ -489,7 +489,8 @@ final class ModSyncEngine {
                         entry.incompatiblePlatforms(),
                         entry.displayName(),
                         newest.version(),
-                        entry.description()));
+                        entry.descriptionZh(),
+                        entry.descriptionEn()));
                 protectedEntry = true;
                 logger.accept("忽略云端较旧的 MCModSync " + versionIn(entry.fileName())
                         + "；保留本地 " + newest.version() + "，防止同步器降级");
@@ -783,7 +784,7 @@ final class ModSyncEngine {
                 config.manifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.7.0",
+                "MCModSync/1.8.0",
                 "Mod 清单",
                 logger);
         return decodeUtf8Strict(bytes);
@@ -798,7 +799,7 @@ final class ModSyncEngine {
         URI fileUri = config.manifestUri().resolve("./" + Rfc3986.encodePathSegment(entry.fileName()));
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.7.0")
+                .header("User-Agent", "MCModSync/1.8.0")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -881,7 +882,7 @@ final class ModSyncEngine {
                     "./" + Rfc3986.encodePathSegment(plan.entry().fileName()));
             HttpRequest request = HttpRequest.newBuilder(fileUri)
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.7.0")
+                    .header("User-Agent", "MCModSync/1.8.0")
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {

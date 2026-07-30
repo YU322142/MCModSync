@@ -20,6 +20,7 @@ final class ModManifest {
     static final String MAGIC_V1 = "# mcmod-sync-v1";
     static final String MAGIC_V2 = "# mcmod-sync-v2";
     static final String MAGIC_V3 = "# mcmod-sync-v3";
+    static final String MAGIC_V4 = "# mcmod-sync-v4";
     // Kept for source compatibility with tests and legacy integrations.
     static final String MAGIC = MAGIC_V2;
     private static final Pattern MD5_PATTERN = Pattern.compile("[0-9a-fA-F]{32}");
@@ -38,12 +39,12 @@ final class ModManifest {
     }
 
     static ModManifest fromEntries(List<ManifestEntry> entries) {
-        boolean v3 = entries.stream().allMatch(entry -> !entry.sha256().isBlank());
-        return new ModManifest(v3 ? 3 : 2, v3 ? generatedCatalogVersion() : "", entries);
+        boolean modern = entries.stream().allMatch(entry -> !entry.sha256().isBlank());
+        return new ModManifest(modern ? 4 : 2, modern ? generatedCatalogVersion() : "", entries);
     }
 
     static ModManifest fromEntries(String catalogVersion, List<ManifestEntry> entries) {
-        return new ModManifest(3, requireCatalogVersion(catalogVersion), entries);
+        return new ModManifest(4, requireCatalogVersion(catalogVersion), entries);
     }
 
     ModManifest withEntries(List<ManifestEntry> replacement) {
@@ -51,7 +52,7 @@ final class ModManifest {
     }
 
     ModManifest withCatalogVersion(String replacement) {
-        return new ModManifest(3, requireCatalogVersion(replacement), entries);
+        return new ModManifest(Math.max(format, 4), requireCatalogVersion(replacement), entries);
     }
 
     static ModManifest scan(Path modsDirectory) throws IOException {
@@ -108,7 +109,7 @@ final class ModManifest {
         if (entries.isEmpty()) {
             throw new IOException("没有可发布的 .jar Mod；为防止生成空清单，操作已取消。");
         }
-        return new ModManifest(3, generatedCatalogVersion(), entries);
+        return new ModManifest(4, generatedCatalogVersion(), entries);
     }
 
     static ModManifest parse(String text) {
@@ -122,7 +123,8 @@ final class ModManifest {
             String stripped = line.strip();
             int declared = stripped.equals(MAGIC_V1) ? 1
                     : stripped.equals(MAGIC_V2) ? 2
-                    : stripped.equals(MAGIC_V3) ? 3 : 0;
+                    : stripped.equals(MAGIC_V3) ? 3
+                    : stripped.equals(MAGIC_V4) ? 4 : 0;
             if (declared != 0) {
                 if (format != 0 && format != declared) {
                     throw new IllegalArgumentException("清单不能同时声明多个格式版本");
@@ -134,9 +136,10 @@ final class ModManifest {
             }
         }
         if (format == 0) {
-            throw new IllegalArgumentException("不是受支持的清单：缺少 " + MAGIC_V1 + "、" + MAGIC_V2 + " 或 " + MAGIC_V3);
+            throw new IllegalArgumentException("不是受支持的清单：缺少 " + MAGIC_V1 + "、" + MAGIC_V2
+                    + "、" + MAGIC_V3 + " 或 " + MAGIC_V4);
         }
-        if (format == 3) {
+        if (format >= 3) {
             requireCatalogVersion(catalogVersion);
         }
 
@@ -151,9 +154,10 @@ final class ModManifest {
                 case 1 -> parseV1(line, index + 1);
                 case 2 -> parseV2(line, index + 1);
                 case 3 -> parseV3(line, index + 1);
+                case 4 -> parseV4(line, index + 1);
                 default -> throw new IllegalStateException("unsupported format");
             };
-            validateEntryHashes(entry, index + 1, format == 3);
+            validateEntryHashes(entry, index + 1, format >= 3);
             validateFileName(entry.fileName());
             String key = entry.fileName().toLowerCase(Locale.ROOT);
             if (!names.add(key)) {
@@ -199,6 +203,27 @@ final class ModManifest {
                 unescape(fields[6]),
                 unescape(fields[7]),
                 unescape(fields[8]));
+    }
+
+    private static ManifestEntry parseV4(String line, int lineNumber) {
+        String[] fields = splitColumns(
+                line,
+                10,
+                lineNumber,
+                "SHA256、MD5、Mod ID、文件名、类型、不兼容平台、名称、版本、中文描述、英文描述");
+        String modId = parseModId(fields[2], lineNumber);
+        Set<ClientPlatform> incompatible = parsePlatforms(unescape(fields[5]), lineNumber);
+        return new ManifestEntry(
+                fields[0].strip().toLowerCase(Locale.ROOT),
+                fields[1].strip().toLowerCase(Locale.ROOT),
+                modId,
+                unescape(fields[3]),
+                ModKind.parse(fields[4]),
+                incompatible,
+                unescape(fields[6]),
+                unescape(fields[7]),
+                unescape(fields[8]),
+                unescape(fields[9]));
     }
 
     private static String[] splitColumns(String line, int expected, int lineNumber, String description) {
@@ -280,10 +305,15 @@ final class ModManifest {
         }
 
         StringBuilder builder = new StringBuilder();
-        builder.append(MAGIC_V3).append('\n');
+        builder.append(format >= 4 ? MAGIC_V4 : MAGIC_V3).append('\n');
         builder.append("# catalog-version=").append(catalogVersion).append('\n');
         builder.append("# minecraft=1.21.11\n# loader=fabric\n");
-        builder.append("# SHA256\\tMD5\\tMod ID\\t文件名\\t类型\\t不兼容平台\\t名称\\t版本\\t描述\n");
+        if (format >= 4) {
+            builder.append("# SHA256\\tMD5\\tMod ID\\t文件名\\t类型\\t不兼容平台\\t名称\\t版本"
+                    + "\\t中文描述\\tEnglish description\n");
+        } else {
+            builder.append("# SHA256\\tMD5\\tMod ID\\t文件名\\t类型\\t不兼容平台\\t名称\\t版本\\t描述\n");
+        }
         for (ManifestEntry entry : entries) {
             builder.append(entry.sha256()).append('\t')
                     .append(entry.md5()).append('\t')
@@ -292,8 +322,16 @@ final class ModManifest {
                     .append(entry.kind().id()).append('\t')
                     .append(serializePlatforms(entry.incompatiblePlatforms())).append('\t')
                     .append(escape(entry.displayName())).append('\t')
-                    .append(escape(entry.version())).append('\t')
-                    .append(escape(entry.description())).append('\n');
+                    .append(escape(entry.version())).append('\t');
+            if (format >= 4) {
+                builder.append(escape(entry.descriptionZh())).append('\t')
+                        .append(escape(entry.descriptionEn())).append('\n');
+            } else {
+                String legacyDescription = !entry.descriptionZh().isBlank()
+                        ? entry.descriptionZh()
+                        : entry.descriptionEn();
+                builder.append(escape(legacyDescription)).append('\n');
+            }
         }
         return builder.toString();
     }
@@ -431,7 +469,7 @@ final class ModManifest {
         String normalized = value == null ? "" : value.strip();
         if (normalized.isBlank() || normalized.length() > 128
                 || normalized.indexOf('\t') >= 0 || normalized.indexOf('\n') >= 0 || normalized.indexOf('\r') >= 0) {
-            throw new IllegalArgumentException("v3 清单必须包含有效的 catalog-version（最长 128 字符）");
+            throw new IllegalArgumentException("v3/v4 清单必须包含有效的 catalog-version（最长 128 字符）");
         }
         return normalized;
     }

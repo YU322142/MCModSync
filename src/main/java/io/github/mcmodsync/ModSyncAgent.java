@@ -13,7 +13,7 @@ public final class ModSyncAgent {
 
     public static void premain(String agentArguments, Instrumentation instrumentation) {
         System.setProperty("modsync.agent.active", "true");
-        log("MCModSync 1.7.0 启动前校验开始");
+        log("MCModSync 1.8.0 启动前校验开始");
         try {
             ModSyncConfig config = ModSyncConfig.fromEnvironment(agentArguments);
             System.setProperty("modsync.gameDir", config.gameDirectory().toString());
