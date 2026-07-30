@@ -56,8 +56,32 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.8.0");
+            System.out.println("MCModSync 1.8.1");
             return 0;
+        }
+        if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {
+            if (arguments.length < 2 || arguments.length > 3) {
+                printUsage();
+                return 2;
+            }
+            Path modsDirectory = Path.of(arguments[1]).toAbsolutePath().normalize();
+            Path output = arguments.length == 3
+                    ? Path.of(arguments[2]).toAbsolutePath().normalize()
+                    : modsDirectory.resolve(LegacyUpgradeManifest.DEFAULT_FILE_NAME);
+            try {
+                ModManifest catalog = ModManifest.scan(modsDirectory);
+                catalog.ensureUniqueModIds();
+                LegacyUpgradeManifest.write(catalog, output);
+                System.out.println(text(
+                        "1.6.x/1.7 过渡清单生成成功: ",
+                        "1.6.x/1.7 transition catalog generated: ") + output);
+                return 0;
+            } catch (Exception exception) {
+                System.err.println(text(
+                        "过渡清单生成失败: ",
+                        "Transition catalog generation failed: ") + exception.getMessage());
+                return 1;
+            }
         }
         if (arguments.length >= 1 && arguments[0].equals("--serverlist")) {
             if (arguments.length < 2 || arguments.length > 3) {
@@ -263,6 +287,27 @@ public final class PublisherMain {
                             return;
                         }
                         edited.get().write(output);
+                        Path upgradeOutput = modsDirectory.resolve(LegacyUpgradeManifest.DEFAULT_FILE_NAME);
+                        String upgradeNotice;
+                        int successMessageType = JOptionPane.INFORMATION_MESSAGE;
+                        try {
+                            LegacyUpgradeManifest.write(edited.get(), upgradeOutput);
+                            log.append(text(
+                                    "1.6.x/1.7 过渡清单：",
+                                    "1.6.x/1.7 transition catalog: ") + upgradeOutput + "\n");
+                            upgradeNotice = text(
+                                    "\n\n同时生成 mods-upgrade-v2.txt，可用于先把 1.6.x/1.7 客户端升级到 1.8+。",
+                                    "\n\nmods-upgrade-v2.txt was also generated to upgrade 1.6.x/1.7 clients to 1.8+ first.");
+                        } catch (IllegalArgumentException exception) {
+                            Files.deleteIfExists(upgradeOutput);
+                            successMessageType = JOptionPane.WARNING_MESSAGE;
+                            upgradeNotice = text(
+                                    "\n\n未生成旧版升级清单：" + exception.getMessage()
+                                            + "\n如需升级旧客户端，请把当前 MCModSync JAR 放入这个 mods 目录后重新生成。",
+                                    "\n\nNo legacy transition catalog was generated: " + exception.getMessage()
+                                            + "\nTo upgrade old clients, put the current MCModSync JAR in this mods directory and regenerate.");
+                            log.append(upgradeNotice.strip() + "\n");
+                        }
                         int count = edited.get().entries().size();
                         log.append(text("完成，共 ", "Completed: ") + count
                                 + text(" 个 Mod。\n清单：", " mod(s).\nCatalog: ") + output + "\n");
@@ -274,10 +319,11 @@ public final class PublisherMain {
                                 text("v4 mods.txt 已生成，共 ", "v4 mods.txt generated with ") + count
                                         + text(
                                                 " 个 Mod。\n已包含 MD5、SHA256、必须/推荐分类、平台兼容和中英文描述。",
-                                                " mod(s).\nIncludes MD5, SHA256, required/recommended types, platform compatibility, and Chinese/English descriptions."),
+                                                " mod(s).\nIncludes MD5, SHA256, required/recommended types, platform compatibility, and Chinese/English descriptions.")
+                                        + upgradeNotice,
                                 text("生成成功", "Generation complete"),
                                 JOptionPane.DEFAULT_OPTION,
-                                JOptionPane.INFORMATION_MESSAGE,
+                                successMessageType,
                                 null,
                                 options,
                                 options[0]);
@@ -475,6 +521,9 @@ public final class PublisherMain {
         System.out.println(text(
                 "  java -jar MCModSync.jar --serverlist <servers.dat> [serverlist.txt输出路径]",
                 "  java -jar MCModSync.jar --serverlist <servers.dat> [serverlist.txt-output]"));
+        System.out.println(text(
+                "  java -jar MCModSync.jar --upgrade-v2 <mods目录> [mods-upgrade-v2.txt输出路径]",
+                "  java -jar MCModSync.jar --upgrade-v2 <mods-directory> [mods-upgrade-v2.txt-output]"));
         System.out.println(text(
                 "  语言：-Dmodsync.language=zh_cn 或 -Dmodsync.language=en_us",
                 "  Language: -Dmodsync.language=zh_cn or -Dmodsync.language=en_us"));

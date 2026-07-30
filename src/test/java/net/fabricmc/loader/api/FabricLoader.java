@@ -2,7 +2,7 @@ package net.fabricmc.loader.api;
 
 import java.nio.file.Path;
 
-/** Test double used by the portable Fabric entrypoint integration test. */
+/** Test double shared by portable-entrypoint and legacy-upgrade integration tests. */
 public final class FabricLoader {
     private static final FabricLoader INSTANCE = new FabricLoader();
     private static Path gameDirectory;
@@ -19,6 +19,12 @@ public final class FabricLoader {
     }
 
     public Path getGameDir() {
-        return gameDirectory;
+        if (gameDirectory != null) {
+            return gameDirectory;
+        }
+        String legacyGameDirectory = System.getProperty("legacy.gameDir");
+        return legacyGameDirectory == null
+                ? null
+                : Path.of(legacyGameDirectory).toAbsolutePath().normalize();
     }
 }

@@ -39,6 +39,7 @@ public final class AllTests {
         testFabricModIdAndV1Compatibility();
         testV4ManifestBilingualMetadataAndDualHash();
         testV3ManifestBackwardCompatibility();
+        testLegacyUpgradeManifestFor16And17();
         testCatalogTypeCheckboxesAreMutuallyExclusive();
         testDisplayLanguageDetection();
         testDesktopRecommendedSelectionAndCatalogUpdate();
@@ -202,6 +203,83 @@ public final class AllTests {
         check(parsed.entries().get(0).localizedDescription(DisplayLanguage.ZH_CN).equals("Legacy description"),
                 "中文描述缺失时应回退旧版描述");
         pass("v3 manifest remains backward compatible");
+    }
+
+    private void testLegacyUpgradeManifestFor16And17() {
+        byte[] updaterBytes = "mcmodsync-1.8".getBytes(StandardCharsets.UTF_8);
+        byte[] optionalBytes = "optional".getBytes(StandardCharsets.UTF_8);
+        ManifestEntry updater = new ManifestEntry(
+                Hashing.sha256(updaterBytes),
+                Hashing.md5(updaterBytes),
+                "mcmodsync",
+                "MCModSync-1.8.0.jar",
+                ModKind.REQUIRED,
+                Set.of(),
+                "MCModSync",
+                "1.8.0",
+                "同步器",
+                "Synchronizer");
+        ManifestEntry optional = new ManifestEntry(
+                Hashing.sha256(optionalBytes),
+                Hashing.md5(optionalBytes),
+                "optional_mod",
+                "optional.jar",
+                ModKind.RECOMMENDED,
+                Set.of(ClientPlatform.MOBILE),
+                "Optional",
+                "1.0",
+                "可选",
+                "Optional");
+        String transition = LegacyUpgradeManifest.serialize(
+                ModManifest.fromEntries("upgrade-test", List.of(updater, optional)));
+
+        List<String[]> legacy16Entries = parseWithFrozenLegacyV2Rules(transition);
+        check(legacy16Entries.size() == 2, "1.6.x v2 解析规则应读取全部过渡条目");
+        check(legacy16Entries.stream().anyMatch(fields -> fields[1].equals("mcmodsync")
+                        && fields[2].equals("MCModSync-1.8.0.jar")),
+                "过渡清单必须让 1.6.x 通过 Mod ID 替换同步器");
+        check(!transition.contains(ModManifest.MAGIC_V3) && !transition.contains(ModManifest.MAGIC_V4),
+                "过渡清单不能包含会让旧解析器拒绝的新版 magic");
+
+        ModManifest parsedBy17Rules = ModManifest.parse(transition);
+        check(parsedBy17Rules.entries().size() == 2, "1.7 兼容解析应读取 v2 过渡清单");
+        check(parsedBy17Rules.entries().stream().allMatch(entry -> entry.kind() == ModKind.REQUIRED),
+                "过渡阶段必须把所有条目视为 required，避免旧客户端漏装依赖");
+
+        ModManifest missingUpdater = ModManifest.fromEntries("missing-updater", List.of(optional));
+        expectFailure(() -> LegacyUpgradeManifest.serialize(missingUpdater));
+        ManifestEntry tooOldUpdater = new ManifestEntry(
+                updater.sha256(), updater.md5(), updater.modId(), "MCModSync-1.7.0.jar",
+                ModKind.REQUIRED, Set.of(), updater.displayName(), "1.7.0", "同步器", "Synchronizer");
+        expectFailure(() -> LegacyUpgradeManifest.serialize(
+                ModManifest.fromEntries("old-updater", List.of(tooOldUpdater, optional))));
+        pass("v2 transition catalog upgrades 1.6.x and 1.7 parsers");
+    }
+
+    private static List<String[]> parseWithFrozenLegacyV2Rules(String text) {
+        String[] lines = text.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        int magicCount = 0;
+        List<String[]> entries = new ArrayList<>();
+        for (String line : lines) {
+            if (line.strip().equals("# mcmod-sync-v2")) {
+                magicCount++;
+                continue;
+            }
+            if (line.isBlank() || line.startsWith("#")) {
+                continue;
+            }
+            String[] fields = line.split("\t", -1);
+            check(fields.length == 3, "1.6.x v2 每行必须严格为 MD5、Mod ID、文件名三列");
+            check(fields[0].matches("[0-9a-fA-F]{32}"), "1.6.x v2 MD5 必须有效");
+            check(fields[1].equals("-") || FabricModMetadata.isValidModId(fields[1]),
+                    "1.6.x v2 Mod ID 必须有效");
+            check(fields[2].endsWith(".jar") && !fields[2].contains("/") && !fields[2].contains("\\"),
+                    "1.6.x v2 文件名必须安全");
+            entries.add(fields);
+        }
+        check(magicCount == 1, "1.6.x v2 清单必须只声明一次 v2 magic");
+        check(!entries.isEmpty(), "1.6.x v2 清单不能空");
+        return entries;
     }
 
     private void testCatalogTypeCheckboxesAreMutuallyExclusive() {

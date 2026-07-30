@@ -1,6 +1,6 @@
 # MCModSync
 
-MCModSync 1.8.0 是一个 Fabric 客户端启动前同步工具。服主可以在同一份 v4 Mod 清单中区分“必须模组”和“推荐模组”，设置推荐模组的不兼容平台，为每个 Mod 提供中文和英文描述，并让客户端下载后同时校验 MD5 与 SHA256。资源包和服务器列表仍可独立同步。
+MCModSync 1.8.1 是一个 Fabric 客户端启动前同步工具。服主可以在同一份 v4 Mod 清单中区分“必须模组”和“推荐模组”，设置推荐模组的不兼容平台，为每个 Mod 提供中文和英文描述，并让客户端下载后同时校验 MD5 与 SHA256。资源包和服务器列表仍可独立同步。
 
 > [!WARNING]
 > **AI 辅助生成代码警示：** 本项目包含 AI 辅助生成或修改的代码与文档。AI 生成内容可能存在逻辑错误、兼容性问题或未知安全风险，不能视为安全审计结论。公开部署前请自行审阅代码、扫描依赖、在隔离测试实例完整验证并保留可恢复备份。使用者自行负责云端清单、下载文件和托管服务器的可信性与安全性。
@@ -70,22 +70,22 @@ MCModSync 1.8.0 是一个 Fabric 客户端启动前同步工具。服主可以�
 
 ### 图形界面（推荐）
 
-1. 运行或双击 `MCModSync-1.8.0.jar`。
-2. 点击“选择 mods 目录”，选择已经测试完成的发布目录。
+1. 运行或双击 `MCModSync-1.8.1.jar`。
+2. 点击“选择 mods 目录”，选择已经测试完成的发布目录。要兼容 1.6.x/1.7 升级或让 MCModSync 自身更新，这个目录必须包含 `MCModSync-1.8.1.jar`。
 3. 点击“编辑必须/推荐模组并生成清单”。
 4. 工具读取每个 JAR 的 `fabric.mod.json`，并计算 MD5、SHA256。
 5. 每行通过“必须 / Required”和“推荐 / Recommended”两个复选框选择类型。两者强制二选一：勾选其中一个会自动取消另一个，不能同时勾选，也不能全部不选。
 6. 对推荐模组勾选“不兼容的平台”。这是排除列表，不勾选表示所有平台兼容。
 7. 核对显示名称和版本，并分别填写“中文描述”和“English description”。这些内容会按玩家语言显示在电脑端的启动前选择窗口。
 8. 设置新的“推荐清单版本”。每次改变推荐列表、默认组合、兼容平台、名称、版本或描述时都要增加它。
-9. 点击“生成 v4 清单”，得到 `mods.txt`。
+9. 点击“生成 v4 清单”，得到正式使用的 `mods.txt`。目录中包含合格的当前 MCModSync JAR 时，还会同时生成只供旧版升级的 `mods-upgrade-v2.txt`。
 
 表格中的“所选设为必须模组”“所选设为推荐模组”可以批量修改；没有选择行时会应用到全部条目。
 
 ### 命令行
 
 ```powershell
-java -jar MCModSync-1.8.0.jar "D:\Publish\mods" "D:\Publish\mods.txt"
+java -jar MCModSync-1.8.1.jar "D:\Publish\mods" "D:\Publish\mods.txt"
 ```
 
 命令行批量生成时所有条目默认是 `required`。需要配置推荐类型、显示信息和不兼容平台时，应使用图形界面编辑器。
@@ -104,8 +104,25 @@ java -jar MCModSync-1.8.0.jar "D:\Publish\mods" "D:\Publish\mods.txt"
 
 旧 v1/v2/v3 清单仍可读取。v1/v2 没有推荐分类，条目按必须模组处理；v3 的单描述会自动迁移到中文或英文并在另一语言下回退显示。新发布应使用 v4。
 
-> [!IMPORTANT]
-> **已经部署旧版客户端时要分两阶段升级：** 1.7.0 及更早版本不认识 v4。第一阶段继续使用旧客户端能读取的 v2/v3 清单，只把 `MCModSync-1.8.0.jar` 作为更新发布；确认客户端已更新到 1.8.0 后，第二阶段才上传 v4 `mods.txt`。不要在旧客户端仍存在时直接用 v4 替换线上清单，否则旧同步器会因格式未知而阻止启动。
+### 从 1.6.x/1.7 安全升级
+
+1.6.x 和 1.7 不认识 v4，必须先经过 v2 过渡清单。发布工具会验证扫描目录中存在 Fabric Mod ID 为 `mcmodsync`、版本不低于 1.8.0 的同步器，防止生成无法完成升级的过渡清单。命令行也可以单独生成：
+
+```powershell
+java -jar MCModSync-1.8.1.jar --upgrade-v2 "D:\Publish\mods" "D:\Publish\mods-upgrade-v2.txt"
+```
+
+线上切换顺序：
+
+1. 先上传 `MCModSync-1.8.1.jar` 和过渡清单列出的全部 JAR。
+2. 暂时把线上配置的 `mods.txt` 内容替换为 `mods-upgrade-v2.txt` 的内容。不能只把它作为另一个文件上传，因为旧客户端只会请求已经配置的清单 URL。
+3. 启动旧客户端并确认日志显示需要重启；第二次启动应显示 MCModSync 1.8.1。旧 JAR 会按同一个 Mod ID 自动移出并替换，进程以退出码 `0` 正常结束。
+4. 确认仍需支持的 1.6.x/1.7 客户端已经升级后，再把线上 `mods.txt` 替换为正式 v4 `mods.txt`。
+5. 再次启动，电脑端按 v4 显示推荐模组选择；手机端按 v4 自动处理推荐模组。
+
+过渡 v2 没有“推荐”类型，因此过渡期间所有条目都会被旧客户端当作必须模组；切到 v4 后会立即按最终选择安全移出不需要的推荐模组。不要让旧同步器直接读取 v4，否则它会因格式未知而安全阻止启动。
+
+此升级链路已用用户提供的真实 `MCModSync-1.6.10.jar` 和从本仓库 1.7.0 源码重建的真实 JAR 完成端到端替换测试；自动化测试还会验证 v2 结构、Mod ID 替换及正常退出行为。
 
 ## 二、上传文件
 
@@ -123,7 +140,7 @@ https://files.example.com/minecraft/
 
 ## 三、配置玩家客户端
 
-1. 将 `MCModSync-1.8.0.jar` 放入实例的 `mods` 目录。
+1. 将 `MCModSync-1.8.1.jar` 放入实例的 `mods` 目录。
 2. 把 [`modsync.properties.example`](modsync.properties.example) 复制到游戏根目录，即包含 `mods` 的目录。
 3. 将复制件改名为 `modsync.properties`。
 4. 把占位 URL 改成你的真实地址：
@@ -144,7 +161,7 @@ requireManifest=true
 ## 卸载或停用
 
 1. 完全退出 Minecraft 和启动器中的 Java 进程。
-2. 从实例的 `mods` 目录移除 `MCModSync-1.8.0.jar`。如果曾使用 `-javaagent:` 方式安装，还必须从启动器的 JVM 参数中删除对应的 `-javaagent:<路径>`。
+2. 从实例的 `mods` 目录移除 `MCModSync-1.8.1.jar`。如果曾使用 `-javaagent:` 方式安装，还必须从启动器的 JVM 参数中删除对应的 `-javaagent:<路径>`。
 3. 删除或移走游戏根目录的 `modsync.properties`。
 4. 先检查 `.modsync/backups` 中是否有需要恢复的推荐模组或旧版本文件；确认不再需要后，才删除整个 `.modsync` 目录。该目录还包含推荐选择状态和日志，提前删除会让仍在运行的 MCModSync 把当前清单当作首次处理。
 
@@ -153,8 +170,8 @@ requireManifest=true
 ## 四、资源包和服务器列表（可选）
 
 ```powershell
-java -jar MCModSync-1.8.0.jar --resourcepack "D:\Publish\server-pack.zip"
-java -jar MCModSync-1.8.0.jar --serverlist "D:\Publish\servers.dat"
+java -jar MCModSync-1.8.1.jar --resourcepack "D:\Publish\server-pack.zip"
+java -jar MCModSync-1.8.1.jar --serverlist "D:\Publish\servers.dat"
 ```
 
 分别生成 `resourcepacks.txt`、`serverlist.txt`。将清单和对应的 ZIP/`servers.dat` 放在同一云端目录，并在配置中启用：
@@ -230,7 +247,7 @@ SHA256 双校验应用于 Mod v3/v4 清单；资源包和服务器列表仍使�
 ./build.ps1
 ```
 
-脚本会编译、运行全部测试并输出 `build/dist/MCModSync-1.8.0.jar`。
+脚本会编译、运行全部测试并输出 `build/dist/MCModSync-1.8.1.jar`。如需额外运行真实旧版升级冒烟测试，可设置 `MCMODSYNC_LEGACY_JAR`；1.6.x 默认入口点会自动使用，验证 1.7 时可再设置 `MCMODSYNC_LEGACY_ENTRYPOINT=io.github.mcmodsync.FabricPreLaunchEntrypoint`。
 
 ## 许可证
 

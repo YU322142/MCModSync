@@ -49,7 +49,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "tests failed with exit code $LASTEXITCODE"
 }
 
-$jarPath = Join-Path $distDirectory 'MCModSync-1.8.0.jar'
+$jarPath = Join-Path $distDirectory 'MCModSync-1.8.1.jar'
 $compileOnlyStubClass = Join-Path $mainClasses 'net\fabricmc\loader\api\entrypoint\PreLaunchEntrypoint.class'
 if (-not (Test-Path -LiteralPath $compileOnlyStubClass -PathType Leaf)) {
     throw "Expected compile-only Fabric API class not found: $compileOnlyStubClass"
@@ -70,6 +70,25 @@ if ($LASTEXITCODE -ne 0) {
 $fabricLeak = & jar tf $jarPath | Select-String -Pattern '^net/fabricmc/'
 if ($fabricLeak) {
     throw "Refusing to ship Fabric Loader API classes inside MCModSync jar: $fabricLeak"
+}
+
+$legacyJarForSmoke = $env:MCMODSYNC_LEGACY_JAR
+if ($legacyJarForSmoke) {
+    $legacyJarForSmoke = [System.IO.Path]::GetFullPath($legacyJarForSmoke)
+    if (-not (Test-Path -LiteralPath $legacyJarForSmoke -PathType Leaf)) {
+        throw "MCMODSYNC_LEGACY_JAR does not exist: $legacyJarForSmoke"
+    }
+    $legacyEntrypoint = $env:MCMODSYNC_LEGACY_ENTRYPOINT
+    if (-not $legacyEntrypoint) {
+        $legacyEntrypoint = 'xyz.yu322142.modsync.FabricPreLaunchEntrypoint'
+    }
+    Write-Output "Running real historical-JAR transition smoke: $legacyJarForSmoke"
+    & java --add-modules jdk.httpserver -cp "$mainClasses;$testClasses" `
+        io.github.mcmodsync.LegacyUpgradeIntegrationSmoke `
+        $legacyJarForSmoke $jarPath $testClasses $legacyEntrypoint
+    if ($LASTEXITCODE -ne 0) {
+        throw "real historical-JAR transition smoke failed with exit code $LASTEXITCODE"
+    }
 }
 
 
@@ -126,7 +145,7 @@ Write-Output '[8/8] Copying deliverables...'
 $workspaceRoot = [System.IO.Directory]::GetParent([System.IO.Directory]::GetParent($projectRoot).FullName).FullName
 $outputsDirectory = Join-Path $workspaceRoot 'outputs'
 New-Item -ItemType Directory -Path $outputsDirectory -Force | Out-Null
-$jarOutputName = 'MCModSync-1.8.0.jar'
+$jarOutputName = 'MCModSync-1.8.1.jar'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.jar' -ErrorAction SilentlyContinue |
     Where-Object Name -ne $jarOutputName |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
@@ -138,7 +157,7 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.md' -Err
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $outputsDirectory $readmeDestinationName) -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'modsync.properties.example') -Destination (Join-Path $outputsDirectory 'modsync.properties.example') -Force
 
-$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.8.0-source.zip'
+$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.8.1-source.zip'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*-source.zip' -ErrorAction SilentlyContinue |
     Where-Object FullName -ne $sourceZip |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }

@@ -34,11 +34,11 @@ public final class PostBuildPortableSmoke {
             }
             byte[] updater = Files.readAllBytes(jar);
             String manifest = ModManifest.MAGIC + "\n"
-                    + Hashing.md5(updater) + "\tmcmodsync\tMCModSync-1.8.1.jar\n"
+                    + Hashing.md5(updater) + "\tmcmodsync\tMCModSync-1.8.2.jar\n"
                     + Hashing.md5(wanted) + "\t-\twanted-progress.jar\n";
             server.createContext("/base/mods.txt", exchange -> respond(
                     exchange, manifest.getBytes(StandardCharsets.UTF_8)));
-            server.createContext("/base/MCModSync-1.8.1.jar", exchange -> respond(exchange, updater));
+            server.createContext("/base/MCModSync-1.8.2.jar", exchange -> respond(exchange, updater));
             server.createContext("/base/wanted-progress.jar", exchange -> respond(exchange, wanted));
             server.start();
 
@@ -89,7 +89,7 @@ public final class PostBuildPortableSmoke {
             if (!Arrays.equals(Files.readAllBytes(installed), wanted)) {
                 throw new AssertionError("Helper-installed bytes differ from server bytes");
             }
-            Path updatedUpdater = mods.resolve("MCModSync-1.8.1.jar");
+            Path updatedUpdater = mods.resolve("MCModSync-1.8.2.jar");
             waitFor(() -> Files.isRegularFile(updatedUpdater), Duration.ofSeconds(20),
                     "helper did not install its own new filename");
             if (Files.exists(oldUpdater)) {
