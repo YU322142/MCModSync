@@ -1,13 +1,14 @@
 # 复制到游戏根目录并改名为 modsync.properties。
-# 把 example.invalid 替换为你自己控制的直链。
-manifest=https://example.invalid/mcmodsync/mods.txt
+# 服主发布时，这也是生成 mods-v4.txt 与 MCModSync-Config.jar 的配置模板。
+# 把 example.invalid 替换为你自己控制的直链；正式清单文件名必须为 mods-v4.txt。
+manifest=https://example.invalid/mcmodsync/mods-v4.txt
 
 # 界面语言：auto 优先读取 Minecraft options.txt，其次跟随系统；也可固定为 zh_cn 或 en_us。
 language=auto
 
 # 仅 PojavLauncher、MCinaBox、FCL、Zalith Launcher 2 会判定为手机端。
 # 如需手机端使用另一份清单，取消下一行注释；通常一份 v4 清单即可通过不兼容平台区分。
-# mobileManifest=https://example.invalid/mcmodsync/mobile-mods.txt
+# mobileManifest=https://example.invalid/mcmodsync/mobile-mods-v4.txt
 
 # 不使用资源包同步时保持 false；启用后必须填写有效清单。
 syncResourcePacks=false
@@ -24,5 +25,6 @@ requireManifest=true
 
 connectTimeoutSeconds=15
 requestTimeoutSeconds=300
-maxFileBytes=2147483648
+# 可选的客户端本地单文件上限（字节）。默认不限制；服主不能通过清单或配置引导 JAR 下发此项。
+# maxFileBytes=2147483648
 fileOperationRetries=12

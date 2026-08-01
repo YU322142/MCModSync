@@ -1,257 +1,206 @@
 # MCModSync
 
-MCModSync 1.8.2 是一个 Fabric 客户端启动前同步工具。服主可以在同一份 v4 Mod 清单中区分“必须模组”和“推荐模组”，设置推荐模组的不兼容平台，为每个 Mod 提供中文和英文描述，并让客户端下载后同时校验 MD5 与 SHA256。资源包和服务器列表仍可独立同步。
+MCModSync 是一个 Fabric 客户端启动前同步工具。它把 Mod 分成“必须模组”和“推荐模组”，使用 MD5 与 SHA256 双校验，并根据 Windows、Mac、Linux、手机端的兼容性决定推荐组合。清单、客户端配置和升级入口都可以公开审计；本仓库不包含任何生产站点、令牌、账号或私有路径。
 
 > [!WARNING]
-> **AI 辅助生成代码警示：** 本项目包含 AI 辅助生成或修改的代码与文档。AI 生成内容可能存在逻辑错误、兼容性问题或未知安全风险，不能视为安全审计结论。公开部署前请自行审阅代码、扫描依赖、在隔离测试实例完整验证并保留可恢复备份。使用者自行负责云端清单、下载文件和托管服务器的可信性与安全性。
+> **AI 辅助生成代码警示：** 本项目包含 AI 辅助生成或修改的代码与文档。AI 输出不是安全审计，也不保证没有逻辑错误、兼容性问题或未知风险。部署前请自行审阅源码、扫描依赖、在隔离实例测试并保留可恢复备份。只发布你有权分发且已经验证的 JAR。对外公开日志前请删除签名 URL、内部域名和本机路径。
 
 > [!IMPORTANT]
-> 公开源码不包含生产站点、凭据、令牌、私有路径或个人信息。所有内置 URL 都是不可访问的 `example.invalid` 占位符，必须换成你自己的直链。
+> 所有示例 URL 都使用 `example.invalid`。它们不可访问，必须替换为你自己控制的 HTTP/HTTPS 直链。不要把真实的 `modsync.properties` 提交到公共仓库。
 
-## 核心规则
+## 版本和文件角色
 
-### 必须模组
+当前发布版本为 `1.8.3`，支持 Java 21、Fabric Loader 0.16+ 和 Minecraft 1.21.11+。源码同时保留 v1/v2/v3 读取兼容性。
 
-- Windows、Mac、Linux 和手机端都必须安装。
-- 启动前检查本地文件；缺失、MD5 不符或 SHA256 不符时自动下载/修复。
-- 必须清单不可用、下载失败或双哈希校验失败时阻止进入游戏。
-- 阻止启动和“更新完成后需要重启”均以退出码 `0` 正常结束，让启动器显示正常退出而不是游戏崩溃。
-
-### 推荐模组（电脑端）
-
-- 首次遇到推荐清单或 `catalog-version` 变化时，在启动前显示选择窗口。
-- 所有兼容当前平台的推荐模组默认勾选。
-- 云端标记为不兼容当前平台的条目自动取消勾选并禁止勾选。
-- 支持“一键取消所有推荐模组”；一个都不选也允许启动。
-- 关闭选择窗口等同于“按当前勾选继续”，不会取消启动流程。
-- 选择保存在 `.modsync/recommended-selection.properties`；同一清单版本以后直接复用。
-- 取消已安装的推荐模组时，JAR 会安全移出 `mods` 并保存到 `.modsync/backups`，不会永久删除。
-- 清单版本变化会在日志输出旧版本和新版本，然后重新显示选择窗口。
-
-### 推荐模组（手机端）
-
-- 不显示选择窗口，自动选择当前手机端兼容的全部推荐模组。
-- 同一 `catalog-version` 只自动处理一次。
-- 用户之后删除或损坏推荐模组时，不会在同一清单版本内二次下载；日志会输出名称、文件名、手动下载直链、SHA256 和应放入的 `mods` 路径。
-- `catalog-version` 更新时日志会提示版本变化，并把它视为新的发布批次，获得一次新的自动处理机会。
-- 推荐模组缺失不会阻止启动；必须模组仍严格检查。
-
-## 支持的平台
-
-推荐模组兼容性使用四个平台：`windows`、`mac`、`linux`、`mobile`。
-
-只有以下启动器被识别为手机端：
-
-- PojavLauncher
-- MCinaBox
-- FCL（Fold Craft Launcher）
-- Zalith Launcher 2
-
-其他启动器即使运行在 Android、Cacio AWT 或伪装的 Linux 环境中，也按电脑端处理。
-
-## 中文与 English
-
-- v4 清单为每个 Mod 分别保存“中文描述”和“English description”。
-- 推荐选择窗口按当前语言只显示对应描述；对应语言为空时自动回退另一种语言，不会显示空白。
-- `language=auto` 先读取 Minecraft `options.txt` 中的语言，其次跟随系统语言。
-- 可在 `modsync.properties` 中用 `language=zh_cn` 或 `language=en_us` 强制指定，也可用 JVM 参数 `-Dmodsync.language=en_us` 临时覆盖。
-- 推荐选择窗口、清单发布工具和主要同步提示支持中文与英文。发布编辑表头同时标注两种语言，便于共同维护双语内容。
-- Fabric `fabric.mod.json` 标准通常只提供一个 `description`。内容含中文时发布器放入中文列，否则放入英文列；发布器不会自动翻译，因此大多数英文 Mod 在首次扫描时中文描述为空。
-- 勾选发布器的“扫描后选择上次清单”，可继承上次人工维护的中英文描述，不必每次重新填写。
-
-## 环境要求
-
-- Java 21 或更新版本
-- Fabric Loader 0.16 或更新版本
-- Minecraft 1.21.11 或更新版本
-- 玩家设备能够直接访问你的 HTTP/HTTPS 文件地址
-
-只分发你有权分发的 Mod 和资源。发布前必须在备用实例验证依赖和兼容性。
-
-## 一、生成必须/推荐 Mod 清单
-
-### 图形界面（推荐）
-
-1. 运行或双击 `MCModSync-1.8.2.jar`。
-2. 点击“选择 mods 目录”，选择已经测试完成的发布目录。要兼容 1.6.x/1.7 升级或让 MCModSync 自身更新，这个目录必须包含 `MCModSync-1.8.2.jar`。
-3. 点击“编辑必须/推荐模组并生成清单”。
-4. 如需接着上次发布结果修改，先勾选“扫描后选择上次清单”。工具会先读取当前每个 JAR 并计算 MD5、SHA256，随后让你选择任意位置的上次 v3/v4 清单。
-5. 每行通过“必须 / Required”和“推荐 / Recommended”两个复选框选择类型。两者强制二选一：勾选其中一个会自动取消另一个，不能同时勾选，也不能全部不选。
-6. 对推荐模组勾选“不兼容的平台”。这是排除列表，不勾选表示所有平台兼容。
-7. 核对显示名称和版本，并分别填写“中文描述”和“English description”。这些内容会按玩家语言显示在电脑端的启动前选择窗口。
-8. 设置新的“推荐清单版本”。每次改变推荐列表、默认组合、兼容平台、名称、版本或描述时都要增加它。
-9. 点击“生成 v4 清单”，得到正式使用的 `mods.txt`。目录中包含合格的当前 MCModSync JAR 时，还会同时生成只供旧版升级的 `mods-upgrade-v2.txt`。
-
-表格中的“所选设为必须模组”“所选设为推荐模组”可以批量修改；没有选择行时会应用到全部条目。
-
-继续编辑时，条目集合始终以当前 `mods` 文件夹为准：已删除的 JAR 不会残留，新 JAR 会加入。匹配到相同 Fabric Mod ID 的条目会保留上次的必须/推荐分类、不兼容平台、显示名称和双语描述，同时采用当前 JAR 的新文件名、版本、MD5 和 SHA256。没有 Mod ID 时才按文件名匹配。
-
-### 命令行
-
-```powershell
-java -jar MCModSync-1.8.2.jar "D:\Publish\mods" "D:\Publish\mods.txt"
-```
-
-命令行批量生成时所有条目默认是 `required`。需要配置推荐类型、显示信息和不兼容平台时，应使用图形界面编辑器。
-
-### v4 清单格式
-
-一般不要手写清单。排错时可参考：
+服务器目录应长期保留以下文件：
 
 ```text
-# mcmod-sync-v4
-# catalog-version=2026-07-30-01
-# SHA256\tMD5\tMod ID\t文件名\t类型\t不兼容平台\t名称\t版本\t中文描述\tEnglish description
-<SHA256>\t<MD5>\tsodium\tsodium.jar\trequired\t-\tSodium\t1.0\t渲染优化\tRendering optimization
-<SHA256>\t<MD5>\tiris\tiris.jar\trecommended\tmobile,mac\tIris\t1.0\t光影支持\tShader support
-```
-
-旧 v1/v2/v3 清单仍可读取。v1/v2 没有推荐分类，条目按必须模组处理；v3 的单描述会自动迁移到中文或英文并在另一语言下回退显示。新发布应使用 v4。
-
-### 从 1.6.x/1.7 安全升级
-
-1.6.x 和 1.7 不认识 v4，必须先经过 v2 过渡清单。发布工具会验证扫描目录中存在 Fabric Mod ID 为 `mcmodsync`、版本不低于 1.8.0 的同步器，防止生成无法完成升级的过渡清单。命令行也可以单独生成：
-
-```powershell
-java -jar MCModSync-1.8.2.jar --upgrade-v2 "D:\Publish\mods" "D:\Publish\mods-upgrade-v2.txt"
-```
-
-线上切换顺序：
-
-1. 先上传 `MCModSync-1.8.2.jar` 和过渡清单列出的全部 JAR。
-2. 暂时把线上配置的 `mods.txt` 内容替换为 `mods-upgrade-v2.txt` 的内容。不能只把它作为另一个文件上传，因为旧客户端只会请求已经配置的清单 URL。
-3. 启动旧客户端并确认日志显示需要重启；第二次启动应显示 MCModSync 1.8.2。旧 JAR 会按同一个 Mod ID 自动移出并替换，进程以退出码 `0` 正常结束。
-4. 确认仍需支持的 1.6.x/1.7 客户端已经升级后，再把线上 `mods.txt` 替换为正式 v4 `mods.txt`。
-5. 再次启动，电脑端按 v4 显示推荐模组选择；手机端按 v4 自动处理推荐模组。
-
-过渡 v2 没有“推荐”类型，因此过渡期间所有条目都会被旧客户端当作必须模组；切到 v4 后会立即按最终选择安全移出不需要的推荐模组。不要让旧同步器直接读取 v4，否则它会因格式未知而安全阻止启动。
-
-此升级链路已用用户提供的真实 `MCModSync-1.6.10.jar` 和从本仓库 1.7.0 源码重建的真实 JAR 完成端到端替换测试；自动化测试还会验证 v2 结构、Mod ID 替换及正常退出行为。
-
-## 二、上传文件
-
-把 `mods.txt` 和其中列出的所有 JAR 放在同一公开目录：
-
-```text
-https://files.example.com/minecraft/
-├─ mods.txt
+release/
+├─ mods.txt                  # 永久 v2 旧版升级入口，只给 1.6.x/1.7 及更旧客户端
+├─ mods-v4.txt               # 正式 v4 清单，新客户端从这里读取
+├─ MCModSync-Config.jar      # 固定名配置引导 JAR，必须随两个清单一起发布
+├─ MCModSync-1.8.3.jar       # 当前同步器
 ├─ fabric-api.jar
-├─ sodium.jar
-└─ iris.jar
+├─ required-mod.jar
+└─ recommended-mod.jar
 ```
 
-客户端下载地址由 `mods.txt` 的目录加文件名组成。链接必须直接返回文件内容，不能要求登录、验证码，也不能返回网页预览。上传更新时应先上传 JAR，确认可下载后再上传新清单，避免客户端读到尚未完整发布的版本。
+`mods.txt` 和 `mods-v4.txt` 应与其中列出的 JAR 放在同一 HTTP 目录。清单中的文件名按清单 URL 的目录解析，所以发布时先上传 JAR，再上传清单。`mods.txt` 是永久旧版入口，不要把它改成 v4，也不要删除它，否则以后仍使用旧版的客户端无法自动升级。
 
-## 三、配置玩家客户端
+## 运行规则
 
-1. 将 `MCModSync-1.8.2.jar` 放入实例的 `mods` 目录。
-2. 把 [`modsync.properties.example`](modsync.properties.example) 复制到游戏根目录，即包含 `mods` 的目录。
-3. 将复制件改名为 `modsync.properties`。
-4. 把占位 URL 改成你的真实地址：
+### 必须模组 / Required
+
+- 所有平台都必须存在。
+- 缺失、文件名不匹配、MD5 不符或 SHA256 不符时自动下载或修复。
+- 清单不可用、下载失败或双哈希失败时阻止游戏主类启动。
+- 阻止启动、需要重启更新、配置更新后的重启都以退出码 `0` 正常结束，让启动器显示“正常退出”，而不是崩溃。
+
+### 推荐模组 / Recommended
+
+电脑端第一次遇到清单，或 `catalog-version` 发生变化时，会在启动前打开选择窗口：
+
+- 所有当前平台兼容项默认勾选；云端标记为当前平台不兼容的项默认不勾选且禁止勾选。
+- 每行“必须 / Required”和“推荐 / Recommended”只能选择一个。
+- 提供“一键取消所有推荐模组”，全部不选也允许启动。
+- 点击取消或关闭窗口等同于按当前勾选继续，不会强制选择全部。
+- 已安装但被取消的推荐 JAR 会移动到 `.modsync/backups`，不会直接删除。
+- 选择保存在 `.modsync/recommended-selection.properties`，同一清单版本以后直接复用。
+
+手机端不会显示窗口，会自动下载当前平台兼容的全部推荐模组。每个 `catalog-version` 只自动处理一次；用户之后删除或破坏推荐 JAR 时不二次下载，日志会给出手动下载 URL、SHA256 和目标路径。清单版本更新会在日志中提示并开启新批次的一次自动处理。推荐模组缺失允许继续启动，必须模组仍严格阻止启动。
+
+只有以下启动器识别为手机端：`PojavLauncher`、`MCinaBox`、`FCL`、`Zalith Launcher 2`。其他启动器均按电脑端处理。
+
+## 第一次发布
+
+### 1. 准备发布目录
+
+发布目录的父目录被视为游戏根目录。例如 `D:\Release\1.21.11-fabric\mods` 的配置模板必须是 `D:\Release\1.21.11-fabric\modsync.properties`。把当前 `MCModSync-1.8.3.jar` 放进 `mods` 目录；发布器会把它作为必须模组写入 v4/v2 以支持后续自更新，并生成固定名 `MCModSync-Config.jar`。
+
+复制 [`modsync.properties.example`](modsync.properties.example) 到游戏根目录并改名为 `modsync.properties`，至少修改：
 
 ```properties
-manifest=https://files.example.com/minecraft/mods.txt
-language=auto
-
+manifest=https://files.example.com/minecraft/mods-v4.txt
 syncResourcePacks=false
 syncServerList=false
-
 strict=true
 requireManifest=true
 ```
 
-不使用资源包或服务器列表时，必须把对应开关设为 `false`。真实 `modsync.properties` 可能包含内部域名或签名 URL，已经被 `.gitignore` 忽略，不要提交到公共仓库。
+`manifest` 必须以 `/mods-v4.txt` 结尾。`mobileManifest`、资源包和服务器列表是可选的；启用对应同步时必须提供有效清单 URL。这个文件既是客户端配置，也是发布器的配置模板。发布器只读取其中的服务器管理项，不会把本地语言、超时、重试和文件大小限制写入远程文件。
 
-## 卸载或停用
+### 2. 用图形发布器编辑
 
-1. 完全退出 Minecraft 和启动器中的 Java 进程。
-2. 从实例的 `mods` 目录移除 `MCModSync-1.8.2.jar`。如果曾使用 `-javaagent:` 方式安装，还必须从启动器的 JVM 参数中删除对应的 `-javaagent:<路径>`。
-3. 删除或移走游戏根目录的 `modsync.properties`。
-4. 先检查 `.modsync/backups` 中是否有需要恢复的推荐模组或旧版本文件；确认不再需要后，才删除整个 `.modsync` 目录。该目录还包含推荐选择状态和日志，提前删除会让仍在运行的 MCModSync 把当前清单当作首次处理。
+运行 `MCModSync-1.8.3.jar`，选择已经测试完成的 `mods` 目录，然后打开必须/推荐清单编辑器。
 
-卸载 MCModSync 不会自动删除已同步的其他 Mod，也不会自动把备份放回 `mods`。需要恢复某个文件时，应在游戏完全退出后从 `.modsync/backups/<批次>/` 手动移回，并自行确认依赖兼容。整合包维护者还应从分发包和安装脚本中移除 MCModSync，避免下一次更新再次安装。
+1. 如需接着上次发布的清单修改，勾选“扫描后选择上次清单”。工具先扫描当前 `mods`，再打开你选择的 v3/v4 清单；当前文件夹决定最终条目集合，已删除 JAR 不会残留。
+2. 每行只能勾选一个类型。Fabric API、前置库和服务器要求的内容选择 `required`；可选性能、地图、光影等选择 `recommended`。
+3. 推荐项填写“不兼容的平台”。这是排除列表；不勾选表示四个平台都兼容。可选值为 `windows`、`mac`、`linux`、`mobile`。
+4. 编辑显示名称、版本、中文描述和 English description。JAR 的 `fabric.mod.json` 通常只有一个描述字段：含中文时先填中文列，否则填英文列；发布器不会自动翻译。继续使用上次清单可以保留人工填写的双语内容。
+5. 更新 `catalog-version`。新增/删除推荐项、类型、平台兼容性、默认组合或说明发生变化时都应增加版本号。
+6. 生成清单。工具会计算 MD5/SHA256、写入 `mods-v4.txt`，写入永久兼容入口 `mods.txt`，并生成或更新 `MCModSync-Config.jar`。
 
-## 四、资源包和服务器列表（可选）
+表格底部的“所选设为必须模组”和“所选设为推荐模组”支持批量操作；没有选择行时会作用于全部条目。`required`/`recommended` 互斥约束在界面和清单解析阶段都会检查。
+
+### 3. 命令行发布
+
+命令行扫描并生成 v4 清单，所有扫描到的条目默认为必须模组；需要推荐分类、双语描述和平台排除列表时请使用图形编辑器：
 
 ```powershell
-java -jar MCModSync-1.8.2.jar --resourcepack "D:\Publish\server-pack.zip"
-java -jar MCModSync-1.8.2.jar --serverlist "D:\Publish\servers.dat"
+java -jar MCModSync-1.8.3.jar "D:\Release\1.21.11-fabric\mods"
 ```
 
-分别生成 `resourcepacks.txt`、`serverlist.txt`。将清单和对应的 ZIP/`servers.dat` 放在同一云端目录，并在配置中启用：
+默认输出为 `mods-v4.txt`，并在 `mods` 目录旁生成永久 `mods.txt`。也可以指定 v4 输出路径：
 
-```properties
-syncResourcePacks=true
-resourcePackManifest=https://files.example.com/minecraft/resourcepacks.txt
-
-syncServerList=true
-serverListManifest=https://files.example.com/minecraft/serverlist.txt
+```powershell
+java -jar MCModSync-1.8.3.jar "D:\Release\1.21.11-fabric\mods" "D:\Publish\mods-v4.txt"
 ```
 
-SHA256 双校验应用于 Mod v3/v4 清单；资源包和服务器列表仍使用各自的 MD5 清单格式。
+## 从 1.6.x/1.7 无缝升级
 
-## 五、首次测试
+旧版客户端只理解 v1/v2，不理解 v4。当前方案不需要更换旧客户端里的 URL：旧 URL 永久指向 `mods.txt`，v2 清单会把当前同步器和配置引导 JAR 当作必须模组发下去。
 
-1. 备份整个实例，特别是 `mods`、`resourcepacks`、`servers.dat` 和 `.modsync`。
-2. 用全新电脑端实例启动，确认推荐选择窗口、全选和一键取消可用。
-3. 取消一个已经安装的推荐模组，确认它被移动到 `.modsync/backups`。
-4. 不选择任何推荐模组，确认仍能启动。
-5. 用四种受支持手机启动器中的实际目标启动器测试一次；删除一个已自动安装的推荐模组，再启动并确认只记录手动安装提示、不二次下载。
-6. 修改 `catalog-version`，确认日志出现 `旧版本 -> 新版本`；电脑端应重新询问，手机端应执行新批次的一次自动处理。
-7. 破坏一个必须模组或把必须清单 URL 改成无效地址，确认游戏不会进入，并且启动器显示正常退出而不是崩溃。
+发布器已生成 `mods.txt` 时，线上目录保持以下内容并让旧 URL 指向 `mods.txt`：
 
-## 配置项
+```text
+mods.txt
+mods-v4.txt
+MCModSync-Config.jar
+MCModSync-1.8.3.jar
+其余所有 Mod JAR
+```
 
-| 配置项 | 作用 | 建议 |
-| --- | --- | --- |
-| `manifest` | Mod v4 清单 URL | 必填 |
-| `mobileManifest` | 手机启动器使用的另一份 Mod 清单 | 可选；通常使用同一份即可 |
-| `language` | `auto`、`zh_cn` 或 `en_us` | 默认 `auto` |
-| `syncResourcePacks` | 是否同步资源包 | 不使用时设为 `false` |
-| `resourcePackManifest` | 资源包清单 URL | 启用时必填 |
-| `mobileResourcePackManifest` | 手机端资源包清单 URL | 可选 |
-| `syncServerList` | 是否同步服务器列表 | 不使用时设为 `false` |
-| `serverListManifest` | 服务器列表清单 URL | 启用时必填 |
-| `strict` | 服务器移除旧管理 Mod 时执行严格处理 | 推荐 `true` |
-| `requireManifest` | 清单不可用时阻止启动 | 安全策略固定要求为 `true` |
-| `connectTimeoutSeconds` | 建连超时秒数 | 默认 `15` |
-| `requestTimeoutSeconds` | 请求总超时秒数 | 默认 `300` |
-| `maxFileBytes` | 单文件最大字节数 | 默认 2 GiB |
-| `fileOperationRetries` | 文件占用时的重试次数 | 默认 `12` |
+旧客户端的启动过程：
 
-## 状态、备份和日志
+1. 读取原来的 v2 `mods.txt`。
+2. 下载并校验 `MCModSync-1.8.3.jar`，按 Fabric Mod ID `mcmodsync` 自动移出旧版本并安装新版本。
+3. 下载固定名 `MCModSync-Config.jar`。
+4. 正常退出，启动器显示正常退出。
 
-- 推荐选择：`.modsync/recommended-selection.properties`
-- 同步历史：`.modsync/server-manifest.txt`
-- 自动备份：`.modsync/backups/`
-- 无弹窗环境状态：`.modsync/ui-status.txt`
-- 下载进度：`.modsync/progress.log`
-- 退出后更新日志：`.modsync/helper.log`
-- Minecraft 日志：`logs/latest.log`
+下一次启动时，1.8.3 会从 `mods/MCModSync-Config.jar` 读取服务器管理配置，自动创建或更新游戏根目录的 `modsync.properties`，保留本地专属设置，然后读取 `mods-v4.txt`。配置已经存在且无其他更新时可以直接继续进入游戏；配置或 Mod 需要更新时会正常退出并提示再次启动。
 
-不要直接编辑状态文件。需要在测试客户端完全重置推荐选择时，应先备份 `.modsync`，关闭所有游戏/Java 进程，再移走 `recommended-selection.properties`。
+因此不要把过渡内容临时覆盖到 v4 文件，也不要把 v2 清单另存为一个旧客户端不知道的 URL。`mods.txt` 可以永久保留，供以后仍在使用 1.6.x/1.7 的客户端升级。
 
-## 常见问题
+也可以只生成永久 v2 入口：
 
-**清单版本更新但电脑端没有弹窗**：确认 `catalog-version` 确实变化，并检查是否被无弹窗/headless 参数禁用了 Swing。日志会记录平台、版本变化和回退行为。
+```powershell
+java -jar MCModSync-1.8.3.jar --upgrade-v2 "D:\Release\1.21.11-fabric\mods"
+```
 
-**手机端删除推荐模组后没有自动恢复**：这是设计行为。同一清单版本只自动处理一次，请按日志中的直链和 SHA256 手动安装；或者发布新的 `catalog-version`。
+这个命令默认写入 `D:\Release\1.21.11-fabric\mods\mods.txt`，仍会读取配置模板并确保配置引导 JAR 在清单中。发布前必须把 v4、v2、配置引导 JAR 和所有 Mod 一起上传。
 
-**取消推荐模组后找不到文件**：查看 `.modsync/backups`。取消操作是安全移出，不是永久删除。
+## 清单格式和配置管理
 
-**启动被阻止**：检查必须清单 URL、HTTPS 证书、直链权限、文件名和双哈希。错误会记录在启动器日志；进程仍以正常退出码结束。
+典型 v4 文件包含：
 
-**每次都重新下载**：通常是云端文件内容与清单哈希不同，或 CDN 混用了新旧版本。重新生成清单并清理 CDN 缓存。
+```text
+# mcmod-sync-v4
+# catalog-version=2026-07-30-01
+# client-config.manifest=https://files.example.com/minecraft/mods-v4.txt
+# client-config.mobileManifest=https://files.example.com/minecraft/mobile-mods-v4.txt
+# client-config.syncResourcePacks=false
+# client-config.syncServerList=false
+# client-config.strict=true
+# client-config.requireManifest=true
+# SHA256<TAB>MD5<TAB>Mod ID<TAB>文件名<TAB>类型<TAB>不兼容平台<TAB>名称<TAB>版本<TAB>中文描述<TAB>English description
+<sha256>\t<md5>\tsodium\tsodium.jar\trecommended\tmobile\tSodium\t1.0\t渲染优化\tRendering optimization
+```
 
-完整运维流程见 [中文使用指南](docs/中文使用指南.md)。
+只有以下服务器管理项允许出现在 `client-config.*` 中：`manifest`、`mobileManifest`、`syncResourcePacks`、`resourcePackManifest`、`mobileResourcePackManifest`、`syncServerList`、`serverListManifest`、`strict`、`requireManifest`。`requireManifest=false` 会被拒绝，未知项也会让清单失效。
 
-## 从源码构建
+文件大小限制不属于远程配置：客户端未填写 `maxFileBytes` 时默认不主动限制下载文件大小；只有玩家/整合包在本地 `modsync.properties` 中显式填写时才启用该限制。`maxFileBytes`、`language`、超时和重试参数不会写进 v4 清单或配置引导 JAR，也不会被服务器覆盖。
+
+远程配置更新时，新客户端会原子更新 `modsync.properties`，保留全部本地专属键，并在需要时正常退出一次让新配置生效。配置引导 JAR 使用固定文件名和固定资源路径，客户端不会扫描或信任其他普通 Mod JAR 中的配置资源。
+
+## 玩家配置、语言和卸载
+
+1. 把 `MCModSync-1.8.3.jar` 放入实例 `mods` 目录。
+2. 将 [`modsync.properties.example`](modsync.properties.example) 复制到游戏根目录并改名为 `modsync.properties`。
+3. 修改自己的 v4 直链。语言可填 `auto`、`zh_cn` 或 `en_us`；也可用 `-Dmodsync.language=en_us` 临时覆盖。
+4. 不使用资源包或服务器列表时，把 `syncResourcePacks`/`syncServerList` 设为 `false`。
+
+卸载时完全退出游戏和所有 Java 进程：
+
+1. 从实例 `mods` 删除 `MCModSync-1.8.3.jar` 和 `MCModSync-Config.jar`。
+2. 删除游戏根目录 `modsync.properties`。
+3. 如果使用过 `-javaagent:`，从启动器 JVM 参数删除对应参数。
+4. 需要恢复被取消的推荐 Mod 时，先从 `.modsync/backups/<批次>/` 手动移回并检查哈希，再决定是否删除 `.modsync`。卸载不会自动删除或恢复其他 Mod。
+
+## 可选资源包和服务器列表
+
+```powershell
+java -jar MCModSync-1.8.3.jar --resourcepack "D:\Publish\server-pack.zip"
+java -jar MCModSync-1.8.3.jar --serverlist "D:\Publish\servers.dat"
+```
+
+分别生成资源包和服务器列表清单。将清单和对应文件放到直链目录，并在本地配置中启用对应开关。Mod v4 使用 MD5+SHA256；资源包和服务器列表继续使用各自格式。
+
+## 排错和状态文件
+
+- `.modsync/recommended-selection.properties`：电脑端选择和手机端一次处理状态。
+- `.modsync/server-manifest.txt`：最近一次远程 Mod 清单缓存。
+- `.modsync/backups/`：被替换或取消的文件。
+- `.modsync/progress.log`、`.modsync/helper.log`、`.modsync/ui-status.txt`：下载、辅助更新和无弹窗状态。
+- `logs/latest.log`：Fabric/游戏日志。
+
+清单版本更新时日志会输出旧版本和新版本。手机端同版本删除推荐 Mod 后只记录手动恢复方式；电脑端重新选择即可。启动阻止应看到 `STARTUP_BLOCKED`，但退出码为 `0`，且游戏主类不会运行。
+
+发布顺序建议：先上传所有 JAR，确认 URL 返回原始文件，再上传两个清单；CDN 有缓存时先处理缓存失效，避免清单和 JAR 跨版本混用。
+
+## 构建和测试
 
 ```powershell
 ./build.ps1
 ```
 
-脚本会编译、运行全部测试并输出 `build/dist/MCModSync-1.8.2.jar`。如需额外运行真实旧版升级冒烟测试，可设置 `MCMODSYNC_LEGACY_JAR`；1.6.x 默认入口点会自动使用，验证 1.7 时可再设置 `MCMODSYNC_LEGACY_ENTRYPOINT=io.github.mcmodsync.FabricPreLaunchEntrypoint`。
+脚本会编译主类和测试、运行完整测试、构建 `build/dist/MCModSync-1.8.3.jar`，并执行正常退出、便携模式、资源同步和清单兼容性检查。要验证真实旧版升级：
+
+```powershell
+$env:MCMODSYNC_LEGACY_JAR = 'D:\Legacy\MCModSync-1.6.10.jar'
+./build.ps1
+```
+
+1.7 验证时额外设置 `MCMODSYNC_LEGACY_ENTRYPOINT=io.github.mcmodsync.FabricPreLaunchEntrypoint`。构建输出会复制到仓库上级 `outputs` 目录。发布前请检查 `git diff` 和敏感信息扫描。
 
 ## 许可证
 

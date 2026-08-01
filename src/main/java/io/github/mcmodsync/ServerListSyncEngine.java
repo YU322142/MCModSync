@@ -126,7 +126,7 @@ final class ServerListSyncEngine {
                 config.serverListManifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.8.2",
+                "MCModSync/1.8.3",
                 "服务器列表清单",
                 logger);
         try {
@@ -140,7 +140,7 @@ final class ServerListSyncEngine {
         URI fileUri = config.serverListManifestUri().resolve("./" + ServerListManifest.FILE_NAME);
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.8.2")
+                .header("User-Agent", "MCModSync/1.8.3")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());

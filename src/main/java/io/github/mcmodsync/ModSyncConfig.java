@@ -1,7 +1,6 @@
 package io.github.mcmodsync;
 
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +17,7 @@ record ModSyncConfig(
         URI resourcePackManifestUri,
         URI serverListManifestUri,
         Path gameDirectory,
+        Path configurationDirectory,
         boolean syncResourcePacks,
         boolean syncServerList,
         boolean strict,
@@ -34,6 +34,7 @@ record ModSyncConfig(
                 resourcePackManifestUri,
                 serverListManifestUri,
                 directory.toAbsolutePath().normalize(),
+                configurationDirectory,
                 syncResourcePacks,
                 syncServerList,
                 strict,
@@ -49,10 +50,10 @@ record ModSyncConfig(
      * Safe placeholder only. Deployments must configure their own manifests in
      * {@code modsync.properties} or through agent/system properties.
      */
-    static final URI DEFAULT_MANIFEST_URI = URI.create("https://example.invalid/mcmodsync/mods.txt");
+    static final URI DEFAULT_MANIFEST_URI = URI.create("https://example.invalid/mcmodsync/mods-v4.txt");
 
     /** Default mods manifest used when RuntimeEnvironment detects mobile (Zalith/Pojav/etc.). */
-    static final URI DEFAULT_MOBILE_MANIFEST_URI = URI.create("https://example.invalid/mcmodsync/mobile-mods.txt");
+    static final URI DEFAULT_MOBILE_MANIFEST_URI = URI.create("https://example.invalid/mcmodsync/mobile-mods-v4.txt");
 
     static final URI DEFAULT_RESOURCE_PACK_MANIFEST_URI = URI.create(
             "https://example.invalid/mcmodsync/resourcepacks.txt");
@@ -78,8 +79,8 @@ record ModSyncConfig(
         Properties fileProperties = new Properties();
         Path propertiesPath = gameDirectory.resolve("modsync.properties");
         if (Files.isRegularFile(propertiesPath)) {
-            try (InputStream input = Files.newInputStream(propertiesPath)) {
-                fileProperties.load(input);
+            try {
+                fileProperties = PropertiesFiles.load(propertiesPath);
             } catch (IOException exception) {
                 throw new IllegalArgumentException("无法读取配置文件: " + propertiesPath, exception);
             }
@@ -114,10 +115,10 @@ record ModSyncConfig(
                 5,
                 3600);
         long maxFileBytes = parseLong(
-                resolve("maxFileBytes", agent, fileProperties, "2147483648"),
+                resolve("maxFileBytes", agent, fileProperties, Long.toString(Long.MAX_VALUE)),
                 "maxFileBytes",
                 1,
-                20L * 1024 * 1024 * 1024);
+                Long.MAX_VALUE);
         int retries = (int) parseLong(
                 resolve("fileOperationRetries", agent, fileProperties, "12"),
                 "fileOperationRetries",
@@ -132,6 +133,7 @@ record ModSyncConfig(
                 manifestUri,
                 resourcePackManifestUri,
                 serverListManifestUri,
+                gameDirectory,
                 gameDirectory,
                 syncResourcePacks,
                 syncServerList,
@@ -276,6 +278,10 @@ record ModSyncConfig(
             explicit = System.getProperty("user.dir", ".");
         }
         return Path.of(explicit.strip()).toAbsolutePath().normalize();
+    }
+
+    static Path determineGameDirectory(String agentArguments, Path detectedGameDirectory) {
+        return determineGameDirectory(parseAgentArguments(agentArguments), detectedGameDirectory);
     }
 
     private static String resolve(

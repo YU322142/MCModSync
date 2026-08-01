@@ -27,7 +27,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -59,7 +61,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.8.2");
+            System.out.println("MCModSync 1.8.3");
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {
@@ -72,17 +74,17 @@ public final class PublisherMain {
                     ? Path.of(arguments[2]).toAbsolutePath().normalize()
                     : modsDirectory.resolve(LegacyUpgradeManifest.DEFAULT_FILE_NAME);
             try {
-                ModManifest catalog = ModManifest.scan(modsDirectory);
-                catalog.ensureUniqueModIds();
+                PublicationScan publication = preparePublication(modsDirectory);
+                ModManifest catalog = completePublication(publication.scanned(), publication);
                 LegacyUpgradeManifest.write(catalog, output);
                 System.out.println(text(
-                        "1.6.x/1.7 过渡清单生成成功: ",
-                        "1.6.x/1.7 transition catalog generated: ") + output);
+                        "1.6.x/1.7 永久升级入口生成成功: ",
+                        "Permanent 1.6.x/1.7 upgrade gateway generated: ") + output);
                 return 0;
             } catch (Exception exception) {
                 System.err.println(text(
-                        "过渡清单生成失败: ",
-                        "Transition catalog generation failed: ") + exception.getMessage());
+                        "永久升级入口生成失败: ",
+                        "Permanent upgrade gateway generation failed: ") + exception.getMessage());
                 return 1;
             }
         }
@@ -132,7 +134,7 @@ public final class PublisherMain {
         Path modsDirectory = Path.of(arguments[0]).toAbsolutePath().normalize();
         Path output = arguments.length == 2
                 ? Path.of(arguments[1]).toAbsolutePath().normalize()
-                : modsDirectory.resolve("mods.txt");
+                : modsDirectory.resolve(ManagedClientConfig.MANIFEST_FILE_NAME);
         try {
             int count = generate(modsDirectory, output);
             System.out.println(text("生成成功，共 ", "Generated ") + count
@@ -145,7 +147,8 @@ public final class PublisherMain {
     }
 
     private static int generate(Path modsDirectory, Path output) throws IOException {
-        ModManifest manifest = ModManifest.scan(modsDirectory);
+        PublicationScan publication = preparePublication(modsDirectory);
+        ModManifest manifest = completePublication(publication.scanned(), publication);
         try {
             manifest.ensureUniqueModIds();
         } catch (IllegalArgumentException exception) {
@@ -155,6 +158,7 @@ public final class PublisherMain {
                     + exception.getMessage(), exception);
         }
         manifest.write(output);
+        LegacyUpgradeManifest.write(manifest, modsDirectory.resolve(LegacyUpgradeManifest.DEFAULT_FILE_NAME));
         long withoutModId = manifest.entriesWithoutModId();
         if (withoutModId > 0) {
             System.err.println(text("警告：有 ", "Warning: ") + withoutModId
@@ -163,6 +167,51 @@ public final class PublisherMain {
                             " JAR(s) have no readable fabric.mod.json/id; renamed versions will use filename matching."));
         }
         return manifest.entries().size();
+    }
+
+    private static PublicationScan preparePublication(Path modsDirectory) throws IOException {
+        Path normalized = modsDirectory.toAbsolutePath().normalize();
+        Path gameDirectory = normalized.getParent();
+        if (gameDirectory == null) {
+            throw new IOException("无法确定 mods 的游戏根目录: " + normalized);
+        }
+        Path configurationTemplate = gameDirectory.resolve("modsync.properties");
+        ManagedClientConfig managedConfig = ManagedClientConfig.fromPropertiesFile(configurationTemplate);
+        ManifestEntry bootstrapEntry = ManagedClientConfig.writeBootstrapJar(normalized, managedConfig);
+        ModManifest scanned = ModManifest.scan(normalized, ManagedClientConfig.BOOTSTRAP_MOD_ID);
+        scanned.ensureUniqueModIds();
+        long syncTools = scanned.entries().stream()
+                .filter(entry -> entry.modId().equals("mcmodsync"))
+                .count();
+        if (syncTools != 1) {
+            throw new IOException("发布目录必须恰好包含一个当前 MCModSync JAR（Fabric Mod ID: mcmodsync）");
+        }
+        return new PublicationScan(scanned, managedConfig, bootstrapEntry, configurationTemplate);
+    }
+
+    private static ModManifest completePublication(ModManifest edited, PublicationScan publication) {
+        List<ManifestEntry> entries = new ArrayList<>(edited.entries().size() + 1);
+        for (ManifestEntry entry : edited.entries()) {
+            if (!entry.modId().equals(ManagedClientConfig.BOOTSTRAP_MOD_ID)) {
+                entries.add(entry.modId().equals("mcmodsync") ? asRequired(entry) : entry);
+            }
+        }
+        entries.add(publication.bootstrapEntry());
+        return edited.withEntries(entries).withManagedClientConfig(publication.managedConfig());
+    }
+
+    private static ManifestEntry asRequired(ManifestEntry entry) {
+        return new ManifestEntry(
+                entry.sha256(),
+                entry.md5(),
+                entry.modId(),
+                entry.fileName(),
+                ModKind.REQUIRED,
+                java.util.Set.of(),
+                entry.displayName(),
+                entry.version(),
+                entry.descriptionZh(),
+                entry.descriptionEn());
     }
 
     private static void generateResourcePack(Path resourcePack, Path output) throws IOException {
@@ -209,8 +258,10 @@ public final class PublisherMain {
         log.setLineWrap(true);
         log.setWrapStyleWord(true);
         log.setText(text(
-                "选择测试完成的客户端 mods 目录。\n生成的 mods.txt 会放在该目录内，不会修改任何 JAR。\n",
-                "Choose a tested client mods directory.\nThe generated mods.txt is saved there; no JAR is modified.\n"));
+                "选择测试完成的客户端 mods 目录。游戏根目录必须有发布用 modsync.properties。\n"
+                        + "工具会生成正式 mods-v4.txt、旧版入口 mods.txt 和配置引导 JAR。\n",
+                "Choose a tested client mods directory. A publishing modsync.properties must exist in the game root.\n"
+                        + "The tool generates mods-v4.txt, the legacy mods.txt gateway, and a configuration bootstrap JAR.\n"));
 
         constraints.gridx = 0;
         constraints.gridy = 0;
@@ -277,19 +328,17 @@ public final class PublisherMain {
                         JOptionPane.ERROR_MESSAGE);
                 return;
             }
-            Path output = modsDirectory.resolve("mods.txt");
+            Path output = modsDirectory.resolve(ManagedClientConfig.MANIFEST_FILE_NAME);
             boolean choosePreviousCatalog = loadPreviousCatalog.isSelected();
             generateButton.setEnabled(false);
             loadPreviousCatalog.setEnabled(false);
             log.append(text(
                     "\n开始读取 Mod 信息并计算 MD5/SHA256：",
                     "\nReading mod metadata and calculating MD5/SHA256: ") + modsDirectory + "\n");
-            new SwingWorker<ModManifest, Void>() {
+            new SwingWorker<PublicationScan, Void>() {
                 @Override
-                protected ModManifest doInBackground() throws Exception {
-                    ModManifest scanned = ModManifest.scan(modsDirectory);
-                    scanned.ensureUniqueModIds();
-                    return scanned;
+                protected PublicationScan doInBackground() throws Exception {
+                    return preparePublication(modsDirectory);
                 }
 
                 @Override
@@ -297,7 +346,10 @@ public final class PublisherMain {
                     generateButton.setEnabled(true);
                     loadPreviousCatalog.setEnabled(true);
                     try {
-                        ModManifest scanned = get();
+                        PublicationScan publication = get();
+                        log.append(text("发布配置模板：", "Publishing configuration template: ")
+                                + publication.configurationTemplate() + "\n");
+                        ModManifest scanned = publication.scanned();
                         if (choosePreviousCatalog) {
                             Optional<Path> previousPath = choosePreviousCatalog(frame, modsDirectory);
                             if (previousPath.isEmpty()) {
@@ -327,29 +379,18 @@ public final class PublisherMain {
                             log.append(text("已取消生成 Mod 清单。\n", "Mod catalog generation cancelled.\n"));
                             return;
                         }
-                        edited.get().write(output);
+                        ModManifest completed = completePublication(edited.get(), publication);
+                        completed.ensureUniqueModIds();
+                        completed.write(output);
                         Path upgradeOutput = modsDirectory.resolve(LegacyUpgradeManifest.DEFAULT_FILE_NAME);
-                        String upgradeNotice;
-                        int successMessageType = JOptionPane.INFORMATION_MESSAGE;
-                        try {
-                            LegacyUpgradeManifest.write(edited.get(), upgradeOutput);
-                            log.append(text(
-                                    "1.6.x/1.7 过渡清单：",
-                                    "1.6.x/1.7 transition catalog: ") + upgradeOutput + "\n");
-                            upgradeNotice = text(
-                                    "\n\n同时生成 mods-upgrade-v2.txt，可用于先把 1.6.x/1.7 客户端升级到 1.8+。",
-                                    "\n\nmods-upgrade-v2.txt was also generated to upgrade 1.6.x/1.7 clients to 1.8+ first.");
-                        } catch (IllegalArgumentException exception) {
-                            Files.deleteIfExists(upgradeOutput);
-                            successMessageType = JOptionPane.WARNING_MESSAGE;
-                            upgradeNotice = text(
-                                    "\n\n未生成旧版升级清单：" + exception.getMessage()
-                                            + "\n如需升级旧客户端，请把当前 MCModSync JAR 放入这个 mods 目录后重新生成。",
-                                    "\n\nNo legacy transition catalog was generated: " + exception.getMessage()
-                                            + "\nTo upgrade old clients, put the current MCModSync JAR in this mods directory and regenerate.");
-                            log.append(upgradeNotice.strip() + "\n");
-                        }
-                        int count = edited.get().entries().size();
+                        LegacyUpgradeManifest.write(completed, upgradeOutput);
+                        log.append(text(
+                                "1.6.x/1.7 永久升级入口：",
+                                "Permanent 1.6.x/1.7 upgrade gateway: ") + upgradeOutput + "\n");
+                        String upgradeNotice = text(
+                                "\n\nmods.txt 是旧版永久升级入口；升级后的客户端会自动写入配置并读取 mods-v4.txt。",
+                                "\n\nmods.txt is the permanent legacy gateway; upgraded clients automatically configure themselves and use mods-v4.txt.");
+                        int count = completed.entries().size();
                         log.append(text("完成，共 ", "Completed: ") + count
                                 + text(" 个 Mod。\n清单：", " mod(s).\nCatalog: ") + output + "\n");
                         Object[] options = Desktop.isDesktopSupported()
@@ -357,14 +398,14 @@ public final class PublisherMain {
                                 : new Object[]{text("关闭", "Close")};
                         int choice = JOptionPane.showOptionDialog(
                                 frame,
-                                text("v4 mods.txt 已生成，共 ", "v4 mods.txt generated with ") + count
+                                text("正式 mods-v4.txt 已生成，共 ", "The production mods-v4.txt was generated with ") + count
                                         + text(
                                                 " 个 Mod。\n已包含 MD5、SHA256、必须/推荐分类、平台兼容和中英文描述。",
                                                 " mod(s).\nIncludes MD5, SHA256, required/recommended types, platform compatibility, and Chinese/English descriptions.")
                                         + upgradeNotice,
                                 text("生成成功", "Generation complete"),
                                 JOptionPane.DEFAULT_OPTION,
-                                successMessageType,
+                                JOptionPane.INFORMATION_MESSAGE,
                                 null,
                                 options,
                                 options[0]);
@@ -588,8 +629,8 @@ public final class PublisherMain {
         System.out.println(text("用法：", "Usage:"));
         System.out.println(text("  双击 JAR：打开图形界面", "  Double-click the JAR to open the GUI"));
         System.out.println(text(
-                "  java -jar MCModSync.jar <mods目录> [mods.txt输出路径]",
-                "  java -jar MCModSync.jar <mods-directory> [mods.txt-output]"));
+                "  java -jar MCModSync.jar <mods目录> [mods-v4.txt输出路径]",
+                "  java -jar MCModSync.jar <mods-directory> [mods-v4.txt-output]"));
         System.out.println(text(
                 "  java -jar MCModSync.jar --resourcepack <资源包.zip> [resourcepacks.txt输出路径]",
                 "  java -jar MCModSync.jar --resourcepack <resource-pack.zip> [resourcepacks.txt-output]"));
@@ -597,8 +638,8 @@ public final class PublisherMain {
                 "  java -jar MCModSync.jar --serverlist <servers.dat> [serverlist.txt输出路径]",
                 "  java -jar MCModSync.jar --serverlist <servers.dat> [serverlist.txt-output]"));
         System.out.println(text(
-                "  java -jar MCModSync.jar --upgrade-v2 <mods目录> [mods-upgrade-v2.txt输出路径]",
-                "  java -jar MCModSync.jar --upgrade-v2 <mods-directory> [mods-upgrade-v2.txt-output]"));
+                "  java -jar MCModSync.jar --upgrade-v2 <mods目录> [mods.txt输出路径]",
+                "  java -jar MCModSync.jar --upgrade-v2 <mods-directory> [mods.txt-output]"));
         System.out.println(text(
                 "  语言：-Dmodsync.language=zh_cn 或 -Dmodsync.language=en_us",
                 "  Language: -Dmodsync.language=zh_cn or -Dmodsync.language=en_us"));
@@ -606,5 +647,12 @@ public final class PublisherMain {
 
     private static String text(String chinese, String english) {
         return LANGUAGE.text(chinese, english);
+    }
+
+    private record PublicationScan(
+            ModManifest scanned,
+            ManagedClientConfig managedConfig,
+            ManifestEntry bootstrapEntry,
+            Path configurationTemplate) {
     }
 }

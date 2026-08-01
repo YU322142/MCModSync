@@ -312,6 +312,7 @@ public final class PortableUpdateHelper {
                             resourcePackManifest,
                             serverListManifest,
                             gameDirectory,
+                            gameDirectory,
                             syncResourcePacks,
                             syncServerList,
                             strict,

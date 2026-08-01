@@ -13,6 +13,7 @@ import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -31,28 +32,38 @@ final class ModManifest {
     private final int format;
     private final String catalogVersion;
     private final List<ManifestEntry> entries;
+    private final ManagedClientConfig managedClientConfig;
 
-    private ModManifest(int format, String catalogVersion, List<ManifestEntry> entries) {
+    private ModManifest(
+            int format,
+            String catalogVersion,
+            List<ManifestEntry> entries,
+            ManagedClientConfig managedClientConfig) {
         this.format = format;
         this.catalogVersion = catalogVersion == null ? "" : catalogVersion.strip();
         this.entries = List.copyOf(entries);
+        this.managedClientConfig = managedClientConfig;
     }
 
     static ModManifest fromEntries(List<ManifestEntry> entries) {
         boolean modern = entries.stream().allMatch(entry -> !entry.sha256().isBlank());
-        return new ModManifest(modern ? 4 : 2, modern ? generatedCatalogVersion() : "", entries);
+        return new ModManifest(modern ? 4 : 2, modern ? generatedCatalogVersion() : "", entries, null);
     }
 
     static ModManifest fromEntries(String catalogVersion, List<ManifestEntry> entries) {
-        return new ModManifest(4, requireCatalogVersion(catalogVersion), entries);
+        return new ModManifest(4, requireCatalogVersion(catalogVersion), entries, null);
     }
 
     ModManifest withEntries(List<ManifestEntry> replacement) {
-        return new ModManifest(format, catalogVersion, replacement);
+        return new ModManifest(format, catalogVersion, replacement, managedClientConfig);
     }
 
     ModManifest withCatalogVersion(String replacement) {
-        return new ModManifest(Math.max(format, 4), requireCatalogVersion(replacement), entries);
+        return new ModManifest(Math.max(format, 4), requireCatalogVersion(replacement), entries, managedClientConfig);
+    }
+
+    ModManifest withManagedClientConfig(ManagedClientConfig replacement) {
+        return new ModManifest(Math.max(format, 4), catalogVersion, entries, replacement);
     }
 
     static ModManifest scan(Path modsDirectory) throws IOException {
@@ -109,7 +120,7 @@ final class ModManifest {
         if (entries.isEmpty()) {
             throw new IOException("没有可发布的 .jar Mod；为防止生成空清单，操作已取消。");
         }
-        return new ModManifest(4, generatedCatalogVersion(), entries);
+        return new ModManifest(4, generatedCatalogVersion(), entries, null);
     }
 
     static ModManifest parse(String text) {
@@ -171,7 +182,11 @@ final class ModManifest {
         if (entries.isEmpty()) {
             throw new IllegalArgumentException("清单不包含任何 Mod；为防止误清空客户端，已拒绝执行");
         }
-        return new ModManifest(format, catalogVersion, entries);
+        Optional<ManagedClientConfig> managed = ManagedClientConfig.fromManifestText(text);
+        if (managed.isPresent() && format < 4) {
+            throw new IllegalArgumentException("客户端受管配置只能写入 v4 清单");
+        }
+        return new ModManifest(format, catalogVersion, entries, managed.orElse(null));
     }
 
     private static ManifestEntry parseV1(String line, int lineNumber) {
@@ -309,6 +324,9 @@ final class ModManifest {
         builder.append("# catalog-version=").append(catalogVersion).append('\n');
         builder.append("# minecraft=1.21.11\n# loader=fabric\n");
         if (format >= 4) {
+            if (managedClientConfig != null) {
+                builder.append(managedClientConfig.serializeManifestComments());
+            }
             builder.append("# SHA256\\tMD5\\tMod ID\\t文件名\\t类型\\t不兼容平台\\t名称\\t版本"
                     + "\\t中文描述\\tEnglish description\n");
         } else {
@@ -342,6 +360,10 @@ final class ModManifest {
 
     boolean supportsRecommendations() {
         return format >= 3;
+    }
+
+    Optional<ManagedClientConfig> managedClientConfig() {
+        return Optional.ofNullable(managedClientConfig);
     }
 
     List<ManifestEntry> entries() {

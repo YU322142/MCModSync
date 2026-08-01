@@ -97,7 +97,12 @@ final class ModSyncEngine {
                 desiredManifest = ModManifest.parse(manifestText);
                 desiredManifest.ensureUniqueModIds();
             } catch (IllegalArgumentException exception) {
-                throw new IOException("云端 mods.txt 格式无效，已阻止启动: " + exception.getMessage(), exception);
+                throw new IOException("云端 Mod 清单格式无效，已阻止启动: " + exception.getMessage(), exception);
+            }
+            if (desiredManifest.managedClientConfig().isPresent()
+                    && desiredManifest.managedClientConfig().get().apply(config.configurationDirectory())) {
+                logger.accept("服务器管理的 modsync.properties 已更新，需要重新启动后应用");
+                return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
             }
 
             ModManifest previousManifest = loadServerHistory(stateDirectory);
@@ -228,7 +233,12 @@ final class ModSyncEngine {
             manifest = ModManifest.parse(manifestText);
             manifest.ensureUniqueModIds();
         } catch (IllegalArgumentException exception) {
-            throw new IOException("云端 mods.txt 格式无效，已阻止启动: " + exception.getMessage(), exception);
+            throw new IOException("云端 Mod 清单格式无效，已阻止启动: " + exception.getMessage(), exception);
+        }
+        boolean managedConfigChanged = manifest.managedClientConfig().isPresent()
+                && manifest.managedClientConfig().get().apply(config.configurationDirectory());
+        if (managedConfigChanged) {
+            logger.accept("服务器管理的 modsync.properties 已更新；同步完成后需要重新启动");
         }
 
         ModManifest previousServerManifest = loadServerHistory(stateDirectory);
@@ -380,7 +390,11 @@ final class ModSyncEngine {
             persistServerHistory(manifest, stateDirectory, modsDirectory);
             RecommendedSelectionStore.markMobileCompleted(selection);
             logger.accept("服务器管理的 Mod 与云端清单一致，共 " + unchanged + " 个文件；客户端 Mod 已保留。");
-            return new SyncResult(SyncResult.Status.UNCHANGED, 0, 0, unchanged);
+            return new SyncResult(
+                    managedConfigChanged ? SyncResult.Status.UPDATED : SyncResult.Status.UNCHANGED,
+                    0,
+                    0,
+                    unchanged);
         }
 
         logger.accept("需要下载 " + downloads.size() + " 个文件，自动替换旧版本 " + versionReplaced.size()
@@ -784,7 +798,7 @@ final class ModSyncEngine {
                 config.manifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.8.2",
+                "MCModSync/1.8.3",
                 "Mod 清单",
                 logger);
         return decodeUtf8Strict(bytes);
@@ -799,7 +813,7 @@ final class ModSyncEngine {
         URI fileUri = config.manifestUri().resolve("./" + Rfc3986.encodePathSegment(entry.fileName()));
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.8.2")
+                .header("User-Agent", "MCModSync/1.8.3")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -882,7 +896,7 @@ final class ModSyncEngine {
                     "./" + Rfc3986.encodePathSegment(plan.entry().fileName()));
             HttpRequest request = HttpRequest.newBuilder(fileUri)
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.8.2")
+                    .header("User-Agent", "MCModSync/1.8.3")
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {
@@ -958,7 +972,7 @@ final class ModSyncEngine {
                     .decode(ByteBuffer.wrap(bytes))
                     .toString();
         } catch (CharacterCodingException exception) {
-            throw new IOException("mods.txt 不是有效的 UTF-8 文本", exception);
+            throw new IOException("Mod 清单不是有效的 UTF-8 文本", exception);
         }
     }
 

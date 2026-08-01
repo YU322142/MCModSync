@@ -41,6 +41,19 @@ public final class LegacyUpgradeIntegrationSmoke {
             Files.copy(legacyJar, installedLegacy);
             byte[] currentBytes = Files.readAllBytes(currentJar);
             String currentName = currentJar.getFileName().toString();
+            String legacyManifestUri = "http://127.0.0.1:" + server.getAddress().getPort() + "/mods.txt";
+            String currentManifestUri = "http://127.0.0.1:" + server.getAddress().getPort() + "/mods-v4.txt";
+            ManagedClientConfig managedConfig = ManagedClientConfig.fromManifestText(
+                    "# client-config.manifest=" + currentManifestUri + "\n"
+                            + "# client-config.syncResourcePacks=false\n"
+                            + "# client-config.syncServerList=false\n"
+                            + "# client-config.strict=true\n"
+                            + "# client-config.requireManifest=true\n")
+                    .orElseThrow();
+            Path publication = Files.createDirectories(root.resolve("publication"));
+            ManifestEntry bootstrap = ManagedClientConfig.writeBootstrapJar(publication, managedConfig);
+            byte[] bootstrapBytes = Files.readAllBytes(
+                    publication.resolve(ManagedClientConfig.BOOTSTRAP_FILE_NAME));
             ManifestEntry updater = new ManifestEntry(
                     Hashing.sha256(currentBytes),
                     Hashing.md5(currentBytes),
@@ -52,24 +65,22 @@ public final class LegacyUpgradeIntegrationSmoke {
                     FabricModMetadata.readVersion(currentJar),
                     "同步器",
                     "Synchronizer");
-            String transition = LegacyUpgradeManifest.serialize(
-                    ModManifest.fromEntries("real-legacy-upgrade", List.of(updater)));
+            ModManifest productionCatalog = ModManifest.fromEntries(
+                            "real-legacy-upgrade",
+                            List.of(updater, bootstrap))
+                    .withManagedClientConfig(managedConfig);
+            String transition = LegacyUpgradeManifest.serialize(productionCatalog);
+            String production = productionCatalog.serialize();
 
             server.createContext("/mods.txt", exchange -> respond(
                     exchange, transition.getBytes(StandardCharsets.UTF_8), "text/plain; charset=utf-8"));
+            server.createContext("/mods-v4.txt", exchange -> respond(
+                    exchange, production.getBytes(StandardCharsets.UTF_8), "text/plain; charset=utf-8"));
             server.createContext("/" + currentName, exchange -> respond(
                     exchange, currentBytes, "application/java-archive"));
+            server.createContext("/" + ManagedClientConfig.BOOTSTRAP_FILE_NAME, exchange -> respond(
+                    exchange, bootstrapBytes, "application/java-archive"));
             server.start();
-            String manifestUri = "http://127.0.0.1:" + server.getAddress().getPort() + "/mods.txt";
-            Files.writeString(root.resolve("modsync.properties"),
-                    "manifest=" + manifestUri + "\n"
-                            + "syncResourcePacks=false\n"
-                            + "syncServerList=false\n"
-                            + "strict=true\n"
-                            + "requireManifest=true\n"
-                            + "connectTimeoutSeconds=3\n"
-                            + "requestTimeoutSeconds=20\n",
-                    StandardCharsets.UTF_8);
 
             Path processLog = root.resolve("legacy-process.log");
             Process process = new ProcessBuilder(
@@ -77,6 +88,9 @@ public final class LegacyUpgradeIntegrationSmoke {
                     "-Dfile.encoding=UTF-8",
                     "-Dmodsync.disableDialogs=true",
                     "-Dmodsync.forceDesktopHelper=true",
+                    "-Dmodsync.manifest=" + legacyManifestUri,
+                    "-Dmodsync.syncResourcePacks=false",
+                    "-Dmodsync.syncServerList=false",
                     "-Dlegacy.gameDir=" + root,
                     "-cp",
                     legacyJar + System.getProperty("path.separator") + testClasses,
@@ -96,16 +110,67 @@ public final class LegacyUpgradeIntegrationSmoke {
             }
 
             Path installedCurrent = mods.resolve(currentName);
+            Path installedBootstrap = mods.resolve(ManagedClientConfig.BOOTSTRAP_FILE_NAME);
             long deadline = System.nanoTime() + Duration.ofSeconds(45).toNanos();
+            boolean upgraded = false;
             while (System.nanoTime() < deadline) {
                 if (Files.isRegularFile(installedCurrent)
                         && Hashing.sha256(installedCurrent).equals(Hashing.sha256(currentBytes))
+                        && Files.isRegularFile(installedBootstrap)
+                        && Hashing.sha256(installedBootstrap).equals(Hashing.sha256(bootstrapBytes))
                         && !Files.exists(installedLegacy)) {
-                    System.out.println("Real legacy JAR upgrade smoke passed: "
-                            + legacyJar.getFileName() + " -> " + currentName);
-                    return;
+                    upgraded = true;
+                    break;
                 }
                 Thread.sleep(200);
+            }
+            if (upgraded) {
+                Path helperLog = root.resolve(".modsync").resolve("helper.log");
+                long helperDeadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+                while (System.nanoTime() < helperDeadline) {
+                    if (Files.isRegularFile(helperLog)
+                            && (readLog(helperLog).contains("退出后更新完成")
+                                    || readLog(helperLog).contains("UPDATE_FAILED"))) {
+                        break;
+                    }
+                    Thread.sleep(100);
+                }
+                Path currentProcessLog = root.resolve("current-process.log");
+                Process currentProcess = new ProcessBuilder(
+                        javaExecutable().toString(),
+                        "-Dfile.encoding=UTF-8",
+                        "-Dmodsync.disableDialogs=true",
+                        "-Dmodsync.forceDesktopHelper=true",
+                        "-Dlegacy.gameDir=" + root,
+                        "-cp",
+                        installedCurrent + System.getProperty("path.separator") + testClasses,
+                        LegacyFabricInvoker.class.getName(),
+                        "io.github.mcmodsync.FabricPreLaunchEntrypoint")
+                        .redirectErrorStream(true)
+                        .redirectOutput(currentProcessLog.toFile())
+                        .start();
+                if (!currentProcess.waitFor(
+                        Duration.ofSeconds(30).toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    currentProcess.destroyForcibly();
+                    throw new AssertionError("Upgraded MCModSync process timed out");
+                }
+                String currentLog = readLog(currentProcessLog);
+                if (currentProcess.exitValue() != 0
+                        || !currentLog.contains("LEGACY_GAME_MAIN_WOULD_CONTINUE")
+                        || currentLog.contains("STARTUP_BLOCKED")
+                        || currentLog.contains("RESTART_REQUIRED")) {
+                    throw new AssertionError("Upgraded client did not continue from mods-v4.txt:\n" + currentLog);
+                }
+                java.util.Properties installedConfig = new java.util.Properties();
+                try (var input = Files.newInputStream(root.resolve("modsync.properties"))) {
+                    installedConfig.load(input);
+                }
+                if (!currentManifestUri.equals(installedConfig.getProperty("manifest"))) {
+                    throw new AssertionError("Bootstrap did not configure mods-v4.txt: " + installedConfig);
+                }
+                System.out.println("Real legacy JAR seamless migration passed: "
+                        + legacyJar.getFileName() + " -> " + currentName + " -> mods-v4.txt");
+                return;
             }
             Path helperLog = root.resolve(".modsync").resolve("helper.log");
             String helper = Files.isRegularFile(helperLog)

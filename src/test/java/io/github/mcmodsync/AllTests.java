@@ -40,6 +40,9 @@ public final class AllTests {
         testV4ManifestBilingualMetadataAndDualHash();
         testV3ManifestBackwardCompatibility();
         testPublisherContinuesPreviousCatalog();
+        testManagedClientConfigBootstrapAndCatalog();
+        testRemoteCatalogMaintainsClientConfig();
+        testFileSizeLimitDefaultsToUnlimitedAndStaysLocal();
         testLegacyUpgradeManifestFor16And17();
         testCatalogTypeCheckboxesAreMutuallyExclusive();
         testDisplayLanguageDetection();
@@ -238,12 +241,12 @@ public final class AllTests {
         check(legacy16Entries.size() == 2, "1.6.x v2 解析规则应读取全部过渡条目");
         check(legacy16Entries.stream().anyMatch(fields -> fields[1].equals("mcmodsync")
                         && fields[2].equals("MCModSync-1.8.0.jar")),
-                "过渡清单必须让 1.6.x 通过 Mod ID 替换同步器");
+                "永久升级入口必须让 1.6.x 通过 Mod ID 替换同步器");
         check(!transition.contains(ModManifest.MAGIC_V3) && !transition.contains(ModManifest.MAGIC_V4),
-                "过渡清单不能包含会让旧解析器拒绝的新版 magic");
+                "永久升级入口不能包含会让旧解析器拒绝的新版 magic");
 
         ModManifest parsedBy17Rules = ModManifest.parse(transition);
-        check(parsedBy17Rules.entries().size() == 2, "1.7 兼容解析应读取 v2 过渡清单");
+        check(parsedBy17Rules.entries().size() == 2, "1.7 兼容解析应读取永久 v2 升级入口");
         check(parsedBy17Rules.entries().stream().allMatch(entry -> entry.kind() == ModKind.REQUIRED),
                 "过渡阶段必须把所有条目视为 required，避免旧客户端漏装依赖");
 
@@ -254,7 +257,7 @@ public final class AllTests {
                 ModKind.REQUIRED, Set.of(), updater.displayName(), "1.7.0", "同步器", "Synchronizer");
         expectFailure(() -> LegacyUpgradeManifest.serialize(
                 ModManifest.fromEntries("old-updater", List.of(tooOldUpdater, optional))));
-        pass("v2 transition catalog upgrades 1.6.x and 1.7 parsers");
+        pass("permanent v2 gateway upgrades 1.6.x and 1.7 parsers");
     }
 
     private void testPublisherContinuesPreviousCatalog() {
@@ -323,6 +326,200 @@ public final class AllTests {
                 "继续编辑应保留上次维护的显示名称和双语描述");
         check(merged.entries().get(1).modId().equals("new_mod"), "当前目录中的新增 Mod 应加入清单");
         pass("publisher continues from a previous catalog after scanning mods");
+    }
+
+    private void testManagedClientConfigBootstrapAndCatalog() throws Exception {
+        Path root = Files.createTempDirectory("modsync-managed-client-config-");
+        try {
+            Path publisherGame = Files.createDirectories(root.resolve("publisher"));
+            Path publisherMods = Files.createDirectories(publisherGame.resolve("mods"));
+            Path template = publisherGame.resolve("modsync.properties");
+            Files.writeString(template,
+                    "manifest=https://files.example.invalid/client/mods-v4.txt\n"
+                            + "mobileManifest=https://files.example.invalid/client/mobile-mods-v4.txt\n"
+                            + "syncResourcePacks=false\n"
+                            + "syncServerList=false\n"
+                            + "strict=true\n"
+                            + "requireManifest=true\n"
+                            + "language=zh_cn\n"
+                            + "maxFileBytes=987654321\n",
+                    StandardCharsets.UTF_8);
+            byte[] templateBytes = Files.readAllBytes(template);
+            byte[] templateWithBom = new byte[templateBytes.length + 3];
+            templateWithBom[0] = (byte) 0xef;
+            templateWithBom[1] = (byte) 0xbb;
+            templateWithBom[2] = (byte) 0xbf;
+            System.arraycopy(templateBytes, 0, templateWithBom, 3, templateBytes.length);
+            Files.write(template, templateWithBom);
+            ManagedClientConfig managed = ManagedClientConfig.fromPropertiesFile(template);
+            check(!managed.values().containsKey("maxFileBytes") && !managed.values().containsKey("language"),
+                    "文件大小限制和语言必须保持本地设置，不能进入服务器受管配置");
+
+            ManifestEntry bootstrap = ManagedClientConfig.writeBootstrapJar(publisherMods, managed);
+            check(bootstrap.modId().equals(ManagedClientConfig.BOOTSTRAP_MOD_ID)
+                            && bootstrap.kind() == ModKind.REQUIRED,
+                    "配置引导 JAR 必须作为必需模组进入升级清单");
+
+            Path client = Files.createDirectories(root.resolve("client"));
+            Path clientMods = Files.createDirectories(client.resolve("mods"));
+            Files.copy(
+                    publisherMods.resolve(ManagedClientConfig.BOOTSTRAP_FILE_NAME),
+                    clientMods.resolve(ManagedClientConfig.BOOTSTRAP_FILE_NAME));
+            Files.writeString(client.resolve("modsync.properties"),
+                    "manifest=https://old.example.invalid/mods.txt\n"
+                            + "language=en_us\n"
+                            + "maxFileBytes=123456789\n",
+                    StandardCharsets.UTF_8);
+            check(ManagedClientConfig.installFromBootstrapJar(client, message -> { }),
+                    "首次启动应从引导 JAR 自动更新 modsync.properties");
+            java.util.Properties installed = new java.util.Properties();
+            try (var input = Files.newInputStream(client.resolve("modsync.properties"))) {
+                installed.load(input);
+            }
+            check(installed.getProperty("manifest").endsWith("/mods-v4.txt"),
+                    "升级客户端应自动切换到正式 mods-v4.txt");
+            check(installed.getProperty("language").equals("en_us")
+                            && installed.getProperty("maxFileBytes").equals("123456789"),
+                    "更新受管配置时必须保留本地语言和文件大小限制");
+            check(!ManagedClientConfig.installFromBootstrapJar(client, message -> { }),
+                    "配置一致时不应重复改写 modsync.properties");
+
+            ManifestEntry updater = new ManifestEntry(
+                    "1".repeat(64),
+                    "2".repeat(32),
+                    "mcmodsync",
+                    "MCModSync-1.8.3.jar",
+                    ModKind.REQUIRED,
+                    Set.of(),
+                    "MCModSync",
+                    "1.8.3",
+                    "同步器",
+                    "Synchronizer");
+            ModManifest catalog = ModManifest.fromEntries("managed-config-1", List.of(updater, bootstrap))
+                    .withManagedClientConfig(managed);
+            String v4 = catalog.serialize();
+            check(v4.contains("# client-config.manifest=https://files.example.invalid/client/mods-v4.txt"),
+                    "正式 v4 清单必须携带受管客户端配置");
+            check(!v4.contains("maxFileBytes") && !v4.contains("language="),
+                    "正式清单不得包含本地文件大小限制或语言");
+            check(ModManifest.parse(v4).managedClientConfig().orElseThrow().equals(managed),
+                    "v4 清单中的受管配置应可完整解析");
+            String legacy = LegacyUpgradeManifest.serialize(catalog);
+            check(legacy.startsWith(ModManifest.MAGIC_V2)
+                            && legacy.contains("\t" + ManagedClientConfig.BOOTSTRAP_MOD_ID + "\t"
+                                    + ManagedClientConfig.BOOTSTRAP_FILE_NAME),
+                    "永久 v2 入口必须让 1.6.x 下载配置引导 JAR");
+            expectFailure(() -> ManagedClientConfig.fromManifestText(
+                    v4 + "# client-config.maxFileBytes=1\n"));
+            pass("managed client config bootstraps mods-v4 and preserves local file size limits");
+        } finally {
+            System.clearProperty("modsync.managedConfigChanged");
+            deleteTree(root);
+        }
+    }
+
+    private void testRemoteCatalogMaintainsClientConfig() throws Exception {
+        Path root = Files.createTempDirectory("modsync-remote-client-config-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            byte[] managedBytes = "already installed".getBytes(StandardCharsets.UTF_8);
+            Files.write(mods.resolve("managed.jar"), managedBytes);
+            URI manifestUri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/release/mods-v4.txt");
+            ManagedClientConfig managed = ManagedClientConfig.fromManifestText(
+                    "# client-config.manifest=" + manifestUri + "\n"
+                            + "# client-config.syncResourcePacks=false\n"
+                            + "# client-config.syncServerList=false\n"
+                            + "# client-config.strict=true\n"
+                            + "# client-config.requireManifest=true\n")
+                    .orElseThrow();
+            ManifestEntry entry = new ManifestEntry(
+                    Hashing.sha256(managedBytes),
+                    Hashing.md5(managedBytes),
+                    "",
+                    "managed.jar",
+                    ModKind.REQUIRED,
+                    Set.of(),
+                    "Managed",
+                    "1.0",
+                    "已安装",
+                    "Installed");
+            byte[] catalog = ModManifest.fromEntries("remote-config-2", List.of(entry))
+                    .withManagedClientConfig(managed)
+                    .serialize()
+                    .getBytes(StandardCharsets.UTF_8);
+            server.createContext("/release/mods-v4.txt", exchange -> respond(exchange, 200, catalog, null));
+            server.start();
+
+            Files.writeString(root.resolve("modsync.properties"),
+                    "manifest=" + manifestUri + "\n"
+                            + "syncResourcePacks=false\n"
+                            + "syncServerList=false\n"
+                            + "strict=false\n"
+                            + "requireManifest=true\n"
+                            + "language=en_us\n"
+                            + "maxFileBytes=456789123\n",
+                    StandardCharsets.UTF_8);
+            ModSyncConfig config = new ModSyncConfig(
+                    manifestUri,
+                    URI.create("https://example.invalid/resourcepacks.txt"),
+                    URI.create("https://example.invalid/serverlist.txt"),
+                    root,
+                    root,
+                    false,
+                    false,
+                    false,
+                    true,
+                    Duration.ofSeconds(2),
+                    Duration.ofSeconds(5),
+                    1024 * 1024,
+                    16 * 1024 * 1024,
+                    3);
+            SyncProbeResult probe = new ModSyncEngine(config, message -> { }).probeWithoutJarChanges();
+            check(probe.status() == SyncProbeResult.Status.CHANGES_REQUIRED,
+                    "远程受管配置变化应要求正常重启");
+            java.util.Properties updated = new java.util.Properties();
+            try (var input = Files.newInputStream(root.resolve("modsync.properties"))) {
+                updated.load(input);
+            }
+            check(updated.getProperty("strict").equals("true"), "v4 清单应持续更新白名单配置");
+            check(updated.getProperty("language").equals("en_us")
+                            && updated.getProperty("maxFileBytes").equals("456789123"),
+                    "远程配置更新不得覆盖语言或文件大小限制");
+            pass("remote v4 catalog maintains whitelisted client config only");
+        } finally {
+            System.clearProperty("modsync.managedConfigChanged");
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testFileSizeLimitDefaultsToUnlimitedAndStaysLocal() throws Exception {
+        Path root = Files.createTempDirectory("modsync-unlimited-file-size-");
+        try {
+            Files.writeString(root.resolve("modsync.properties"),
+                    "manifest=https://files.example.invalid/client/mods-v4.txt\n"
+                            + "syncResourcePacks=false\n"
+                            + "syncServerList=false\n"
+                            + "strict=true\n"
+                            + "requireManifest=true\n",
+                    StandardCharsets.UTF_8);
+            ModSyncConfig unlimited = ModSyncConfig.fromEnvironment(null, root);
+            check(unlimited.maxFileBytes() == Long.MAX_VALUE,
+                    "客户端未配置 maxFileBytes 时不应主动限制单文件大小");
+
+            Files.writeString(root.resolve("modsync.properties"),
+                    "maxFileBytes=123456789\n",
+                    StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.APPEND);
+            ModSyncConfig limited = ModSyncConfig.fromEnvironment(null, root);
+            check(limited.maxFileBytes() == 123456789L,
+                    "客户端显式设置 maxFileBytes 时仍应使用本地上限");
+            pass("file-size limit defaults to unlimited and remains local-only");
+        } finally {
+            deleteTree(root);
+        }
     }
 
     private static List<String[]> parseWithFrozenLegacyV2Rules(String text) {
@@ -1216,6 +1413,7 @@ public final class AllTests {
                     resourceUri,
                     modUri,
                     runtime,
+                    runtime,
                     true,
                     false,
                     true,
@@ -1297,6 +1495,7 @@ public final class AllTests {
                     modUri,
                     modUri,
                     serverUri,
+                    runtime,
                     runtime,
                     false,
                     true,
@@ -1400,6 +1599,7 @@ public final class AllTests {
                     unreachable,
                     unreachable,
                     unreachable,
+                    root,
                     root,
                     true,
                     true,
@@ -1939,6 +2139,7 @@ public final class AllTests {
                 manifest,
                 manifest,
                 gameDirectory,
+                gameDirectory,
                 false,
                 false,
                 strict,
@@ -1955,6 +2156,7 @@ public final class AllTests {
                 URI.create("http://127.0.0.1:1/mods.txt"),
                 resourceManifest,
                 URI.create("http://127.0.0.1:1/serverlist.txt"),
+                gameDirectory,
                 gameDirectory,
                 true,
                 false,

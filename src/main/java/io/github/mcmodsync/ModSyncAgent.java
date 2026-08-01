@@ -1,6 +1,7 @@
 package io.github.mcmodsync;
 
 import java.lang.instrument.Instrumentation;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -13,9 +14,12 @@ public final class ModSyncAgent {
 
     public static void premain(String agentArguments, Instrumentation instrumentation) {
         System.setProperty("modsync.agent.active", "true");
-        log("MCModSync 1.8.2 启动前校验开始");
+        log("MCModSync 1.8.3 启动前校验开始");
         try {
+            Path bootstrapDirectory = ModSyncConfig.determineGameDirectory(agentArguments, null);
+            ManagedClientConfig.installFromBootstrapJar(bootstrapDirectory, ModSyncAgent::log);
             ModSyncConfig config = ModSyncConfig.fromEnvironment(agentArguments);
+            System.clearProperty("modsync.managedConfigChanged");
             System.setProperty("modsync.gameDir", config.gameDirectory().toString());
             log("游戏目录: " + config.gameDirectory());
             RuntimeEnvironment environment = RuntimeEnvironment.detect();
@@ -31,6 +35,15 @@ public final class ModSyncAgent {
                     config, ModSyncAgent::log, new UserNotifier(false, config.gameDirectory()));
             System.setProperty("modsync.status", result.status().name());
             log("启动前校验结束: " + result.status());
+            if (Boolean.getBoolean("modsync.managedConfigChanged")) {
+                System.err.println("[MCModSync] RESTART_REQUIRED");
+                log("服务器管理的客户端配置已更新；本次启动正常结束，请重新启动以使用新配置");
+                releaseGuard();
+                if (Boolean.getBoolean("modsync.disableProcessExit")) {
+                    throw new RuntimeException("MCModSync 客户端配置已更新；测试模式禁用了正常退出");
+                }
+                System.exit(0);
+            }
         } catch (Throwable failure) {
             System.err.println("[MCModSync] STARTUP_BLOCKED");
             System.err.println("[MCModSync] 致命错误：无法保证同步内容完整，Minecraft 启动已中止。");

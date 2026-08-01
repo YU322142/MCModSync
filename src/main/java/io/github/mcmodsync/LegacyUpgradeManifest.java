@@ -9,12 +9,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Generates the temporary v2 catalog understood by the 1.6.x and 1.7
- * updaters. Every entry is intentionally treated as required during the
- * transition; once every client runs 1.8+, the operator replaces it with v4.
+ * Generates the permanent v2 gateway understood by the 1.6.x and 1.7
+ * updaters. Every entry is intentionally treated as required; upgraded
+ * clients switch themselves to the separately published v4 catalog.
  */
 final class LegacyUpgradeManifest {
-    static final String DEFAULT_FILE_NAME = "mods-upgrade-v2.txt";
+    static final String DEFAULT_FILE_NAME = "mods.txt";
     static final String MINIMUM_V4_READER_VERSION = "1.8.0";
     private static final Pattern NUMERIC_VERSION = Pattern.compile("(\\d+(?:\\.\\d+)+)");
 
@@ -38,9 +38,12 @@ final class LegacyUpgradeManifest {
 
         StringBuilder builder = new StringBuilder();
         builder.append(ModManifest.MAGIC_V2).append('\n');
-        builder.append("# transition-only=true\n");
+        builder.append("# legacy-upgrade-gateway=true\n");
         builder.append("# target-sync-version=").append(targetVersion).append('\n');
-        builder.append("# Replace the live mods.txt with the v4 catalog after all clients upgrade.\n");
+        builder.append("# This mods.txt remains the permanent legacy upgrade gateway.\n");
+        builder.append("# Current clients use mods-v4.txt through managed modsync.properties.\n");
+        catalog.managedClientConfig().ifPresent(config ->
+                builder.append(config.serializeManifestComments()));
         builder.append("# minecraft=1.21.11\n# loader=fabric\n");
         for (ManifestEntry entry : catalog.entries()) {
             builder.append(entry.md5()).append('\t')
