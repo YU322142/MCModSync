@@ -39,6 +39,7 @@ public final class AllTests {
         testFabricModIdAndV1Compatibility();
         testV4ManifestBilingualMetadataAndDualHash();
         testV3ManifestBackwardCompatibility();
+        testPublisherContinuesPreviousCatalog();
         testLegacyUpgradeManifestFor16And17();
         testCatalogTypeCheckboxesAreMutuallyExclusive();
         testDisplayLanguageDetection();
@@ -254,6 +255,74 @@ public final class AllTests {
         expectFailure(() -> LegacyUpgradeManifest.serialize(
                 ModManifest.fromEntries("old-updater", List.of(tooOldUpdater, optional))));
         pass("v2 transition catalog upgrades 1.6.x and 1.7 parsers");
+    }
+
+    private void testPublisherContinuesPreviousCatalog() {
+        ManifestEntry oldSodium = new ManifestEntry(
+                "a".repeat(64),
+                "b".repeat(32),
+                "sodium",
+                "sodium-old.jar",
+                ModKind.RECOMMENDED,
+                Set.of(ClientPlatform.MOBILE, ClientPlatform.MAC),
+                "Sodium 自定义名称",
+                "1.0",
+                "钠渲染优化",
+                "Sodium rendering optimization");
+        ManifestEntry removed = new ManifestEntry(
+                "c".repeat(64),
+                "d".repeat(32),
+                "removed_mod",
+                "removed.jar",
+                ModKind.RECOMMENDED,
+                Set.of(),
+                "Removed",
+                "1.0",
+                "已移除",
+                "Removed");
+        ModManifest previous = ModManifest.fromEntries("published-catalog-7", List.of(oldSodium, removed));
+
+        ManifestEntry currentSodium = new ManifestEntry(
+                "1".repeat(64),
+                "2".repeat(32),
+                "sodium",
+                "sodium-new.jar",
+                ModKind.REQUIRED,
+                Set.of(),
+                "Sodium metadata name",
+                "2.0",
+                "",
+                "New metadata description");
+        ManifestEntry added = new ManifestEntry(
+                "3".repeat(64),
+                "4".repeat(32),
+                "new_mod",
+                "new.jar",
+                ModKind.REQUIRED,
+                Set.of(),
+                "New Mod",
+                "1.0",
+                "新模组",
+                "New mod");
+        ModManifest scanned = ModManifest.fromEntries("fresh-scan", List.of(currentSodium, added));
+
+        ModManifest merged = PublisherMain.mergeCatalog(scanned, previous);
+        check(merged.catalogVersion().equals("published-catalog-7"), "继续编辑应保留上次清单版本供用户修改");
+        check(merged.entries().size() == 2, "继续编辑的条目集合必须以当前 mods 扫描结果为准");
+        ManifestEntry sodium = merged.entries().get(0);
+        check(sodium.fileName().equals("sodium-new.jar") && sodium.version().equals("2.0"),
+                "同 Mod ID 更新时应采用当前文件名和版本");
+        check(sodium.sha256().equals("1".repeat(64)) && sodium.md5().equals("2".repeat(32)),
+                "继续编辑时必须刷新当前 JAR 的 SHA256 和 MD5");
+        check(sodium.kind() == ModKind.RECOMMENDED
+                        && sodium.incompatiblePlatforms().equals(Set.of(ClientPlatform.MOBILE, ClientPlatform.MAC)),
+                "继续编辑应保留上次的分类和不兼容平台");
+        check(sodium.displayName().equals("Sodium 自定义名称")
+                        && sodium.descriptionZh().equals("钠渲染优化")
+                        && sodium.descriptionEn().equals("Sodium rendering optimization"),
+                "继续编辑应保留上次维护的显示名称和双语描述");
+        check(merged.entries().get(1).modId().equals("new_mod"), "当前目录中的新增 Mod 应加入清单");
+        pass("publisher continues from a previous catalog after scanning mods");
     }
 
     private static List<String[]> parseWithFrozenLegacyV2Rules(String text) {

@@ -2,6 +2,7 @@ package io.github.mcmodsync;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -23,10 +24,12 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 
 public final class PublisherMain {
     private static final DisplayLanguage LANGUAGE = DisplayLanguage.detect(null);
@@ -56,7 +59,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.8.1");
+            System.out.println("MCModSync 1.8.2");
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {
@@ -189,6 +192,11 @@ public final class PublisherMain {
 
         JTextField directoryField = new JTextField();
         JButton browseButton = new JButton(text("选择 mods 目录", "Choose mods directory"));
+        JCheckBox loadPreviousCatalog = new JCheckBox(text(
+                "扫描后选择上次清单", "Choose previous catalog after scanning"));
+        loadPreviousCatalog.setToolTipText(text(
+                "保留上次的分类、平台、名称和中英文描述，并更新当前 JAR 的哈希与版本",
+                "Keep previous types, platforms, names and descriptions while refreshing current JAR hashes and versions"));
         JButton generateButton = new JButton(text(
                 "编辑必须/推荐模组并生成清单", "Edit required/recommended mods and generate catalog"));
         JButton resourcePackButton = new JButton(text(
@@ -215,12 +223,18 @@ public final class PublisherMain {
         constraints.weightx = 0;
         form.add(browseButton, constraints);
 
+        constraints.gridx = 1;
+        constraints.gridy = 1;
+        constraints.gridwidth = 2;
+        constraints.weightx = 1;
+        form.add(loadPreviousCatalog, constraints);
+
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         actions.add(serverListButton);
         actions.add(resourcePackButton);
         actions.add(generateButton);
         constraints.gridx = 0;
-        constraints.gridy = 1;
+        constraints.gridy = 2;
         constraints.gridwidth = 3;
         constraints.weightx = 1;
         form.add(actions, constraints);
@@ -264,7 +278,9 @@ public final class PublisherMain {
                 return;
             }
             Path output = modsDirectory.resolve("mods.txt");
+            boolean choosePreviousCatalog = loadPreviousCatalog.isSelected();
             generateButton.setEnabled(false);
+            loadPreviousCatalog.setEnabled(false);
             log.append(text(
                     "\n开始读取 Mod 信息并计算 MD5/SHA256：",
                     "\nReading mod metadata and calculating MD5/SHA256: ") + modsDirectory + "\n");
@@ -273,14 +289,39 @@ public final class PublisherMain {
                 protected ModManifest doInBackground() throws Exception {
                     ModManifest scanned = ModManifest.scan(modsDirectory);
                     scanned.ensureUniqueModIds();
-                    return mergeExistingCatalog(scanned, output);
+                    return scanned;
                 }
 
                 @Override
                 protected void done() {
                     generateButton.setEnabled(true);
+                    loadPreviousCatalog.setEnabled(true);
                     try {
                         ModManifest scanned = get();
+                        if (choosePreviousCatalog) {
+                            Optional<Path> previousPath = choosePreviousCatalog(frame, modsDirectory);
+                            if (previousPath.isEmpty()) {
+                                log.append(text(
+                                        "已取消选择上次清单。\n",
+                                        "Previous catalog selection cancelled.\n"));
+                                return;
+                            }
+                            ModManifest previous = readPreviousCatalog(previousPath.get());
+                            scanned = mergeCatalog(scanned, previous);
+                            log.append(text(
+                                    "已加载并合并上次清单：",
+                                    "Loaded and merged previous catalog: ") + previousPath.get() + "\n");
+                        } else {
+                            scanned = mergeExistingCatalog(scanned, output);
+                        }
+                        long missingChinese = scanned.entries().stream()
+                                .filter(entry -> entry.descriptionZh().isBlank())
+                                .count();
+                        if (missingChinese > 0) {
+                            log.append(text(
+                                    "有 " + missingChinese + " 个 Mod 的 JAR 未提供中文描述；请人工填写，或从上次清单继续编辑。\n",
+                                    missingChinese + " mod(s) have no Chinese description in their JAR metadata; fill them manually or continue from a previous catalog.\n"));
+                        }
                         var edited = CatalogEditorDialog.edit(frame, scanned);
                         if (edited.isEmpty()) {
                             log.append(text("已取消生成 Mod 清单。\n", "Mod catalog generation cancelled.\n"));
@@ -472,41 +513,75 @@ public final class PublisherMain {
             return scanned;
         }
         try {
-            ModManifest previous = ModManifest.parse(Files.readString(output));
-            if (!previous.supportsRecommendations()) {
-                return scanned;
-            }
-            Map<String, ManifestEntry> byId = new HashMap<>();
-            Map<String, ManifestEntry> byName = new HashMap<>();
-            for (ManifestEntry entry : previous.entries()) {
-                if (!entry.modId().isBlank()) {
-                    byId.put(entry.modId(), entry);
-                }
-                byName.put(entry.fileName().toLowerCase(java.util.Locale.ROOT), entry);
-            }
-            var merged = scanned.entries().stream().map(current -> {
-                ManifestEntry old = !current.modId().isBlank()
-                        ? byId.get(current.modId())
-                        : byName.get(current.fileName().toLowerCase(java.util.Locale.ROOT));
-                if (old == null) {
-                    return current;
-                }
-                return new ManifestEntry(
-                        current.sha256(),
-                        current.md5(),
-                        current.modId(),
-                        current.fileName(),
-                        old.kind(),
-                        old.incompatiblePlatforms(),
-                        old.displayName(),
-                        current.version().isBlank() ? old.version() : current.version(),
-                        old.descriptionZh().isBlank() ? current.descriptionZh() : old.descriptionZh(),
-                        old.descriptionEn().isBlank() ? current.descriptionEn() : old.descriptionEn());
-            }).toList();
-            return ModManifest.fromEntries(previous.catalogVersion(), merged);
+            return mergeCatalog(scanned, readPreviousCatalog(output));
         } catch (IOException | IllegalArgumentException exception) {
             return scanned;
         }
+    }
+
+    private static Optional<Path> choosePreviousCatalog(JFrame owner, Path modsDirectory) {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle(text("选择上次发布的 Mod 清单", "Choose the previously published mod catalog"));
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        chooser.setAcceptAllFileFilterUsed(false);
+        chooser.setFileFilter(new FileNameExtensionFilter(text(
+                "MCModSync 清单 (*.txt)", "MCModSync catalog (*.txt)"), "txt"));
+        chooser.setCurrentDirectory(modsDirectory.toFile());
+        if (chooser.showOpenDialog(owner) != JFileChooser.APPROVE_OPTION) {
+            return Optional.empty();
+        }
+        return Optional.of(chooser.getSelectedFile().toPath().toAbsolutePath().normalize());
+    }
+
+    private static ModManifest readPreviousCatalog(Path path) throws IOException {
+        ModManifest previous;
+        try {
+            previous = ModManifest.parse(Files.readString(path, StandardCharsets.UTF_8));
+            previous.ensureUniqueModIds();
+        } catch (IllegalArgumentException exception) {
+            throw new IOException(text(
+                    "上次清单无效：", "The previous catalog is invalid: ") + exception.getMessage(), exception);
+        }
+        if (!previous.supportsRecommendations()) {
+            throw new IOException(text(
+                    "只能继续编辑 v3 或 v4 清单；v1/v2 没有必须/推荐与双语字段。",
+                    "Only v3 or v4 catalogs can be continued; v1/v2 have no required/recommended or bilingual fields."));
+        }
+        return previous;
+    }
+
+    static ModManifest mergeCatalog(ModManifest scanned, ModManifest previous) {
+        if (!previous.supportsRecommendations()) {
+            throw new IllegalArgumentException("Previous catalog must be v3 or v4");
+        }
+        Map<String, ManifestEntry> byId = new HashMap<>();
+        Map<String, ManifestEntry> byName = new HashMap<>();
+        for (ManifestEntry entry : previous.entries()) {
+            if (!entry.modId().isBlank()) {
+                byId.put(entry.modId(), entry);
+            }
+            byName.put(entry.fileName().toLowerCase(java.util.Locale.ROOT), entry);
+        }
+        var merged = scanned.entries().stream().map(current -> {
+            ManifestEntry old = !current.modId().isBlank()
+                    ? byId.get(current.modId())
+                    : byName.get(current.fileName().toLowerCase(java.util.Locale.ROOT));
+            if (old == null) {
+                return current;
+            }
+            return new ManifestEntry(
+                    current.sha256(),
+                    current.md5(),
+                    current.modId(),
+                    current.fileName(),
+                    old.kind(),
+                    old.incompatiblePlatforms(),
+                    old.displayName(),
+                    current.version().isBlank() ? old.version() : current.version(),
+                    old.descriptionZh().isBlank() ? current.descriptionZh() : old.descriptionZh(),
+                    old.descriptionEn().isBlank() ? current.descriptionEn() : old.descriptionEn());
+        }).toList();
+        return ModManifest.fromEntries(previous.catalogVersion(), merged);
     }
 
     private static void printUsage() {
