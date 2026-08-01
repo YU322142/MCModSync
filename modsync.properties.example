@@ -7,7 +7,8 @@ manifest=https://example.invalid/mcmodsync/mods-v4.txt
 language=auto
 
 # 仅 PojavLauncher、MCinaBox、FCL、Zalith Launcher 2 会判定为手机端。
-# 如需手机端使用另一份清单，取消下一行注释；通常一份 v4 清单即可通过不兼容平台区分。
+# 默认不要填写 mobileManifest：手机与电脑会共用上面的合并 v4 地址，并通过不兼容平台区分。
+# 只有明确要长期维护第二套手机发布目录时才取消下一行注释。
 # mobileManifest=https://example.invalid/mcmodsync/mobile-mods-v4.txt
 
 # 不使用资源包同步时保持 false；启用后必须填写有效清单。

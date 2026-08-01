@@ -61,7 +61,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.8.3");
+            System.out.println("MCModSync 1.8.4");
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {
@@ -259,9 +259,9 @@ public final class PublisherMain {
         log.setWrapStyleWord(true);
         log.setText(text(
                 "选择测试完成的客户端 mods 目录。游戏根目录必须有发布用 modsync.properties。\n"
-                        + "工具会生成正式 mods-v4.txt、旧版入口 mods.txt 和配置引导 JAR。\n",
+                        + "工具会生成正式 mods-v4.txt、仅含两个升级组件的旧版入口 mods.txt 和配置引导 JAR。\n",
                 "Choose a tested client mods directory. A publishing modsync.properties must exist in the game root.\n"
-                        + "The tool generates mods-v4.txt, the legacy mods.txt gateway, and a configuration bootstrap JAR.\n"));
+                        + "The tool generates mods-v4.txt, an upgrade-components-only legacy mods.txt gateway, and a configuration bootstrap JAR.\n"));
 
         constraints.gridx = 0;
         constraints.gridy = 0;
@@ -388,8 +388,8 @@ public final class PublisherMain {
                                 "1.6.x/1.7 永久升级入口：",
                                 "Permanent 1.6.x/1.7 upgrade gateway: ") + upgradeOutput + "\n");
                         String upgradeNotice = text(
-                                "\n\nmods.txt 是旧版永久升级入口；升级后的客户端会自动写入配置并读取 mods-v4.txt。",
-                                "\n\nmods.txt is the permanent legacy gateway; upgraded clients automatically configure themselves and use mods-v4.txt.");
+                                "\n\nmods.txt 只包含 MCModSync 与配置引导 JAR。旧版升级后会统一读取 mods-v4.txt，并重新同步完整 Mod 集。",
+                                "\n\nmods.txt contains only MCModSync and the configuration bootstrap JAR. Upgraded clients use mods-v4.txt and synchronize the complete mod set again.");
                         int count = completed.entries().size();
                         log.append(text("完成，共 ", "Completed: ") + count
                                 + text(" 个 Mod。\n清单：", " mod(s).\nCatalog: ") + output + "\n");

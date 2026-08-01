@@ -213,7 +213,7 @@ final class ResourcePackSyncEngine {
                 config.resourcePackManifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.8.3",
+                "MCModSync/1.8.4",
                 "资源包清单",
                 logger);
         try {
@@ -228,7 +228,7 @@ final class ResourcePackSyncEngine {
         for (PackPlan plan : downloads) {
             HttpRequest request = HttpRequest.newBuilder(fileUri(plan.entry()))
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.8.3")
+                    .header("User-Agent", "MCModSync/1.8.4")
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {
@@ -255,7 +255,7 @@ final class ResourcePackSyncEngine {
             DownloadProgressTracker tracker) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(fileUri(entry))
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.8.3")
+                .header("User-Agent", "MCModSync/1.8.4")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());

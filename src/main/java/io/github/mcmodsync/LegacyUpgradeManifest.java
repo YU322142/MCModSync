@@ -5,13 +5,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Generates the permanent v2 gateway understood by the 1.6.x and 1.7
- * updaters. Every entry is intentionally treated as required; upgraded
- * clients switch themselves to the separately published v4 catalog.
+ * updaters. It contains only the current updater and its managed-config
+ * bootstrap. Old managed mods can therefore be moved aside safely before the
+ * upgraded client switches to the separately published complete v4 catalog.
  */
 final class LegacyUpgradeManifest {
     static final String DEFAULT_FILE_NAME = "mods.txt";
@@ -35,17 +37,29 @@ final class LegacyUpgradeManifest {
                             + " 或更高版本，当前识别为: "
                             + (targetVersion.isBlank() ? "未知" : targetVersion));
         }
+        ManifestEntry bootstrap = catalog.entries().stream()
+                .filter(entry -> entry.modId().equals(ManagedClientConfig.BOOTSTRAP_MOD_ID))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "升级清单必须包含配置引导 JAR（Fabric Mod ID: "
+                                + ManagedClientConfig.BOOTSTRAP_MOD_ID + "）"));
+        if (!bootstrap.fileName().equals(ManagedClientConfig.BOOTSTRAP_FILE_NAME)) {
+            throw new IllegalArgumentException(
+                    "配置引导 JAR 必须使用固定文件名 " + ManagedClientConfig.BOOTSTRAP_FILE_NAME);
+        }
 
         StringBuilder builder = new StringBuilder();
         builder.append(ModManifest.MAGIC_V2).append('\n');
         builder.append("# legacy-upgrade-gateway=true\n");
+        builder.append("# upgrade-components-only=true\n");
         builder.append("# target-sync-version=").append(targetVersion).append('\n');
         builder.append("# This mods.txt remains the permanent legacy upgrade gateway.\n");
-        builder.append("# Current clients use mods-v4.txt through managed modsync.properties.\n");
+        builder.append("# Old managed mods may be moved to backup during this transition.\n");
+        builder.append("# Current clients restore the complete set from mods-v4.txt.\n");
         catalog.managedClientConfig().ifPresent(config ->
                 builder.append(config.serializeManifestComments()));
         builder.append("# minecraft=1.21.11\n# loader=fabric\n");
-        for (ManifestEntry entry : catalog.entries()) {
+        for (ManifestEntry entry : List.of(updater, bootstrap)) {
             builder.append(entry.md5()).append('\t')
                     .append(entry.modId().isBlank() ? "-" : entry.modId()).append('\t')
                     .append(entry.fileName()).append('\n');

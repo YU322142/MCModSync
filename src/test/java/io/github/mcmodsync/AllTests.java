@@ -211,6 +211,7 @@ public final class AllTests {
 
     private void testLegacyUpgradeManifestFor16And17() {
         byte[] updaterBytes = "mcmodsync-1.8".getBytes(StandardCharsets.UTF_8);
+        byte[] bootstrapBytes = "managed-config".getBytes(StandardCharsets.UTF_8);
         byte[] optionalBytes = "optional".getBytes(StandardCharsets.UTF_8);
         ManifestEntry updater = new ManifestEntry(
                 Hashing.sha256(updaterBytes),
@@ -223,6 +224,17 @@ public final class AllTests {
                 "1.8.0",
                 "同步器",
                 "Synchronizer");
+        ManifestEntry bootstrap = new ManifestEntry(
+                Hashing.sha256(bootstrapBytes),
+                Hashing.md5(bootstrapBytes),
+                ManagedClientConfig.BOOTSTRAP_MOD_ID,
+                ManagedClientConfig.BOOTSTRAP_FILE_NAME,
+                ModKind.REQUIRED,
+                Set.of(),
+                "MCModSync Config",
+                "1",
+                "配置引导",
+                "Configuration bootstrap");
         ManifestEntry optional = new ManifestEntry(
                 Hashing.sha256(optionalBytes),
                 Hashing.md5(optionalBytes),
@@ -235,13 +247,20 @@ public final class AllTests {
                 "可选",
                 "Optional");
         String transition = LegacyUpgradeManifest.serialize(
-                ModManifest.fromEntries("upgrade-test", List.of(updater, optional)));
+                ModManifest.fromEntries("upgrade-test", List.of(updater, bootstrap, optional)));
 
         List<String[]> legacy16Entries = parseWithFrozenLegacyV2Rules(transition);
-        check(legacy16Entries.size() == 2, "1.6.x v2 解析规则应读取全部过渡条目");
+        check(legacy16Entries.size() == 2, "1.6.x v2 入口必须只包含两个升级组件");
         check(legacy16Entries.stream().anyMatch(fields -> fields[1].equals("mcmodsync")
                         && fields[2].equals("MCModSync-1.8.0.jar")),
                 "永久升级入口必须让 1.6.x 通过 Mod ID 替换同步器");
+        check(legacy16Entries.stream().anyMatch(fields -> fields[1].equals(ManagedClientConfig.BOOTSTRAP_MOD_ID)
+                        && fields[2].equals(ManagedClientConfig.BOOTSTRAP_FILE_NAME)),
+                "永久升级入口必须下载固定名配置引导 JAR");
+        check(legacy16Entries.stream().noneMatch(fields -> fields[1].equals("optional_mod")),
+                "完整 Mod 集不得继续发布到旧版升级入口");
+        check(transition.contains("# upgrade-components-only=true"),
+                "升级专用 v2 入口应包含可审计标记");
         check(!transition.contains(ModManifest.MAGIC_V3) && !transition.contains(ModManifest.MAGIC_V4),
                 "永久升级入口不能包含会让旧解析器拒绝的新版 magic");
 
@@ -252,12 +271,20 @@ public final class AllTests {
 
         ModManifest missingUpdater = ModManifest.fromEntries("missing-updater", List.of(optional));
         expectFailure(() -> LegacyUpgradeManifest.serialize(missingUpdater));
+        expectFailure(() -> LegacyUpgradeManifest.serialize(
+                ModManifest.fromEntries("missing-bootstrap", List.of(updater, optional))));
+        ManifestEntry wronglyNamedBootstrap = new ManifestEntry(
+                bootstrap.sha256(), bootstrap.md5(), bootstrap.modId(), "renamed-config.jar",
+                ModKind.REQUIRED, Set.of(), bootstrap.displayName(), bootstrap.version(),
+                bootstrap.descriptionZh(), bootstrap.descriptionEn());
+        expectFailure(() -> LegacyUpgradeManifest.serialize(
+                ModManifest.fromEntries("renamed-bootstrap", List.of(updater, wronglyNamedBootstrap))));
         ManifestEntry tooOldUpdater = new ManifestEntry(
                 updater.sha256(), updater.md5(), updater.modId(), "MCModSync-1.7.0.jar",
                 ModKind.REQUIRED, Set.of(), updater.displayName(), "1.7.0", "同步器", "Synchronizer");
         expectFailure(() -> LegacyUpgradeManifest.serialize(
-                ModManifest.fromEntries("old-updater", List.of(tooOldUpdater, optional))));
-        pass("permanent v2 gateway upgrades 1.6.x and 1.7 parsers");
+                ModManifest.fromEntries("old-updater", List.of(tooOldUpdater, bootstrap, optional))));
+        pass("permanent v2 gateway contains upgrade components only");
     }
 
     private void testPublisherContinuesPreviousCatalog() {
@@ -388,11 +415,11 @@ public final class AllTests {
                     "1".repeat(64),
                     "2".repeat(32),
                     "mcmodsync",
-                    "MCModSync-1.8.3.jar",
+                    "MCModSync-1.8.4.jar",
                     ModKind.REQUIRED,
                     Set.of(),
                     "MCModSync",
-                    "1.8.3",
+                    "1.8.4",
                     "同步器",
                     "Synchronizer");
             ModManifest catalog = ModManifest.fromEntries("managed-config-1", List.of(updater, bootstrap))
