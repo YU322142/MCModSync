@@ -49,6 +49,7 @@ public final class AllTests {
         testLegacyUpgradeManifestFor16And17();
         testCatalogTypeCheckboxesAreMutuallyExclusive();
         testDisplayLanguageDetection();
+        testRestartRequiredPromptLocalizationAndPolicy();
         testOperationalLogsFollowEnglishLanguage();
         testDesktopRecommendedSelectionAndCatalogUpdate();
         testDeselectedRecommendedModIsBackedUp();
@@ -421,11 +422,11 @@ public final class AllTests {
                     "1".repeat(64),
                     "2".repeat(32),
                     "mcmodsync",
-                    "MCModSync-1.8.6.jar",
+                    "MCModSync-1.8.7.jar",
                     ModKind.REQUIRED,
                     Set.of(),
                     "MCModSync",
-                    "1.8.6",
+                    "1.8.7",
                     "同步器",
                     "Synchronizer");
             ModManifest catalog = ModManifest.fromEntries("managed-config-1", List.of(updater, bootstrap))
@@ -650,6 +651,30 @@ public final class AllTests {
         } finally {
             deleteTree(root);
         }
+    }
+
+    private void testRestartRequiredPromptLocalizationAndPolicy() {
+        check(UserNotifier.restartRequiredTitle(DisplayLanguage.ZH_CN).contains("需要重新启动"),
+                "中文下载完成窗口必须明确提示需要重新启动");
+        check(UserNotifier.restartRequiredMessage(DisplayLanguage.ZH_CN).contains("重新启动 Minecraft"),
+                "中文下载完成正文必须说明重新启动 Minecraft");
+        check(UserNotifier.restartRequiredButton(DisplayLanguage.ZH_CN).contains("返回启动器"),
+                "中文确认按钮必须说明返回启动器");
+
+        check(UserNotifier.restartRequiredTitle(DisplayLanguage.EN_US).contains("Restart Required"),
+                "英文下载完成窗口标题必须包含 Restart Required");
+        check(UserNotifier.restartRequiredMessage(DisplayLanguage.EN_US).contains("restart Minecraft"),
+                "英文下载完成正文必须说明 restart Minecraft");
+        check(UserNotifier.restartRequiredButton(DisplayLanguage.EN_US).equals("OK, Return to Launcher"),
+                "英文确认按钮必须说明返回启动器");
+
+        check(UserNotifier.shouldShowRestartRequired(true, false),
+                "桌面 Fabric 便携更新完成后必须显示重新启动提示");
+        check(!UserNotifier.shouldShowRestartRequired(false, false),
+                "Java Agent 同步完成后不得错误显示重新启动提示");
+        check(!UserNotifier.shouldShowRestartRequired(true, true),
+                "手机端必须继续跳过 Swing 重新启动提示");
+        pass("desktop restart-required prompt is bilingual and mobile-safe");
     }
 
     private void testFailedHelperHandshakeTerminatesChild() throws Exception {

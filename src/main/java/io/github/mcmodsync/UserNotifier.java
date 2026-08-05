@@ -115,6 +115,24 @@ final class UserNotifier implements SyncObserver {
         return language.text(chinese, english);
     }
 
+    static String restartRequiredTitle(DisplayLanguage language) {
+        return language.text("MCModSync：需要重新启动", "MCModSync: Restart Required");
+    }
+
+    static String restartRequiredMessage(DisplayLanguage language) {
+        return language.text(
+                "下载和校验已完成，需要重新启动 Minecraft",
+                "Download and verification are complete; restart Minecraft");
+    }
+
+    static String restartRequiredButton(DisplayLanguage language) {
+        return language.text("确定，返回启动器", "OK, Return to Launcher");
+    }
+
+    static boolean shouldShowRestartRequired(boolean fabricPortableMode, boolean mobileRuntime) {
+        return fabricPortableMode && !mobileRuntime;
+    }
+
     private String localizePhase(String message) {
         if (language.chinese()) {
             return message;
@@ -641,7 +659,7 @@ final class UserNotifier implements SyncObserver {
 
     @Override
     public void afterUpdate(int downloaded, int quarantined, int unchanged) {
-        if (!dialogsAvailable()) {
+        if (mobileRuntime || !dialogsAvailable()) {
             reportCompleted(downloaded, quarantined, unchanged);
             if (fabricPortableMode && Boolean.getBoolean("modsync.helperProcess")) {
                 // Keep helper process short-lived on mobile/headless; logs already contain the summary.
@@ -651,41 +669,37 @@ final class UserNotifier implements SyncObserver {
         }
         try {
             runOnUiThread(() -> {
-                if (fabricPortableMode) {
+                if (shouldShowRestartRequired(fabricPortableMode, mobileRuntime)) {
                     ensureProgressDialog();
-                    activeDownloadDialog.setTitle(text(
-                            "MCModSync 更新完成：请再次启动",
-                            "MCModSync Update Complete: Launch Again"));
-                    activeDownloadDialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
-                    activePhaseLabel.setText(text(
-                            "Mod、资源包和服务器列表同步已经完成",
-                            "Mod, resource-pack, and server-list sync is complete"));
+                    activeDownloadDialog.setTitle(restartRequiredTitle(language));
+                    activePhaseLabel.setText(restartRequiredMessage(language));
                     activeFileDetailLabel.setText(text("当前文件：全部完成", "Current file: complete"));
                     setCompletedProgress(activeFileProgressBar);
                     activeTotalDetailLabel.setText(text(
-                            "总进度：辅助 Java 进程将在 5 秒后自动关闭",
-                            "Overall: helper Java process closes automatically in 5 seconds"));
+                            "总进度：100%，等待你确认后返回启动器",
+                            "Overall: 100%; confirm to return to the launcher"));
                     setCompletedProgress(activeTotalProgressBar);
                     activePlanArea.setText(text(
                             "下载/替换：" + downloaded + "\n"
                                     + "移入备份：" + quarantined + "\n"
                                     + "无需更改：" + unchanged + "\n\n"
                                     + "Mod 已通过 MD5/SHA256，资源包和服务器列表已通过各自清单校验并安全提交。\n"
-                                    + "本窗口和下载辅助 Java 进程将在 5 秒后自动关闭。\n"
-                                    + "之后请回到启动器再点击一次启动；下次校验一致后会直接进入游戏。",
+                                    + "必须重新启动 Minecraft 才能加载更新后的内容。\n"
+                                    + "点击“确定，返回启动器”，然后在启动器中再次点击启动。",
                             "Downloaded/replaced: " + downloaded + "\n"
                                     + "Moved to backup: " + quarantined + "\n"
                                     + "Unchanged: " + unchanged + "\n\n"
                                     + "Mods passed MD5/SHA256; resource packs and the server list passed their catalogs.\n"
-                                    + "This window and helper Java process close in 5 seconds.\n"
-                                    + "Return to the launcher and launch again; the next matching check enters the game."));
+                                    + "Minecraft must be restarted to load the updated content.\n"
+                                    + "Click ‘OK, Return to Launcher’, then launch the instance again."));
                     activePlanArea.setCaretPosition(0);
+                    activeCloseButton.setText(restartRequiredButton(language));
                     activeCloseButton.setVisible(true);
                     activeDownloadDialog.pack();
+                    activeDownloadDialog.setLocationRelativeTo(null);
+                    activeDownloadDialog.toFront();
+                    activeDownloadDialog.requestFocus();
                     helperExitScheduled = true;
-                    Timer timer = new Timer(5_000, event -> closeProgressWindowAndExitHelper());
-                    timer.setRepeats(false);
-                    timer.start();
                     return;
                 }
                 closeActiveDownloadDialog();
@@ -948,6 +962,14 @@ final class UserNotifier implements SyncObserver {
                 text("MCModSync 正在自动同步", "MCModSync Automatic Sync"),
                 false);
         dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
+        dialog.addWindowListener(new WindowAdapter() {
+            @Override
+            public void windowClosing(WindowEvent event) {
+                if (activeCloseButton != null && activeCloseButton.isVisible()) {
+                    closeProgressWindowAndExitHelper();
+                }
+            }
+        });
         dialog.setAlwaysOnTop(true);
         dialog.setAutoRequestFocus(true);
         dialog.add(activePhaseLabel, BorderLayout.NORTH);
