@@ -42,6 +42,7 @@ final class ModSyncEngine {
     private final FileOperations files;
     private final Consumer<String> logger;
     private final SyncObserver observer;
+    private final DisplayLanguage language;
 
     ModSyncEngine(ModSyncConfig config, Consumer<String> logger) {
         this(config, logger, SyncObserver.NONE);
@@ -51,8 +52,13 @@ final class ModSyncEngine {
         this.config = config;
         this.logger = logger;
         this.observer = observer;
+        this.language = DisplayLanguage.detect(config.gameDirectory());
         this.files = new FileOperations(config.fileOperationRetries());
         this.client = RequiredManifestFetcher.createClient(config.connectTimeout());
+    }
+
+    private void log(String chinese, String english) {
+        logger.accept(language.text(chinese, english));
     }
 
     /**
@@ -101,7 +107,8 @@ final class ModSyncEngine {
             }
             if (desiredManifest.managedClientConfig().isPresent()
                     && desiredManifest.managedClientConfig().get().apply(config.configurationDirectory())) {
-                logger.accept("服务器管理的 modsync.properties 已更新，需要重新启动后应用");
+                log("服务器管理的 modsync.properties 已更新，需要重新启动后应用",
+                        "The server-managed modsync.properties was updated; restart to apply it");
                 return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
             }
 
@@ -138,7 +145,8 @@ final class ModSyncEngine {
                 }
                 Path existing = local.get(key(desired.fileName()));
                 if (existing == null || !ModManifest.fileMatches(desired, existing)) {
-                    logger.accept("便携模式检测到需要下载或替换: " + desired.fileName());
+                    log("便携模式检测到需要下载或替换: " + desired.fileName(),
+                            "Portable mode detected a required download or replacement: " + desired.fileName());
                     return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
                 }
             }
@@ -160,8 +168,10 @@ final class ModSyncEngine {
                 }
                 String localModId = FabricModMetadata.readModId(localEntry.getValue());
                 if (excludedNames.contains(localEntry.getKey()) || excludedIds.contains(localModId)) {
-                    logger.accept("便携模式检测到需要移出已取消/不兼容的推荐模组: "
-                            + localEntry.getValue().getFileName());
+                    log("便携模式检测到需要移出已取消/不兼容的推荐模组: "
+                                    + localEntry.getValue().getFileName(),
+                            "Portable mode detected a deselected or incompatible recommended mod to move out: "
+                                    + localEntry.getValue().getFileName());
                     return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
                 }
                 if (localModId.equals("mcmodsync") && !desiredIds.contains("mcmodsync")) {
@@ -170,15 +180,18 @@ final class ModSyncEngine {
                 if ((!localModId.isEmpty() && desiredIds.contains(localModId))
                         || previousNames.contains(localEntry.getKey())
                         || (!localModId.isEmpty() && previousIds.contains(localModId))) {
-                    logger.accept("便携模式检测到需要替换或处理的旧 Mod: "
-                            + localEntry.getValue().getFileName());
+                    log("便携模式检测到需要替换或处理的旧 Mod: "
+                                    + localEntry.getValue().getFileName(),
+                            "Portable mode detected an old mod that must be replaced or handled: "
+                                    + localEntry.getValue().getFileName());
                     return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
                 }
             }
 
             refreshAndVerifyLocalSnapshot(modsDirectory);
             persistServerHistory(desiredManifest, stateDirectory, modsDirectory);
-            logger.accept("便携模式只读检查完成：云端管理文件无需更改，可继续启动。");
+            log("便携模式只读检查完成：云端管理文件无需更改，可继续启动。",
+                    "Portable read-only check complete: cloud-managed files need no changes; startup may continue.");
             return new SyncProbeResult(SyncProbeResult.Status.UP_TO_DATE);
         }
     }
@@ -213,7 +226,8 @@ final class ModSyncEngine {
             Path recoveryMarker,
             LocalSnapshot localSnapshot)
             throws IOException, InterruptedException {
-        logger.accept("正在读取云端清单: " + config.manifestUri());
+        log("正在读取云端清单: " + config.manifestUri(),
+                "Reading cloud catalog: " + config.manifestUri());
         observer.phaseChanged("正在读取云端清单……");
         String manifestText;
         try {
@@ -238,7 +252,8 @@ final class ModSyncEngine {
         boolean managedConfigChanged = manifest.managedClientConfig().isPresent()
                 && manifest.managedClientConfig().get().apply(config.configurationDirectory());
         if (managedConfigChanged) {
-            logger.accept("服务器管理的 modsync.properties 已更新；同步完成后需要重新启动");
+            log("服务器管理的 modsync.properties 已更新；同步完成后需要重新启动",
+                    "The server-managed modsync.properties was updated; restart after synchronization");
         }
 
         ModManifest previousServerManifest = loadServerHistory(stateDirectory);
@@ -375,21 +390,26 @@ final class ModSyncEngine {
         }
 
         if (!clientAdded.isEmpty()) {
-            logger.accept("检测到 " + clientAdded.size() + " 个用户客户端 Mod，将全部保留。");
+            log("检测到 " + clientAdded.size() + " 个用户客户端 Mod，将全部保留。",
+                    "Detected " + clientAdded.size() + " user client mod(s); all will be retained.");
         }
         if (!deselectedRecommended.isEmpty()) {
-            logger.accept("推荐模组已取消选择或与当前平台不兼容，将自动移出并备份: "
-                    + deselectedRecommended.stream()
-                            .map(path -> path.getFileName().toString())
-                            .reduce((left, right) -> left + ", " + right)
-                            .orElse(""));
+            String names = deselectedRecommended.stream()
+                    .map(path -> path.getFileName().toString())
+                    .reduce((left, right) -> left + ", " + right)
+                    .orElse("");
+            log("推荐模组已取消选择或与当前平台不兼容，将自动移出并备份: " + names,
+                    "Recommended mods were deselected or are incompatible with this platform; moving to backup: "
+                            + names);
         }
 
         if (downloads.isEmpty() && extras.isEmpty()) {
             refreshAndVerifyLocalSnapshot(modsDirectory);
             persistServerHistory(manifest, stateDirectory, modsDirectory);
             RecommendedSelectionStore.markMobileCompleted(selection);
-            logger.accept("服务器管理的 Mod 与云端清单一致，共 " + unchanged + " 个文件；客户端 Mod 已保留。");
+            log("服务器管理的 Mod 与云端清单一致，共 " + unchanged + " 个文件；客户端 Mod 已保留。",
+                    "Server-managed mods match the cloud catalog (" + unchanged
+                            + " file(s)); client mods were retained.");
             return new SyncResult(
                     managedConfigChanged ? SyncResult.Status.UPDATED : SyncResult.Status.UNCHANGED,
                     0,
@@ -397,12 +417,17 @@ final class ModSyncEngine {
                     unchanged);
         }
 
-        logger.accept("需要下载 " + downloads.size() + " 个文件，自动替换旧版本 " + versionReplaced.size()
-                + " 个，首次确认非纯客户端 Mod " + rejectedUnknown.size()
-                + " 个，取消/不兼容推荐模组 " + deselectedRecommended.size()
-                + " 个，用户选择移出服务器已移除文件 "
-                + (extras.size() - versionReplaced.size() - rejectedUnknown.size()
-                        - deselectedRecommended.size()) + " 个。");
+        int removedByChoice = extras.size() - versionReplaced.size() - rejectedUnknown.size()
+                - deselectedRecommended.size();
+        log("需要下载 " + downloads.size() + " 个文件，自动替换旧版本 " + versionReplaced.size()
+                        + " 个，首次确认非纯客户端 Mod " + rejectedUnknown.size()
+                        + " 个，取消/不兼容推荐模组 " + deselectedRecommended.size()
+                        + " 个，用户选择移出服务器已移除文件 " + removedByChoice + " 个。",
+                "Download " + downloads.size() + " file(s); replace " + versionReplaced.size()
+                        + " old version(s); move " + rejectedUnknown.size()
+                        + " newly rejected non-client mod(s), " + deselectedRecommended.size()
+                        + " deselected/incompatible recommended mod(s), and " + removedByChoice
+                        + " server-removed file(s) selected by the user.");
         observer.beforeDownload(
                 downloads.stream().map(plan -> plan.entry().fileName()).toList(),
                 versionReplaced.stream().map(path -> path.getFileName().toString()).toList(),
@@ -416,9 +441,11 @@ final class ModSyncEngine {
         observer.phaseChanged("正在获取下载文件大小，准备总进度……");
         DownloadSizePlan sizePlan = probeDownloadSizes(downloads);
         if (sizePlan.totalBytes() > 0) {
-            logger.accept("总下载大小: " + sizePlan.totalBytes() + " bytes");
+            log("总下载大小: " + sizePlan.totalBytes() + " bytes",
+                    "Total download size: " + sizePlan.totalBytes() + " bytes");
         } else {
-            logger.accept("服务器未完整提供文件大小，总进度将按文件数量估算");
+            log("服务器未完整提供文件大小，总进度将按文件数量估算",
+                    "The server did not provide every file size; overall progress will use file count");
         }
         observer.phaseChanged("准备下载 " + downloads.size() + " 个 Mod……");
         Path stagingDirectory = stateDirectory.resolve("staging").resolve(UUID.randomUUID().toString());
@@ -432,7 +459,8 @@ final class ModSyncEngine {
                         observer, downloads.size(), sizePlan.totalBytes());
                 int threads = ParallelDownloadRunner.threadCount(downloads.size());
                 observer.phaseChanged("正在使用 " + threads + " 个线程并行下载并校验 Mod……");
-                logger.accept("尝试使用 " + threads + " 个线程并行下载 " + downloads.size() + " 个 Mod");
+                log("尝试使用 " + threads + " 个线程并行下载 " + downloads.size() + " 个 Mod",
+                        "Trying " + threads + " threads to download " + downloads.size() + " mod(s) in parallel");
                 try {
                     ParallelDownloadRunner.run(downloads.size(), index -> downloadAndValidateMod(
                             downloads.get(index),
@@ -443,8 +471,10 @@ final class ModSyncEngine {
                             true));
                     downloadedInParallel = true;
                 } catch (IOException parallelFailure) {
-                    logger.accept("并行下载失败，将清理暂存内容并回退单线程下载: "
-                            + parallelFailure.getMessage());
+                    log("并行下载失败，将清理暂存内容并回退单线程下载: "
+                                    + parallelFailure.getMessage(),
+                            "Parallel download failed; clearing staging data and retrying with one thread: "
+                                    + parallelFailure.getMessage());
                     observer.phaseChanged("并行下载未成功，正在自动回退单线程重新下载……");
                     deleteTreeBestEffort(parallelStaging);
                     downloads.forEach(plan -> plan.stagedFile(null));
@@ -477,8 +507,10 @@ final class ModSyncEngine {
             deleteTreeBestEffort(stagingDirectory);
         }
 
-        logger.accept("同步完成：下载 " + downloads.size() + " 个，备份服务器移除文件 " + extras.size()
-                + " 个，未变化 " + unchanged + " 个。");
+        log("同步完成：下载 " + downloads.size() + " 个，备份服务器移除文件 " + extras.size()
+                        + " 个，未变化 " + unchanged + " 个。",
+                "Synchronization complete: downloaded " + downloads.size() + ", moved " + extras.size()
+                        + " file(s) to backup, unchanged " + unchanged + ".");
         observer.afterUpdate(downloads.size(), extras.size(), unchanged);
         return new SyncResult(SyncResult.Status.UPDATED, downloads.size(), extras.size(), unchanged);
     }
@@ -506,8 +538,10 @@ final class ModSyncEngine {
                         entry.descriptionZh(),
                         entry.descriptionEn()));
                 protectedEntry = true;
-                logger.accept("忽略云端较旧的 MCModSync " + versionIn(entry.fileName())
-                        + "；保留本地 " + newest.version() + "，防止同步器降级");
+                log("忽略云端较旧的 MCModSync " + versionIn(entry.fileName())
+                                + "；保留本地 " + newest.version() + "，防止同步器降级",
+                        "Ignoring older cloud MCModSync " + versionIn(entry.fileName())
+                                + "; retaining local " + newest.version() + " to prevent a downgrade");
             } else {
                 effective.add(entry);
             }
@@ -594,8 +628,10 @@ final class ModSyncEngine {
             history.ensureUniqueModIds();
             return history;
         } catch (IOException | IllegalArgumentException exception) {
-            logger.accept("警告：上次云端清单历史无法读取。为避免误删，本次将未知额外 Mod 视为客户端 Mod。原因: "
-                    + exception.getMessage());
+            log("警告：上次云端清单历史无法读取。为避免误删，本次将未知额外 Mod 视为客户端 Mod。原因: "
+                            + exception.getMessage(),
+                    "Warning: the previous cloud-catalog history is unreadable. Unknown extra mods will be treated "
+                            + "as client mods to avoid accidental removal. Reason: " + exception.getMessage());
             return null;
         }
     }
@@ -607,13 +643,15 @@ final class ModSyncEngine {
         Path historyPath = stateDirectory.resolve("server-manifest.txt");
         if (manifest.entries().isEmpty()) {
             Files.deleteIfExists(historyPath);
-            logger.accept("当前没有云端管理的已选 Mod；已清除旧的服务器清单历史。");
+            log("当前没有云端管理的已选 Mod；已清除旧的服务器清单历史。",
+                    "No selected cloud-managed mods remain; the old server-catalog history was removed.");
             return;
         }
         writeSnapshotAtomically(manifest, historyPath);
         ModManifest saved = ModManifest.parse(Files.readString(historyPath, StandardCharsets.UTF_8));
         saved.verifyManagedFiles(modsDirectory);
-        logger.accept("本次云端清单历史已保存，用于下次识别服务器移除与客户端自定义 Mod。");
+        log("本次云端清单历史已保存，用于下次识别服务器移除与客户端自定义 Mod。",
+                "Cloud-catalog history was saved for detecting server removals and custom client mods next time.");
     }
 
     private LocalSnapshot prepareLocalSnapshot(Path modsDirectory, Path stateDirectory) throws IOException {
@@ -624,8 +662,10 @@ final class ModSyncEngine {
             try {
                 serverHistory.requiredOnly().verifyManagedFiles(modsDirectory);
             } catch (IOException exception) {
-                logger.accept("警告：服务器管理的本地 Mod 校验失败，将尝试使用云端清单修复。原因: "
-                        + exception.getMessage());
+                log("警告：服务器管理的本地 Mod 校验失败，将尝试使用云端清单修复。原因: "
+                                + exception.getMessage(),
+                        "Warning: verification of server-managed local mods failed; the cloud catalog will be used "
+                                + "to repair them. Reason: " + exception.getMessage());
                 return new LocalSnapshot(LocalSnapshotStatus.INVALID, exception.getMessage());
             }
         }
@@ -635,14 +675,18 @@ final class ModSyncEngine {
             writeSnapshotAtomically(generated, snapshotPath);
             ModManifest.parse(Files.readString(snapshotPath, StandardCharsets.UTF_8)).verifySnapshot(modsDirectory);
             if (existed) {
-                logger.accept("本地 mods.txt 已按当前服务器 Mod 与客户端自定义 Mod 重建，MD5/SHA256 校验通过。");
+                log("本地 mods.txt 已按当前服务器 Mod 与客户端自定义 Mod 重建，MD5/SHA256 校验通过。",
+                        "Local mods.txt was rebuilt from current server and custom client mods; MD5/SHA256 passed.");
                 return new LocalSnapshot(LocalSnapshotStatus.EXISTING_VALID, "");
             }
-            logger.accept("本地 mods.txt 不存在，已自动生成并完成 MD5/SHA256 校验: " + snapshotPath);
+            log("本地 mods.txt 不存在，已自动生成并完成 MD5/SHA256 校验: " + snapshotPath,
+                    "Local mods.txt was missing; generated automatically and verified with MD5/SHA256: "
+                            + snapshotPath);
             return new LocalSnapshot(LocalSnapshotStatus.GENERATED_VALID, "");
         } catch (IOException exception) {
             if (isModsDirectoryEmpty(modsDirectory)) {
-                logger.accept("本地 mods 目录为空，将在云端文件下载完成后生成 mods.txt。");
+                log("本地 mods 目录为空，将在云端文件下载完成后生成 mods.txt。",
+                        "The local mods directory is empty; mods.txt will be generated after cloud files download.");
                 return new LocalSnapshot(LocalSnapshotStatus.EMPTY, exception.getMessage());
             }
             throw exception;
@@ -653,13 +697,16 @@ final class ModSyncEngine {
         Path snapshotPath = modsDirectory.resolve("mods.txt");
         if (isModsDirectoryEmpty(modsDirectory)) {
             Files.deleteIfExists(snapshotPath);
-            logger.accept("最终 mods 目录为空；未生成本地 mods.txt，允许在不选择推荐模组时继续启动。");
+            log("最终 mods 目录为空；未生成本地 mods.txt，允许在不选择推荐模组时继续启动。",
+                    "The final mods directory is empty; mods.txt was not generated, and startup may continue with "
+                            + "no recommended mods selected.");
             return;
         }
         ModManifest snapshot = ModManifest.scan(modsDirectory);
         writeSnapshotAtomically(snapshot, snapshotPath);
         ModManifest.parse(Files.readString(snapshotPath, StandardCharsets.UTF_8)).verifySnapshot(modsDirectory);
-        logger.accept("本地 mods.txt 已按最终 Mod 组合更新并完成 MD5/SHA256 校验。");
+        log("本地 mods.txt 已按最终 Mod 组合更新并完成 MD5/SHA256 校验。",
+                "Local mods.txt was updated for the final mod set and verified with MD5/SHA256.");
     }
 
     private void writeSnapshotAtomically(ModManifest manifest, Path snapshotPath) throws IOException {
@@ -758,11 +805,14 @@ final class ModSyncEngine {
             Path backupDirectory = uniqueBackupDirectory(stateDirectory);
             try {
                 files.move(originalsDirectory, backupDirectory, false);
-                logger.accept("旧模组已禁用并备份至: " + backupDirectory);
+                log("旧模组已禁用并备份至: " + backupDirectory,
+                        "Old mods were disabled and backed up to: " + backupDirectory);
                 transactionMayBeDeleted = true;
             } catch (IOException exception) {
                 // 当前 Mod 组合已经完整提交；旧文件仍安全保留在事务目录，不阻止游戏启动。
-                logger.accept("警告：无法整理备份目录，旧文件仍保留在: " + originalsDirectory);
+                log("警告：无法整理备份目录，旧文件仍保留在: " + originalsDirectory,
+                        "Warning: could not organize the backup directory; old files remain at: "
+                                + originalsDirectory);
             }
         }
         if (transactionMayBeDeleted) {
@@ -798,8 +848,8 @@ final class ModSyncEngine {
                 config.manifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.8.4",
-                "Mod 清单",
+                "MCModSync/1.8.5",
+                language.text("Mod 清单", "Mod catalog"),
                 logger);
         return decodeUtf8Strict(bytes);
     }
@@ -813,7 +863,7 @@ final class ModSyncEngine {
         URI fileUri = config.manifestUri().resolve("./" + Rfc3986.encodePathSegment(entry.fileName()));
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.8.4")
+                .header("User-Agent", "MCModSync/1.8.5")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -865,7 +915,9 @@ final class ModSyncEngine {
             DownloadProgressTracker tracker,
             boolean parallel) throws IOException, InterruptedException {
         String prefix = parallel ? "并行下载" : "下载";
-        logger.accept(prefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName());
+        String englishPrefix = parallel ? "Parallel download" : "Download";
+        log(prefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName(),
+                englishPrefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName());
         Path staged = stagingDirectory.resolve(plan.entry().fileName() + ".part");
         downloadMod(plan.entry(), staged, fileIndex, fileCount, tracker);
         if (!parallel) {
@@ -896,7 +948,7 @@ final class ModSyncEngine {
                     "./" + Rfc3986.encodePathSegment(plan.entry().fileName()));
             HttpRequest request = HttpRequest.newBuilder(fileUri)
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.8.4")
+                    .header("User-Agent", "MCModSync/1.8.5")
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {
@@ -909,7 +961,9 @@ final class ModSyncEngine {
                 }
                 total += length;
             } catch (IOException exception) {
-                logger.accept("无法预取文件大小，将使用文件数量估算总进度: " + exception.getMessage());
+                log("无法预取文件大小，将使用文件数量估算总进度: " + exception.getMessage(),
+                        "Could not prefetch file sizes; overall progress will use file count: "
+                                + exception.getMessage());
                 return DownloadSizePlan.UNKNOWN;
             }
         }

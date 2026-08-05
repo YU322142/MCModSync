@@ -76,7 +76,7 @@ final class UserNotifier implements SyncObserver {
         boolean dialogs = dialogsAvailable(environment);
         // Desktop (dialogs available): keep original Swing-only UX.
         // Mobile/headless: log + .modsync status files.
-        this.statusReporter = dialogs ? null : new SyncStatusReporter(directory);
+        this.statusReporter = dialogs ? null : new SyncStatusReporter(directory, language);
         if (this.statusReporter != null) {
             this.statusReporter.setEnvironment(environment);
             this.statusReporter.setMode(
@@ -204,14 +204,22 @@ final class UserNotifier implements SyncObserver {
             // Mobile must clean leftovers (e.g. kuayue / c2me natives) or the next
             // Fabric resolution can hard-fail before preLaunch ever runs again.
             if (mobileRuntime) {
-                reportPhase("手机端：自动移出并备份服务器已移除/不在清单中的 Mod",
+                reportPhase(text(
+                                "手机端：自动移出并备份服务器已移除/不在清单中的 Mod",
+                                "Mobile: moving server-removed or unlisted mods to backup"),
                         String.join(", ", serverRemoved));
-                System.out.println("[MCModSync] 手机端自动隔离服务器已移除 Mod: " + serverRemoved);
+                System.out.println("[MCModSync] " + text(
+                        "手机端自动隔离服务器已移除 Mod: ",
+                        "Mobile: quarantined mods removed by the server: ") + serverRemoved);
                 return RemovalDecision.BACKUP;
             }
-            reportPhase("无弹窗环境：保留服务器已移除的 Mod 为客户端文件",
+            reportPhase(text(
+                            "无弹窗环境：保留服务器已移除的 Mod 为客户端文件",
+                            "Headless environment: keeping server-removed mods as client files"),
                     String.join(", ", serverRemoved));
-            System.out.println("[MCModSync] 无弹窗环境，自动保留服务器已移除 Mod: " + serverRemoved);
+            System.out.println("[MCModSync] " + text(
+                    "无弹窗环境，自动保留服务器已移除 Mod: ",
+                    "Headless environment: retained server-removed mods: ") + serverRemoved);
             return RemovalDecision.KEEP;
         }
         AtomicReference<RemovalDecision> decision = new AtomicReference<>(RemovalDecision.KEEP);
@@ -241,7 +249,9 @@ final class UserNotifier implements SyncObserver {
                 decision.set(choice == 0 ? RemovalDecision.BACKUP : RemovalDecision.KEEP);
             });
         } catch (IOException exception) {
-            System.err.println("[MCModSync] 无法显示服务器移除选择窗口，将安全保留文件: " + exception.getMessage());
+            System.err.println("[MCModSync] " + text(
+                    "无法显示服务器移除选择窗口，将安全保留文件: ",
+                    "Cannot show the removed-mod dialog; files will be retained safely: ") + exception.getMessage());
         }
         return decision.get();
     }
@@ -250,13 +260,21 @@ final class UserNotifier implements SyncObserver {
     public UnknownModDecision decideUnknownClientMod(String fileName) throws IOException {
         if (!dialogsAvailable()) {
             if (mobileRuntime) {
-                reportPhase("手机端：自动移出并备份未在云端清单中的本地 Mod", fileName);
-                System.out.println("[MCModSync] 手机端自动隔离未确认客户端 Mod: " + fileName);
+                reportPhase(text(
+                        "手机端：自动移出并备份未在云端清单中的本地 Mod",
+                        "Mobile: moving local mods absent from the cloud catalog to backup"), fileName);
+                System.out.println("[MCModSync] " + text(
+                        "手机端自动隔离未确认客户端 Mod: ",
+                        "Mobile: quarantined unconfirmed client mod: ") + fileName);
                 return UnknownModDecision.BACKUP;
             }
             // Desktop headless: keep as client mod so operators are not blocked.
-            reportPhase("无弹窗环境：保留未在云端清单中的本地 Mod", fileName);
-            System.out.println("[MCModSync] 无弹窗环境，自动保留未确认客户端 Mod: " + fileName);
+            reportPhase(text(
+                    "无弹窗环境：保留未在云端清单中的本地 Mod",
+                    "Headless environment: keeping local mods absent from the cloud catalog"), fileName);
+            System.out.println("[MCModSync] " + text(
+                    "无弹窗环境，自动保留未确认客户端 Mod: ",
+                    "Headless environment: retained unconfirmed client mod: ") + fileName);
             return UnknownModDecision.KEEP_CLIENT;
         }
         AtomicReference<UnknownModDecision> decision = new AtomicReference<>();
@@ -290,7 +308,9 @@ final class UserNotifier implements SyncObserver {
             });
         } catch (IOException exception) {
             markDialogsUnavailable(exception.getMessage());
-            reportPhase("图形窗口失败，自动保留未确认客户端 Mod", fileName);
+            reportPhase(text(
+                    "图形窗口失败，自动保留未确认客户端 Mod",
+                    "The dialog failed; retaining the unconfirmed client mod"), fileName);
             return UnknownModDecision.KEEP_CLIENT;
         }
         if (decision.get() == null) {
@@ -603,7 +623,8 @@ final class UserNotifier implements SyncObserver {
             });
         } catch (IOException exception) {
             markDialogsUnavailable(exception.getMessage());
-            System.err.println("[MCModSync] 无法更新进度窗口: " + exception.getMessage());
+            System.err.println("[MCModSync] " + text(
+                    "无法更新进度窗口: ", "Cannot update the progress window: ") + exception.getMessage());
         }
     }
 
@@ -690,7 +711,8 @@ final class UserNotifier implements SyncObserver {
             });
         } catch (IOException exception) {
             markDialogsUnavailable(exception.getMessage());
-            System.err.println("[MCModSync] 无法显示完成提示: " + exception.getMessage());
+            System.err.println("[MCModSync] " + text(
+                    "无法显示完成提示: ", "Cannot show the completion message: ") + exception.getMessage());
         }
     }
 
@@ -700,7 +722,7 @@ final class UserNotifier implements SyncObserver {
         System.err.println("[MCModSync] "
                 + language.text("游戏启动已阻止: ", "Game startup blocked: ") + message);
         if (!dialogsAvailable()) {
-            new SyncStatusReporter(resolveOptionalGameDirectory()).failed(message);
+            new SyncStatusReporter(resolveOptionalGameDirectory(), language).failed(message);
             return;
         }
         try {
@@ -734,7 +756,8 @@ final class UserNotifier implements SyncObserver {
             });
         } catch (IOException exception) {
             markDialogsUnavailable(exception.getMessage());
-            System.err.println("[MCModSync] 无法显示错误窗口: " + exception.getMessage());
+            System.err.println("[MCModSync] " + language.text(
+                    "无法显示错误窗口: ", "Cannot show the error window: ") + exception.getMessage());
         }
     }
 
@@ -763,7 +786,8 @@ final class UserNotifier implements SyncObserver {
                     language.text("MCModSync：客户端正在使用中", "MCModSync: Client Is Busy"),
                     JOptionPane.WARNING_MESSAGE));
         } catch (IOException exception) {
-            System.err.println("[MCModSync] 无法显示客户端占用提示: " + exception.getMessage());
+            System.err.println("[MCModSync] " + language.text(
+                    "无法显示客户端占用提示: ", "Cannot show the client-busy message: ") + exception.getMessage());
         }
     }
 
@@ -1161,8 +1185,14 @@ final class UserNotifier implements SyncObserver {
     static void markDialogsUnavailable(String reason) {
         dialogsAvailableCache = false;
         System.setProperty("modsync.disableDialogs", "true");
-        System.err.println("[MCModSync] 图形窗口不可用，已切换为无弹窗模式"
+        System.err.println("[MCModSync] " + staticText(
+                        "图形窗口不可用，已切换为无弹窗模式",
+                        "GUI dialogs are unavailable; switched to headless mode")
                 + (reason == null || reason.isBlank() ? "" : ": " + reason));
+    }
+
+    private static String staticText(String chinese, String english) {
+        return DisplayLanguage.detect(resolveOptionalGameDirectory()).text(chinese, english);
     }
 
     private static Path resolveOptionalGameDirectory() {
@@ -1175,7 +1205,9 @@ final class UserNotifier implements SyncObserver {
 
     private static void runOnUiThread(Runnable action) throws IOException {
         if (!dialogsAvailable()) {
-            throw new IOException("当前环境不支持图形提示窗口");
+            throw new IOException(staticText(
+                    "当前环境不支持图形提示窗口",
+                    "The current environment does not support GUI dialogs"));
         }
         if (SwingUtilities.isEventDispatchThread()) {
             action.run();
@@ -1185,13 +1217,19 @@ final class UserNotifier implements SyncObserver {
             SwingUtilities.invokeAndWait(action);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            throw new IOException("等待提示窗口时线程被中断", exception);
+            throw new IOException(staticText(
+                    "等待提示窗口时线程被中断",
+                    "Interrupted while waiting for the dialog"), exception);
         } catch (InvocationTargetException exception) {
             markDialogsUnavailable(String.valueOf(exception.getCause()));
-            throw new IOException("显示提示窗口失败", exception.getCause());
+            throw new IOException(staticText(
+                    "显示提示窗口失败",
+                    "Failed to show the dialog"), exception.getCause());
         } catch (RuntimeException exception) {
             markDialogsUnavailable(exception.getMessage());
-            throw new IOException("显示提示窗口失败", exception);
+            throw new IOException(staticText(
+                    "显示提示窗口失败",
+                    "Failed to show the dialog"), exception);
         }
     }
 }

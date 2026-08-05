@@ -22,11 +22,12 @@ final class SyncStatusReporter {
 
     private final Path statusFile;
     private final Path progressLogFile;
+    private final DisplayLanguage language;
     private final AtomicLong lastProgressLogMs = new AtomicLong();
     private final AtomicInteger lastLoggedTotalPermille = new AtomicInteger(-1);
     private final AtomicReference<String> lastLoggedFileKey = new AtomicReference<>("");
     private final AtomicLong lastLoggedFileBytes = new AtomicLong(-1);
-    private volatile String phase = "准备中";
+    private volatile String phase;
     private volatile String detail = "";
     private volatile String plan = "";
     private volatile int totalPermille = -1;
@@ -34,11 +35,17 @@ final class SyncStatusReporter {
     private volatile String environmentSummary = "";
 
     SyncStatusReporter(Path gameDirectory) {
+        this(gameDirectory, DisplayLanguage.detect(gameDirectory));
+    }
+
+    SyncStatusReporter(Path gameDirectory, DisplayLanguage language) {
         Path directory = gameDirectory == null
                 ? null
                 : gameDirectory.toAbsolutePath().normalize().resolve(".modsync");
         this.statusFile = directory == null ? null : directory.resolve("ui-status.txt");
         this.progressLogFile = directory == null ? null : directory.resolve("progress.log");
+        this.language = language == null ? DisplayLanguage.EN_US : language;
+        this.phase = text("准备中", "Preparing");
     }
 
     void setMode(String mode) {
@@ -51,7 +58,7 @@ final class SyncStatusReporter {
             return;
         }
         this.environmentSummary = environment.summaryLine();
-        logLine("环境识别: " + environment.summaryLine());
+        logLine(text("环境识别: ", "Environment: ") + environment.summaryLine());
         for (String line : environment.detailedReport().split("\\R")) {
             if (!line.isBlank()) {
                 appendProgressLog("ENV " + line);
@@ -80,14 +87,14 @@ final class SyncStatusReporter {
         String filePart = progress.fileTotalBytes() > 0
                 ? formatBytes(progress.fileDownloadedBytes()) + " / " + formatBytes(progress.fileTotalBytes())
                         + " (" + percent(progress.fileDownloadedBytes(), progress.fileTotalBytes()) + ")"
-                : "已下载 " + formatBytes(progress.fileDownloadedBytes());
+                : text("已下载 ", "Downloaded ") + formatBytes(progress.fileDownloadedBytes());
         String totalPart = progress.totalBytes() > 0 && progress.totalDownloadedBytes() >= 0
                 ? formatBytes(progress.totalDownloadedBytes()) + " / " + formatBytes(progress.totalBytes())
                         + " (" + percent(progress.totalDownloadedBytes(), progress.totalBytes()) + ")"
                 : String.format(Locale.ROOT, "%.1f%%", this.totalPermille / 10.0);
-        this.detail = "下载 [" + progress.fileIndex() + "/" + progress.fileCount() + "] "
-                + progress.fileName() + " " + filePart + " | 总进度 " + totalPart;
-        this.phase = "正在下载";
+        this.detail = text("下载 [", "Download [") + progress.fileIndex() + "/" + progress.fileCount() + "] "
+                + progress.fileName() + " " + filePart + text(" | 总进度 ", " | Overall ") + totalPart;
+        this.phase = text("正在下载", "Downloading");
         flushStatus();
 
         String fileKey = progress.fileIndex() + ":" + progress.fileName();
@@ -129,11 +136,17 @@ final class SyncStatusReporter {
 
     void completed(int downloaded, int quarantined, int unchanged, boolean restartRequired) {
         this.totalPermille = 1000;
-        this.phase = restartRequired ? "更新完成，请再次启动" : "更新完成";
-        this.detail = "下载/替换 " + downloaded + "，移入备份 " + quarantined + "，无需更改 " + unchanged;
+        this.phase = restartRequired
+                ? text("更新完成，请再次启动", "Update complete; launch again")
+                : text("更新完成", "Update complete");
+        this.detail = text("下载/替换 ", "Downloaded/replaced ") + downloaded
+                + text("，移入备份 ", ", moved to backup ") + quarantined
+                + text("，无需更改 ", ", unchanged ") + unchanged;
         if (restartRequired) {
             this.plan = (this.plan.isBlank() ? "" : this.plan + "\n\n")
-                    + "同步已在无弹窗模式下完成。请关闭任何残留的游戏/启动器错误窗口后，再点击一次启动。";
+                    + text(
+                            "同步已在无弹窗模式下完成。请关闭任何残留的游戏/启动器错误窗口后，再点击一次启动。",
+                            "Synchronization completed without a dialog. Close any remaining game/launcher error window, then launch again.");
         }
         flushStatus();
         logLine("PROGRESS complete downloaded=" + downloaded
@@ -144,11 +157,11 @@ final class SyncStatusReporter {
     }
 
     void failed(String message) {
-        this.phase = "同步失败";
-        this.detail = Objects.requireNonNullElse(message, "未知错误");
+        this.phase = text("同步失败", "Synchronization failed");
+        this.detail = Objects.requireNonNullElse(message, text("未知错误", "Unknown error"));
         flushStatus();
         logLine("PROGRESS failed message=" + this.detail);
-        logLine("失败: " + this.detail);
+        logLine(text("失败: ", "Failed: ") + this.detail);
     }
 
     private void flushStatus() {
@@ -174,7 +187,9 @@ final class SyncStatusReporter {
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE);
         } catch (IOException exception) {
-            System.err.println("[MCModSync] 无法写入 ui-status.txt: " + exception.getMessage());
+            System.err.println("[MCModSync] "
+                    + text("无法写入 ui-status.txt: ", "Cannot write ui-status.txt: ")
+                    + exception.getMessage());
         }
     }
 
@@ -204,6 +219,10 @@ final class SyncStatusReporter {
         String line = "[MCModSync UI " + TIME.format(LocalDateTime.now()) + "] " + message;
         System.out.println(line);
         appendProgressLog(message);
+    }
+
+    private String text(String chinese, String english) {
+        return language.text(chinese, english);
     }
 
     private static String percent(long current, long total) {

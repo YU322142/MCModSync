@@ -29,6 +29,7 @@ final class ServerListSyncEngine {
     private final SyncObserver observer;
     private final HttpClient client;
     private final FileOperations files;
+    private final DisplayLanguage language;
 
     ServerListSyncEngine(ModSyncConfig config, Consumer<String> logger) {
         this(config, logger, SyncObserver.NONE);
@@ -38,8 +39,13 @@ final class ServerListSyncEngine {
         this.config = config;
         this.logger = logger;
         this.observer = observer;
+        this.language = DisplayLanguage.detect(config.gameDirectory());
         this.client = RequiredManifestFetcher.createClient(config.connectTimeout());
         this.files = new FileOperations(config.fileOperationRetries());
+    }
+
+    private void log(String chinese, String english) {
+        logger.accept(language.text(chinese, english));
     }
 
     SyncProbeResult probeWithoutChanges() throws IOException, InterruptedException {
@@ -59,10 +65,12 @@ final class ServerListSyncEngine {
 
             Path cachedCloud = state.resolve("server-list-cloud.dat");
             if (!isCurrentMergedState(local, cachedCloud, desired)) {
-                logger.accept("检测到服务器列表需要下载或合并更新");
+                log("检测到服务器列表需要下载或合并更新",
+                        "Detected a server-list download or merge update");
                 return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
             }
-            logger.accept("服务器列表云端版本 MD5 一致；玩家本地条目保持不变");
+            log("服务器列表云端版本 MD5 一致；玩家本地条目保持不变",
+                    "The cloud server-list MD5 matches; local player entries remain unchanged");
             return new SyncProbeResult(SyncProbeResult.Status.UP_TO_DATE);
         }
     }
@@ -86,7 +94,8 @@ final class ServerListSyncEngine {
             }
 
             if (isCurrentMergedState(local, cachedCloud, desired)) {
-                logger.accept("服务器列表云端 MD5 未变化；保留当前合并列表");
+                log("服务器列表云端 MD5 未变化；保留当前合并列表",
+                        "The cloud server-list MD5 is unchanged; retaining the current merged list");
                 return new SyncResult(SyncResult.Status.UNCHANGED, 0, 0, 1);
             }
 
@@ -104,15 +113,18 @@ final class ServerListSyncEngine {
                 }
                 observer.phaseChanged("服务器列表下载完成，正在解析 NBT 并合并玩家条目……");
                 ServerListNbt.Document cloud = ServerListNbt.read(downloaded);
-                ServerListNbt.Document previous = readOptional(cachedCloud, "上次云端服务器列表");
-                ServerListNbt.Document current = readOptional(local, "本地服务器列表");
+                ServerListNbt.Document previous = readOptional(
+                        cachedCloud, "上次云端服务器列表", "Previous cloud server list");
+                ServerListNbt.Document current = readOptional(
+                        local, "本地服务器列表", "Local server list");
                 ServerListNbt.Document result = ServerListNbt.merge(cloud, current, previous);
                 ServerListNbt.write(merged, result);
 
                 observer.phaseChanged("服务器列表合并完成，正在备份并安全替换 servers.dat……");
                 installMerged(local, merged, state);
                 updateCloudCache(downloaded, cachedCloud, state);
-                logger.accept("服务器列表更新完成；云端条目已更新，玩家自行添加的地址已保留");
+                log("服务器列表更新完成；云端条目已更新，玩家自行添加的地址已保留",
+                        "Server-list update complete; cloud entries were updated and player-added addresses retained");
                 return new SyncResult(SyncResult.Status.UPDATED, 1, hadLocal ? 1 : 0, 0);
             } finally {
                 deleteTreeBestEffort(staging);
@@ -126,8 +138,8 @@ final class ServerListSyncEngine {
                 config.serverListManifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.8.4",
-                "服务器列表清单",
+                "MCModSync/1.8.5",
+                language.text("服务器列表清单", "Server-list catalog"),
                 logger);
         try {
             return ServerListManifest.parse(new String(bytes, StandardCharsets.UTF_8));
@@ -140,7 +152,7 @@ final class ServerListSyncEngine {
         URI fileUri = config.serverListManifestUri().resolve("./" + ServerListManifest.FILE_NAME);
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.8.4")
+                .header("User-Agent", "MCModSync/1.8.5")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -191,14 +203,16 @@ final class ServerListSyncEngine {
                 Math.max(0, Math.min(1000, permille))));
     }
 
-    private ServerListNbt.Document readOptional(Path path, String label) throws IOException {
+    private ServerListNbt.Document readOptional(Path path, String chineseLabel, String englishLabel) throws IOException {
         if (!Files.isRegularFile(path)) {
             return null;
         }
         try {
             return ServerListNbt.read(path);
         } catch (IOException exception) {
-            logger.accept(label + "无法解析，将先备份并使用可读取的条目继续: " + exception.getMessage());
+            log(chineseLabel + "无法解析，将先备份并使用可读取的条目继续: " + exception.getMessage(),
+                    englishLabel + " could not be parsed; it will be backed up and readable entries will be used: "
+                            + exception.getMessage());
             return null;
         }
     }
@@ -217,7 +231,8 @@ final class ServerListSyncEngine {
                     ServerListNbt.read(cachedCloud),
                     ServerListNbt.read(local));
         } catch (IOException exception) {
-            logger.accept("本地服务器列表需要重新合并: " + exception.getMessage());
+            log("本地服务器列表需要重新合并: " + exception.getMessage(),
+                    "The local server list must be merged again: " + exception.getMessage());
             return false;
         }
     }
@@ -254,7 +269,9 @@ final class ServerListSyncEngine {
             Files.copy(downloaded, temporary, StandardCopyOption.COPY_ATTRIBUTES);
             files.move(temporary, cachedCloud, true);
         } catch (IOException exception) {
-            logger.accept("服务器列表已更新，但云端版本缓存写入失败；下次启动会安全重试: " + exception.getMessage());
+            log("服务器列表已更新，但云端版本缓存写入失败；下次启动会安全重试: " + exception.getMessage(),
+                    "The server list was updated, but the cloud-version cache could not be written; the next launch "
+                            + "will retry safely: " + exception.getMessage());
         } finally {
             try {
                 Files.deleteIfExists(temporary);

@@ -35,6 +35,7 @@ final class ResourcePackSyncEngine {
     private final SyncObserver observer;
     private final HttpClient client;
     private final FileOperations files;
+    private final DisplayLanguage language;
 
     ResourcePackSyncEngine(ModSyncConfig config, Consumer<String> logger) {
         this(config, logger, SyncObserver.NONE);
@@ -44,8 +45,13 @@ final class ResourcePackSyncEngine {
         this.config = config;
         this.logger = logger;
         this.observer = observer;
+        this.language = DisplayLanguage.detect(config.gameDirectory());
         this.client = RequiredManifestFetcher.createClient(config.connectTimeout());
         this.files = new FileOperations(config.fileOperationRetries());
+    }
+
+    private void log(String chinese, String english) {
+        logger.accept(language.text(chinese, english));
     }
 
     SyncProbeResult probeWithoutChanges() throws IOException, InterruptedException {
@@ -78,7 +84,8 @@ final class ResourcePackSyncEngine {
             for (ResourcePackEntry entry : desired.entries()) {
                 Path local = safeTarget(resourcePacks, entry.fileName());
                 if (!Files.isRegularFile(local) || !Hashing.md5(local).equals(entry.md5())) {
-                    logger.accept("检测到需要下载或替换的资源包: " + entry.fileName());
+                    log("检测到需要下载或替换的资源包: " + entry.fileName(),
+                            "Detected a resource pack to download or replace: " + entry.fileName());
                     return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
                 }
             }
@@ -86,7 +93,7 @@ final class ResourcePackSyncEngine {
                 return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
             }
             persistHistory(desired, state);
-            logger.accept("资源包 MD5 校验一致");
+            log("资源包 MD5 校验一致", "Resource-pack MD5 verification passed");
             return new SyncProbeResult(SyncProbeResult.Status.UP_TO_DATE);
         }
     }
@@ -136,7 +143,9 @@ final class ResourcePackSyncEngine {
             List<Path> removed = removedHistoryFiles(history, desired, resourcePacks);
             if (downloads.isEmpty() && removed.isEmpty()) {
                 persistHistory(desired, state);
-                logger.accept("云端管理的资源包 MD5 一致，共 " + unchanged + " 个；其他本地资源包已保留");
+                log("云端管理的资源包 MD5 一致，共 " + unchanged + " 个；其他本地资源包已保留",
+                        "Cloud-managed resource packs match MD5 (" + unchanged
+                                + "); other local resource packs were retained");
                 return new SyncResult(SyncResult.Status.UNCHANGED, 0, 0, unchanged);
             }
 
@@ -156,7 +165,9 @@ final class ResourcePackSyncEngine {
                             observer, downloads.size(), totalExpectedBytes);
                     int threads = ParallelDownloadRunner.threadCount(downloads.size());
                     observer.phaseChanged("正在使用 " + threads + " 个线程并行下载并校验资源包……");
-                    logger.accept("尝试使用 " + threads + " 个线程并行下载 " + downloads.size() + " 个资源包");
+                    log("尝试使用 " + threads + " 个线程并行下载 " + downloads.size() + " 个资源包",
+                            "Trying " + threads + " threads to download " + downloads.size()
+                                    + " resource pack(s) in parallel");
                     try {
                         ParallelDownloadRunner.run(downloads.size(), index -> downloadAndValidatePack(
                                 downloads.get(index),
@@ -167,8 +178,10 @@ final class ResourcePackSyncEngine {
                                 true));
                         downloadedInParallel = true;
                     } catch (IOException parallelFailure) {
-                        logger.accept("资源包并行下载失败，将清理暂存内容并回退单线程下载: "
-                                + parallelFailure.getMessage());
+                        log("资源包并行下载失败，将清理暂存内容并回退单线程下载: "
+                                        + parallelFailure.getMessage(),
+                                "Parallel resource-pack download failed; clearing staging data and retrying with "
+                                        + "one thread: " + parallelFailure.getMessage());
                         observer.phaseChanged("资源包并行下载未成功，正在自动回退单线程重新下载……");
                         deleteTreeBestEffort(parallelStaging);
                         downloads.forEach(plan -> plan.staged(null));
@@ -197,8 +210,10 @@ final class ResourcePackSyncEngine {
             } finally {
                 deleteTreeBestEffort(staging);
             }
-            logger.accept("资源包同步完成：下载/替换 " + downloads.size() + " 个，备份移除 "
-                    + removed.size() + " 个，未变化 " + unchanged + " 个");
+            log("资源包同步完成：下载/替换 " + downloads.size() + " 个，备份移除 "
+                            + removed.size() + " 个，未变化 " + unchanged + " 个",
+                    "Resource-pack sync complete: downloaded/replaced " + downloads.size() + ", moved "
+                            + removed.size() + " to backup, unchanged " + unchanged);
             return new SyncResult(
                     SyncResult.Status.UPDATED,
                     downloads.size(),
@@ -213,8 +228,8 @@ final class ResourcePackSyncEngine {
                 config.resourcePackManifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.8.4",
-                "资源包清单",
+                "MCModSync/1.8.5",
+                language.text("资源包清单", "Resource-pack catalog"),
                 logger);
         try {
             return ResourcePackManifest.parse(new String(bytes, StandardCharsets.UTF_8));
@@ -228,7 +243,7 @@ final class ResourcePackSyncEngine {
         for (PackPlan plan : downloads) {
             HttpRequest request = HttpRequest.newBuilder(fileUri(plan.entry()))
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.8.4")
+                    .header("User-Agent", "MCModSync/1.8.5")
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {
@@ -241,7 +256,9 @@ final class ResourcePackSyncEngine {
                 }
                 total += length;
             } catch (IOException exception) {
-                logger.accept("无法预取资源包大小，总进度将按文件数量估算: " + exception.getMessage());
+                log("无法预取资源包大小，总进度将按文件数量估算: " + exception.getMessage(),
+                        "Could not prefetch resource-pack sizes; overall progress will use file count: "
+                                + exception.getMessage());
                 return -1;
             }
         }
@@ -255,7 +272,7 @@ final class ResourcePackSyncEngine {
             DownloadProgressTracker tracker) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(fileUri(entry))
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.8.4")
+                .header("User-Agent", "MCModSync/1.8.5")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -303,7 +320,9 @@ final class ResourcePackSyncEngine {
             DownloadProgressTracker tracker,
             boolean parallel) throws IOException, InterruptedException {
         String prefix = parallel ? "并行下载资源包" : "下载资源包";
-        logger.accept(prefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName());
+        String englishPrefix = parallel ? "Parallel resource-pack download" : "Resource-pack download";
+        log(prefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName(),
+                englishPrefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName());
         Path staged = stagingDirectory.resolve(plan.entry().fileName() + ".part");
         download(plan.entry(), staged, fileIndex, tracker);
         if (!parallel) {
@@ -383,7 +402,9 @@ final class ResourcePackSyncEngine {
         try {
             return ResourcePackManifest.parse(Files.readString(history, StandardCharsets.UTF_8));
         } catch (IOException | IllegalArgumentException exception) {
-            logger.accept("上次资源包清单历史无法读取，将保留未知本地资源包: " + exception.getMessage());
+            log("上次资源包清单历史无法读取，将保留未知本地资源包: " + exception.getMessage(),
+                    "The previous resource-pack catalog history is unreadable; unknown local resource packs will "
+                            + "be retained: " + exception.getMessage());
             return null;
         }
     }

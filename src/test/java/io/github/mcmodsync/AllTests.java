@@ -11,11 +11,14 @@ import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -46,6 +49,7 @@ public final class AllTests {
         testLegacyUpgradeManifestFor16And17();
         testCatalogTypeCheckboxesAreMutuallyExclusive();
         testDisplayLanguageDetection();
+        testOperationalLogsFollowEnglishLanguage();
         testDesktopRecommendedSelectionAndCatalogUpdate();
         testDeselectedRecommendedModIsBackedUp();
         testNoRecommendedModsSelectedAllowsEmptyModsDirectory();
@@ -60,6 +64,7 @@ public final class AllTests {
         testDetectedGameDirectoryWinsOverAmbiguousCommandLine();
         testUnquotedGameDirectoryWithSpacesCanBeParsed();
         testInstanceGuard();
+        testRecentHelperRuntimeCopyIsNotDeleted();
         testRedirectDownloadStrictSyncAndBackup();
         testParallelModDownloadFallsBackToSingleThread();
         testMissingLocalManifestAsksAboutEveryUnknownMod();
@@ -415,11 +420,11 @@ public final class AllTests {
                     "1".repeat(64),
                     "2".repeat(32),
                     "mcmodsync",
-                    "MCModSync-1.8.4.jar",
+                    "MCModSync-1.8.5.jar",
                     ModKind.REQUIRED,
                     Set.of(),
                     "MCModSync",
-                    "1.8.4",
+                    "1.8.5",
                     "同步器",
                     "Synchronizer");
             ModManifest catalog = ModManifest.fromEntries("managed-config-1", List.of(updater, bootstrap))
@@ -604,22 +609,86 @@ public final class AllTests {
     private void testDisplayLanguageDetection() throws Exception {
         Path root = Files.createTempDirectory("modsync-language-");
         Map<String, String> previous = snapshotProperties("modsync.language");
+        Locale previousLocale = Locale.getDefault();
         try {
             System.clearProperty("modsync.language");
-            Files.writeString(root.resolve("options.txt"), "lang:en_us\n", StandardCharsets.UTF_8);
+            Locale.setDefault(Locale.US);
+            Files.writeString(root.resolve("options.txt"), "lang:zh_cn\n", StandardCharsets.UTF_8);
             check(DisplayLanguage.detect(root) == DisplayLanguage.EN_US,
-                    "auto 应读取 Minecraft options.txt 的英文设置");
+                    "auto 应跟随英文系统语言而不是 Minecraft 中文设置");
+            Locale.setDefault(Locale.SIMPLIFIED_CHINESE);
+            check(DisplayLanguage.detect(root) == DisplayLanguage.ZH_CN,
+                    "auto 应跟随中文系统语言");
             Files.writeString(root.resolve("modsync.properties"), "language=zh_cn\n", StandardCharsets.UTF_8);
             check(DisplayLanguage.detect(root) == DisplayLanguage.ZH_CN,
-                    "modsync.properties 应覆盖 Minecraft 语言");
+                    "modsync.properties 应覆盖系统语言");
             System.setProperty("modsync.language", "en_us");
             check(DisplayLanguage.detect(root) == DisplayLanguage.EN_US,
                     "系统属性应覆盖配置文件语言");
             pass("Chinese and English display language detection");
         } finally {
+            Locale.setDefault(previousLocale);
             restoreProperties(previous);
             deleteTree(root);
         }
+    }
+
+    private void testRecentHelperRuntimeCopyIsNotDeleted() throws Exception {
+        Path root = Files.createTempDirectory("modsync-helper-cleanup-");
+        try {
+            Path recent = Files.writeString(root.resolve("recent-helper.jar"), "recent");
+            Path stale = Files.writeString(root.resolve("stale-helper.jar"), "stale");
+            Files.setLastModifiedTime(stale, FileTime.from(Instant.now().minus(Duration.ofHours(25))));
+
+            PortableUpdateHelper.cleanupOldHelperCopies(root, message -> { });
+
+            check(Files.isRegularFile(recent),
+                    "并发启动时不得删除刚生成、尚未被 Java 打开的 helper JAR");
+            check(!Files.exists(stale), "超过保留期的旧 helper JAR 应被清理");
+            pass("recent helper runtime copies survive concurrent cleanup");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testOperationalLogsFollowEnglishLanguage() throws Exception {
+        Path root = Files.createTempDirectory("modsync-english-logs-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        Map<String, String> previous = snapshotProperties("modsync.language", "modsync.gameDir");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path managed = mods.resolve("managed.jar");
+            writeFabricJar(managed, "managed", "english-logs");
+            String manifest = ModManifest.MAGIC + "\n" + Hashing.md5(managed) + "\tmanaged\tmanaged.jar\n";
+            server.createContext("/base/mods.txt", exchange -> respond(
+                    exchange, 200, manifest.getBytes(StandardCharsets.UTF_8), null));
+            server.start();
+
+            System.setProperty("modsync.language", "en_us");
+            System.setProperty("modsync.gameDir", root.toString());
+            URI manifestUri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods.txt");
+            List<String> messages = new ArrayList<>();
+            SyncProbeResult result = ModSyncCoordinator.probe(
+                    config(root, manifestUri, true, true), messages::add, SyncObserver.NONE);
+
+            check(result.status() == SyncProbeResult.Status.UP_TO_DATE,
+                    "英文日志测试的本地 Mod 应与清单一致");
+            check(messages.stream().anyMatch(message -> message.contains("Checking sync target")),
+                    "主同步日志应根据英文设置输出英文目标名称");
+            check(messages.stream().noneMatch(AllTests::containsHanCharacter),
+                    "英文模式下正常同步日志不应残留中文: " + messages);
+            pass("operational logs follow English language");
+        } finally {
+            restoreProperties(previous);
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private static boolean containsHanCharacter(String value) {
+        return value.codePoints().anyMatch(codePoint ->
+                Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
     }
 
     private void testDesktopRecommendedSelectionAndCatalogUpdate() throws Exception {
@@ -2359,11 +2428,13 @@ public final class AllTests {
         Map<String, String> previous = snapshotProperties(
                 "modsync.disableDialogs",
                 "modsync.forceMobile",
-                "modsync.gameDir");
+                "modsync.gameDir",
+                "modsync.language");
         try {
             System.setProperty("modsync.disableDialogs", "true");
             System.setProperty("modsync.forceMobile", "true");
             System.setProperty("modsync.gameDir", root.toString());
+            System.setProperty("modsync.language", "en_us");
             UserNotifier.resetDialogsAvailabilityForTests();
 
             UserNotifier notifier = new UserNotifier(true, root);
@@ -2391,14 +2462,16 @@ public final class AllTests {
             check(Files.isRegularFile(progressLog), "应写入 progress.log");
             String statusText = Files.readString(status);
             String progressText = Files.readString(progressLog);
-            check(statusText.contains("progressPermille=") || statusText.contains("更新完成"),
-                    "状态文件应包含进度或完成信息");
+            check(statusText.contains("progressPermille=") || statusText.contains("Update complete"),
+                    "英文状态文件应包含进度或完成信息");
             check(progressText.contains("PROGRESS") || progressText.contains("demo.jar"),
                     "进度日志应包含下载文件信息");
-            check(progressText.contains("环境识别")
+            check(progressText.contains("Environment:")
                             || progressText.contains("ENV ")
                             || progressText.contains("mobile="),
-                    "进度日志应包含环境识别信息");
+                    "英文进度日志应包含环境识别信息");
+            check(statusText.contains("Update complete") && !statusText.contains("更新完成"),
+                    "英文系统/配置下 ui-status.txt 应使用英文");
             pass("headless progress is logged and written");
         } finally {
             restoreProperties(previous);

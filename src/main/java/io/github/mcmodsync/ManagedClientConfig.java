@@ -115,9 +115,14 @@ final class ManagedClientConfig {
             throw new IOException("固定配置引导 JAR 缺少 " + BOOTSTRAP_RESOURCE + ": " + bootstrap);
         }
         boolean changed = found.get().apply(gameDirectory);
+        DisplayLanguage language = DisplayLanguage.detect(gameDirectory);
         logger.accept(changed
-                ? "已从配置引导 JAR 自动创建或更新 modsync.properties"
-                : "配置引导 JAR 与本地 modsync.properties 已一致");
+                ? language.text(
+                        "已从配置引导 JAR 自动创建或更新 modsync.properties",
+                        "Created or updated modsync.properties from the configuration bootstrap JAR")
+                : language.text(
+                        "配置引导 JAR 与本地 modsync.properties 已一致",
+                        "The configuration bootstrap JAR already matches local modsync.properties"));
         return changed;
     }
 

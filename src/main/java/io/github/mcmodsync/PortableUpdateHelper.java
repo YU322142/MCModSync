@@ -5,14 +5,15 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
+import java.util.zip.ZipFile;
 
 /**
  * Runs the mutating transaction after the Fabric JVM has fully exited. This
@@ -20,6 +21,10 @@ import java.util.function.Consumer;
  */
 public final class PortableUpdateHelper {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
+    private static final Duration HELPER_COPY_RETENTION = Duration.ofHours(24);
+    private static final String HELPER_MAIN_CLASS_ENTRY =
+            "io/github/mcmodsync/PortableUpdateHelper.class";
+    private static volatile DisplayLanguage language = DisplayLanguage.detect(null);
 
     private PortableUpdateHelper() {
     }
@@ -29,15 +34,20 @@ public final class PortableUpdateHelper {
         try {
             HelperArguments parsed = HelperArguments.parse(arguments);
             System.setProperty("modsync.gameDir", parsed.config().gameDirectory().toString());
+            language = DisplayLanguage.detect(parsed.config().gameDirectory());
             RuntimeEnvironment environment = RuntimeEnvironment.detect();
             if (environment.mobile() || !environment.dialogsUsable()) {
-                log("运行环境: " + environment.summaryLine());
-                log("图形更新窗口: 不可用，改用日志与 .modsync/ui-status.txt / progress.log");
+                log("运行环境: " + environment.summaryLine(),
+                        "Runtime environment: " + environment.summaryLine());
+                log("图形更新窗口: 不可用，改用日志与 .modsync/ui-status.txt / progress.log",
+                        "Update GUI: unavailable; using logs plus .modsync/ui-status.txt / progress.log");
                 if (environment.mobile()) {
-                    log("已识别为手机端/移动启动器环境，下载进度将写入启动器日志");
+                    log("已识别为手机端/移动启动器环境，下载进度将写入启动器日志",
+                            "Mobile/portable launcher detected; download progress will be written to launcher logs");
                 }
             } else {
-                log("图形更新窗口: 可用，已请求显示并置顶");
+                log("图形更新窗口: 可用，已请求显示并置顶",
+                        "Update GUI: available; requested display and topmost placement");
             }
             UserNotifier notifier = new UserNotifier(true, parsed.config().gameDirectory());
             notifier.showWaitingForGameExit(parsed.parentPid());
@@ -56,8 +66,11 @@ public final class PortableUpdateHelper {
     }
 
     static boolean schedule(ModSyncConfig config, Consumer<String> logger) throws IOException {
+        DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         if (Boolean.getBoolean("modsync.disableHelperLaunch")) {
-            logger.accept("测试模式：已跳过外部更新辅助进程启动");
+            logger.accept(language.text(
+                    "测试模式：已跳过外部更新辅助进程启动",
+                    "Test mode: skipped launching the external update helper"));
             return false;
         }
 
@@ -73,6 +86,10 @@ public final class PortableUpdateHelper {
         command.add("-Dfile.encoding=UTF-8");
         command.add("-Dsun.stdout.encoding=UTF-8");
         command.add("-Dsun.stderr.encoding=UTF-8");
+        String languageOverride = System.getProperty("modsync.language", "").strip();
+        if (!languageOverride.isBlank()) {
+            command.add("-Dmodsync.language=" + languageOverride);
+        }
         if (System.getProperty("os.name", "").toLowerCase().contains("windows")) {
             command.add("-Djava.awt.headless=false");
         }
@@ -101,7 +118,9 @@ public final class PortableUpdateHelper {
         builder.redirectOutput(ProcessBuilder.Redirect.appendTo(logPath.toFile()));
         builder.redirectError(ProcessBuilder.Redirect.appendTo(logPath.toFile()));
         Process process = builder.start();
-        logger.accept("已启动退出后更新辅助进程，PID=" + process.pid() + "，日志: " + logPath);
+        logger.accept(language.text(
+                "已启动退出后更新辅助进程，PID=" + process.pid() + "，日志: " + logPath,
+                "Started the post-exit update helper, PID=" + process.pid() + ", log: " + logPath));
         return true;
     }
 
@@ -115,31 +134,57 @@ public final class PortableUpdateHelper {
 
         Path helperJar = helperDirectory.resolve(
                 "MCModSync-helper-" + ProcessHandle.current().pid() + "-" + System.nanoTime() + ".jar");
-        Files.copy(selfJar, helperJar, StandardCopyOption.COPY_ATTRIBUTES);
+        // Do not COPY_ATTRIBUTES: preserving the release JAR's old timestamp
+        // makes another concurrently starting helper mistake this brand-new
+        // copy for stale data and delete it before Java loads the main class.
+        Files.copy(selfJar, helperJar);
         String sourceMd5 = Hashing.md5(selfJar);
         String copiedMd5 = Hashing.md5(helperJar);
         if (!sourceMd5.equals(copiedMd5)) {
             Files.deleteIfExists(helperJar);
             throw new IOException("更新辅助副本 MD5 校验失败");
         }
-        logger.accept("已创建独立更新辅助副本；MCModSync 本体可在退出后安全替换");
+        try (ZipFile archive = new ZipFile(helperJar.toFile())) {
+            if (archive.getEntry(HELPER_MAIN_CLASS_ENTRY) == null) {
+                Files.deleteIfExists(helperJar);
+                throw new IOException("更新辅助副本缺少主类: " + HELPER_MAIN_CLASS_ENTRY);
+            }
+        }
+        DisplayLanguage language = DisplayLanguage.detect(stateDirectory.getParent());
+        logger.accept(language.text(
+                "已创建独立更新辅助副本；MCModSync 本体可在退出后安全替换",
+                "Created an independent update-helper copy; MCModSync itself can be replaced safely after exit"));
         return helperJar;
     }
 
-    private static void cleanupOldHelperCopies(Path helperDirectory, Consumer<String> logger) {
+    static void cleanupOldHelperCopies(Path helperDirectory, Consumer<String> logger) {
+        Path stateDirectory = helperDirectory.getParent();
+        Path gameDirectory = stateDirectory == null ? null : stateDirectory.getParent();
+        DisplayLanguage language = DisplayLanguage.detect(gameDirectory);
+        Instant deleteBefore = Instant.now().minus(HELPER_COPY_RETENTION);
         try (var paths = Files.list(helperDirectory)) {
             for (Path path : paths
                     .filter(Files::isRegularFile)
                     .filter(item -> item.getFileName().toString().toLowerCase().endsWith(".jar"))
                     .toList()) {
                 try {
-                    Files.deleteIfExists(path);
+                    // Multiple launch attempts can schedule helpers only a few
+                    // milliseconds apart. Never touch a recent copy: its JVM
+                    // may not have opened the class path yet.
+                    if (Files.getLastModifiedTime(path).toInstant().isBefore(deleteBefore)) {
+                        Files.deleteIfExists(path);
+                    }
                 } catch (IOException exception) {
-                    logger.accept("旧辅助副本暂时仍被占用，将在下次更新时重试清理: " + path.getFileName());
+                    logger.accept(language.text(
+                            "旧辅助副本暂时仍被占用，将在下次更新时重试清理: " + path.getFileName(),
+                            "An old helper copy is still in use; cleanup will retry next update: "
+                                    + path.getFileName()));
                 }
             }
         } catch (IOException exception) {
-            logger.accept("无法清理旧辅助副本，将继续创建本次副本: " + exception.getMessage());
+            logger.accept(language.text(
+                    "无法清理旧辅助副本，将继续创建本次副本: " + exception.getMessage(),
+                    "Could not clean old helper copies; continuing with this launch: " + exception.getMessage()));
         }
     }
 
@@ -150,11 +195,16 @@ public final class PortableUpdateHelper {
 
     static SyncResult runNow(ModSyncConfig config, Consumer<String> logger, SyncObserver observer)
             throws IOException, InterruptedException {
+        DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         InstanceGuard guard = acquireGuardAfterParentExit(config.gameDirectory());
         try (guard) {
-            logger.accept("Fabric 进程已退出，开始执行无占用更新");
+            logger.accept(language.text(
+                    "Fabric 进程已退出，开始执行无占用更新",
+                    "The Fabric process exited; starting an update without file locks"));
             SyncResult result = ModSyncCoordinator.synchronize(config, logger, observer);
-            logger.accept("退出后更新完成: " + result.status());
+            logger.accept(language.text(
+                    "退出后更新完成: " + result.status(),
+                    "Post-exit update complete: " + result.status()));
             return result;
         }
     }
@@ -164,7 +214,8 @@ public final class PortableUpdateHelper {
         if (parent.isEmpty() || !parent.get().isAlive()) {
             return;
         }
-        log("等待 Fabric 进程退出，PID=" + parentPid);
+        log("等待 Fabric 进程退出，PID=" + parentPid,
+                "Waiting for the Fabric process to exit, PID=" + parentPid);
         try {
             parent.get().onExit().get();
         } catch (java.util.concurrent.ExecutionException exception) {
@@ -257,6 +308,10 @@ public final class PortableUpdateHelper {
 
     private static void log(String message) {
         System.out.println("[MCModSync Helper " + TIME.format(LocalDateTime.now()) + "] " + message);
+    }
+
+    private static void log(String chinese, String english) {
+        log(language.text(chinese, english));
     }
 
     private record HelperArguments(long parentPid, ModSyncConfig config) {

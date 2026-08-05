@@ -16,16 +16,19 @@ final class ModSyncCoordinator {
 
     static SyncProbeResult probe(ModSyncConfig config, Consumer<String> logger, SyncObserver observer)
             throws IOException, InterruptedException {
+        DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         boolean skippedOffline = false;
         List<BakaXLLayout.Target> targets = BakaXLLayout.syncTargets(config.gameDirectory());
         for (int index = 0; index < targets.size(); index++) {
             BakaXLLayout.Target target = targets.get(index);
-            logger.accept("检查同步目标 [" + (index + 1) + "/" + targets.size() + "] "
-                    + target.label() + ": " + target.gameDirectory());
+            String targetLabel = localizeTargetLabel(target.label(), language);
+            logger.accept(language.text("检查同步目标 [", "Checking sync target [")
+                    + (index + 1) + "/" + targets.size() + "] "
+                    + targetLabel + ": " + target.gameDirectory());
             SyncProbeResult result = new ModSyncEngine(
                     config.forGameDirectory(target.gameDirectory()),
-                    prefixedLogger(logger, target.label()),
-                    forwardingObserver(observer, target.label() + " / Mod", index + 1, targets.size()))
+                    prefixedLogger(logger, targetLabel),
+                    forwardingObserver(observer, targetLabel + " / Mod", index + 1, targets.size()))
                     .probeWithoutJarChanges();
             if (result.status() == SyncProbeResult.Status.CHANGES_REQUIRED) {
                 return result;
@@ -34,11 +37,13 @@ final class ModSyncCoordinator {
                 skippedOffline = true;
             }
             if (config.syncResourcePacks()) {
-                logger.accept("检查资源包同步目标 [" + (index + 1) + "/" + targets.size() + "] "
-                        + target.label() + ": " + target.gameDirectory());
+                logger.accept(language.text("检查资源包同步目标 [", "Checking resource-pack sync target [")
+                        + (index + 1) + "/" + targets.size() + "] "
+                        + targetLabel + ": " + target.gameDirectory());
                 SyncProbeResult resourceResult = new ResourcePackSyncEngine(
                         config.forGameDirectory(target.gameDirectory()),
-                        prefixedLogger(logger, target.label() + " / 资源包")).probeWithoutChanges();
+                        prefixedLogger(logger, targetLabel + language.text(" / 资源包", " / Resource packs")))
+                        .probeWithoutChanges();
                 if (resourceResult.status() == SyncProbeResult.Status.CHANGES_REQUIRED) {
                     return resourceResult;
                 }
@@ -47,11 +52,13 @@ final class ModSyncCoordinator {
                 }
             }
             if (config.syncServerList()) {
-                logger.accept("检查服务器列表同步目标 [" + (index + 1) + "/" + targets.size() + "] "
-                        + target.label() + ": " + target.gameDirectory());
+                logger.accept(language.text("检查服务器列表同步目标 [", "Checking server-list sync target [")
+                        + (index + 1) + "/" + targets.size() + "] "
+                        + targetLabel + ": " + target.gameDirectory());
                 SyncProbeResult serverListResult = new ServerListSyncEngine(
                         config.forGameDirectory(target.gameDirectory()),
-                        prefixedLogger(logger, target.label() + " / 服务器列表")).probeWithoutChanges();
+                        prefixedLogger(logger, targetLabel + language.text(" / 服务器列表", " / Server list")))
+                        .probeWithoutChanges();
                 if (serverListResult.status() == SyncProbeResult.Status.CHANGES_REQUIRED) {
                     return serverListResult;
                 }
@@ -69,6 +76,7 @@ final class ModSyncCoordinator {
             ModSyncConfig config,
             Consumer<String> logger,
             SyncObserver observer) throws IOException, InterruptedException {
+        DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         int downloaded = 0;
         int quarantined = 0;
         int unchanged = 0;
@@ -82,17 +90,19 @@ final class ModSyncCoordinator {
 
         for (int index = 0; index < targets.size(); index++) {
             BakaXLLayout.Target target = targets.get(index);
+            String targetLabel = localizeTargetLabel(target.label(), language);
             int nextUnit = index * unitsPerTarget + 1;
-            logger.accept("同步目标 [" + (index + 1) + "/" + targets.size() + "] "
-                    + target.label() + ": " + target.gameDirectory());
+            logger.accept(language.text("同步目标 [", "Sync target [")
+                    + (index + 1) + "/" + targets.size() + "] "
+                    + targetLabel + ": " + target.gameDirectory());
             SyncObserver forwarding = forwardingObserver(
                     observer,
-                    target.label() + " / Mod",
+                    targetLabel + " / Mod",
                     nextUnit++,
                     unitCount);
             SyncResult result = new ModSyncEngine(
                     config.forGameDirectory(target.gameDirectory()),
-                    prefixedLogger(logger, target.label()),
+                    prefixedLogger(logger, targetLabel),
                     forwarding).synchronize();
             downloaded += result.downloaded();
             quarantined += result.quarantined();
@@ -101,16 +111,17 @@ final class ModSyncCoordinator {
             skippedOffline |= result.status() == SyncResult.Status.SKIPPED_OFFLINE;
 
             if (config.syncResourcePacks()) {
-                logger.accept("资源包同步目标 [" + (index + 1) + "/" + targets.size() + "] "
-                        + target.label() + ": " + target.gameDirectory());
+                logger.accept(language.text("资源包同步目标 [", "Resource-pack sync target [")
+                        + (index + 1) + "/" + targets.size() + "] "
+                        + targetLabel + ": " + target.gameDirectory());
                 SyncObserver resourceForwarding = forwardingObserver(
                         observer,
-                        target.label() + " / 资源包",
+                        targetLabel + language.text(" / 资源包", " / Resource packs"),
                         nextUnit++,
                         unitCount);
                 SyncResult resourceResult = new ResourcePackSyncEngine(
                         config.forGameDirectory(target.gameDirectory()),
-                        prefixedLogger(logger, target.label() + " / 资源包"),
+                        prefixedLogger(logger, targetLabel + language.text(" / 资源包", " / Resource packs")),
                         resourceForwarding).synchronize();
                 downloaded += resourceResult.downloaded();
                 quarantined += resourceResult.quarantined();
@@ -120,16 +131,17 @@ final class ModSyncCoordinator {
             }
 
             if (config.syncServerList()) {
-                logger.accept("服务器列表同步目标 [" + (index + 1) + "/" + targets.size() + "] "
-                        + target.label() + ": " + target.gameDirectory());
+                logger.accept(language.text("服务器列表同步目标 [", "Server-list sync target [")
+                        + (index + 1) + "/" + targets.size() + "] "
+                        + targetLabel + ": " + target.gameDirectory());
                 SyncObserver serverListForwarding = forwardingObserver(
                         observer,
-                        target.label() + " / 服务器列表",
+                        targetLabel + language.text(" / 服务器列表", " / Server list"),
                         nextUnit,
                         unitCount);
                 SyncResult serverListResult = new ServerListSyncEngine(
                         config.forGameDirectory(target.gameDirectory()),
-                        prefixedLogger(logger, target.label() + " / 服务器列表"),
+                        prefixedLogger(logger, targetLabel + language.text(" / 服务器列表", " / Server list")),
                         serverListForwarding).synchronize();
                 downloaded += serverListResult.downloaded();
                 quarantined += serverListResult.quarantined();
@@ -152,6 +164,18 @@ final class ModSyncCoordinator {
 
     private static Consumer<String> prefixedLogger(Consumer<String> logger, String label) {
         return message -> logger.accept("[" + label + "] " + message);
+    }
+
+    private static String localizeTargetLabel(String label, DisplayLanguage language) {
+        if (language.chinese()) {
+            return label;
+        }
+        return switch (label) {
+            case "游戏目录" -> "Game directory";
+            case "BakaXL 运行副本" -> "BakaXL runtime copy";
+            case "BakaXL 持久实例" -> "BakaXL persistent instance";
+            default -> label;
+        };
     }
 
     private static SyncObserver forwardingObserver(

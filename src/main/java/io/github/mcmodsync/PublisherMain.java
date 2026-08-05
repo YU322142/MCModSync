@@ -61,7 +61,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.8.4");
+            System.out.println("MCModSync 1.8.5");
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {

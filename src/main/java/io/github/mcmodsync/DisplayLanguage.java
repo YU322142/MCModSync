@@ -2,7 +2,6 @@ package io.github.mcmodsync;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
@@ -20,13 +19,10 @@ enum DisplayLanguage {
         if (!configured.isBlank() && !configured.equalsIgnoreCase("auto")) {
             return parse(configured);
         }
-        if (gameDirectory != null) {
-            String minecraft = readMinecraftLanguage(gameDirectory.resolve("options.txt"));
-            if (!minecraft.isBlank()) {
-                return parse(minecraft);
-            }
-        }
-        return fromLocale(Locale.getDefault());
+        // auto deliberately follows the operating-system/JVM display locale.
+        // Minecraft's options.txt may use a different in-game language and must
+        // not unexpectedly change updater dialogs or operational logs.
+        return fromLocale(Locale.getDefault(Locale.Category.DISPLAY));
     }
 
     static DisplayLanguage fromLocale(Locale locale) {
@@ -66,19 +62,4 @@ enum DisplayLanguage {
         }
     }
 
-    private static String readMinecraftLanguage(Path optionsPath) {
-        if (!Files.isRegularFile(optionsPath)) {
-            return "";
-        }
-        try {
-            for (String line : Files.readAllLines(optionsPath, StandardCharsets.UTF_8)) {
-                if (line.startsWith("lang:")) {
-                    return line.substring("lang:".length()).strip();
-                }
-            }
-        } catch (IOException exception) {
-            return "";
-        }
-        return "";
-    }
 }

@@ -32,6 +32,8 @@ final class RequiredManifestFetcher {
             String userAgent,
             String description,
             Consumer<String> logger) throws IOException, InterruptedException {
+        boolean english = description.codePoints().noneMatch(codePoint ->
+                Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
         IOException lastFailure = null;
         for (int attempt = 1; attempt <= ATTEMPTS; attempt++) {
             try {
@@ -44,7 +46,9 @@ final class RequiredManifestFetcher {
                 HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
                 if (response.statusCode() != 200) {
                     closeQuietly(response.body());
-                    throw new IOException(description + "服务器返回 HTTP " + response.statusCode());
+                    throw new IOException(description
+                            + (english ? " server returned HTTP " : "服务器返回 HTTP ")
+                            + response.statusCode());
                 }
                 try (InputStream input = response.body()) {
                     return readLimited(input, maximumBytes, description);
@@ -54,12 +58,17 @@ final class RequiredManifestFetcher {
                 if (attempt == ATTEMPTS) {
                     break;
                 }
-                logger.accept(description + "读取失败（第 " + attempt + "/" + ATTEMPTS
-                        + " 次）：" + failure.getMessage() + "；正在自动重试……");
+                logger.accept(english
+                        ? description + " read failed (attempt " + attempt + "/" + ATTEMPTS + "): "
+                                + failure.getMessage() + "; retrying automatically…"
+                        : description + "读取失败（第 " + attempt + "/" + ATTEMPTS
+                                + " 次）：" + failure.getMessage() + "；正在自动重试……");
                 Thread.sleep(400L * attempt);
             }
         }
-        throw lastFailure == null ? new IOException(description + "读取失败") : lastFailure;
+        throw lastFailure == null
+                ? new IOException(description + (english ? " read failed" : "读取失败"))
+                : lastFailure;
     }
 
     private static byte[] readLimited(InputStream input, long maximumBytes, String description) throws IOException {
@@ -70,7 +79,9 @@ final class RequiredManifestFetcher {
         while ((read = input.read(buffer)) >= 0) {
             total += read;
             if (total > maximumBytes) {
-                throw new IOException(description + "超过大小限制");
+                boolean english = description.codePoints().noneMatch(codePoint ->
+                        Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN);
+                throw new IOException(description + (english ? " exceeds the size limit" : "超过大小限制"));
             }
             output.write(buffer, 0, read);
         }
