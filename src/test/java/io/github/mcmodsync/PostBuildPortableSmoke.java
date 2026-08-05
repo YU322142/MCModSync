@@ -25,7 +25,11 @@ public final class PostBuildPortableSmoke {
         }
         Path jar = Path.of(arguments[0]).toAbsolutePath().normalize();
         Path testClasses = Path.of(arguments[1]).toAbsolutePath().normalize();
-        Path root = Files.createTempDirectory("modsync-post-build-portable-");
+        Path temporaryRoot = Files.createTempDirectory("modsync-post-build-portable-");
+        // Spaces, Chinese text and parentheses match the failing Prism
+        // instance path and exercise Unicode command-line handling.
+        Path root = temporaryRoot.resolve("Motiquies - 动静交映 - Tiny (1)");
+        Files.createDirectories(root);
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         try {
             byte[] wanted = new byte[2 * 1024 * 1024 + 321];
@@ -34,11 +38,11 @@ public final class PostBuildPortableSmoke {
             }
             byte[] updater = Files.readAllBytes(jar);
             String manifest = ModManifest.MAGIC + "\n"
-                    + Hashing.md5(updater) + "\tmcmodsync\tMCModSync-1.8.6.jar\n"
+                    + Hashing.md5(updater) + "\tmcmodsync\tMCModSync-1.8.7.jar\n"
                     + Hashing.md5(wanted) + "\t-\twanted-progress.jar\n";
             server.createContext("/base/mods.txt", exchange -> respond(
                     exchange, manifest.getBytes(StandardCharsets.UTF_8)));
-            server.createContext("/base/MCModSync-1.8.6.jar", exchange -> respond(exchange, updater));
+            server.createContext("/base/MCModSync-1.8.7.jar", exchange -> respond(exchange, updater));
             server.createContext("/base/wanted-progress.jar", exchange -> respond(exchange, wanted));
             server.start();
 
@@ -50,6 +54,7 @@ public final class PostBuildPortableSmoke {
                     System.getProperty("java.home"),
                     "bin",
                     System.getProperty("os.name", "").toLowerCase().contains("windows") ? "java.exe" : "java");
+            verifyExecutableJarPathWithSemicolon(java, jar, temporaryRoot);
             // Run from the JAR that is itself inside mods. The helper must copy
             // itself elsewhere before the parent exits or Windows will prevent
             // replacing this file.
@@ -83,13 +88,17 @@ public final class PostBuildPortableSmoke {
             if (!childOutput.contains("[MCModSync] RESTART_REQUIRED")) {
                 throw new AssertionError("Portable preLaunch did not take the graceful-exit path\n" + childOutput);
             }
+            if (!childOutput.contains("更新辅助进程已确认可用")
+                    && !childOutput.contains("Update helper confirmed ready")) {
+                throw new AssertionError("Parent exited without a helper readiness handshake\n" + childOutput);
+            }
 
             Path installed = root.resolve("mods/wanted-progress.jar");
             waitFor(() -> Files.isRegularFile(installed), Duration.ofSeconds(20), "helper did not install file");
             if (!Arrays.equals(Files.readAllBytes(installed), wanted)) {
                 throw new AssertionError("Helper-installed bytes differ from server bytes");
             }
-            Path updatedUpdater = mods.resolve("MCModSync-1.8.6.jar");
+            Path updatedUpdater = mods.resolve("MCModSync-1.8.7.jar");
             waitFor(() -> Files.isRegularFile(updatedUpdater), Duration.ofSeconds(20),
                     "helper did not install its own new filename");
             if (Files.exists(oldUpdater)) {
@@ -98,6 +107,12 @@ public final class PostBuildPortableSmoke {
             if (!Arrays.equals(Files.readAllBytes(updatedUpdater), updater)) {
                 throw new AssertionError("Self-updated MCModSync bytes differ from published JAR");
             }
+
+            Path helperRuntime = root.resolve(".modsync/helper-runtime-v2");
+            waitFor(
+                    () -> containsJar(helperRuntime),
+                    Duration.ofSeconds(5),
+                    "versioned helper-runtime-v2 copy was not retained");
 
             Path helperLog = root.resolve(".modsync/helper.log");
             waitFor(
@@ -113,7 +128,7 @@ public final class PostBuildPortableSmoke {
             System.out.println("Post-build portable helper graceful-exit smoke passed.");
         } finally {
             server.stop(0);
-            deleteTree(root);
+            deleteTree(temporaryRoot);
         }
     }
 
@@ -140,6 +155,36 @@ public final class PostBuildPortableSmoke {
             Thread.sleep(100L);
         }
         throw new AssertionError(failure);
+    }
+
+    private static boolean containsJar(Path directory) throws IOException {
+        if (!Files.isDirectory(directory)) {
+            return false;
+        }
+        try (var paths = Files.list(directory)) {
+            return paths.anyMatch(path -> path.getFileName().toString().endsWith(".jar"));
+        }
+    }
+
+    private static void verifyExecutableJarPathWithSemicolon(
+            Path java,
+            Path jar,
+            Path temporaryRoot) throws Exception {
+        Path probeDirectory = Files.createDirectories(temporaryRoot.resolve("path;with;semicolons"));
+        Path probeJar = probeDirectory.resolve("MCModSync executable probe.jar");
+        Files.copy(jar, probeJar);
+        ProcessBuilder builder = new ProcessBuilder(
+                java.toString(), "-jar", probeJar.getFileName().toString(), "--version");
+        builder.directory(probeDirectory.toFile());
+        Process probe = builder.redirectErrorStream(true).start();
+        if (!probe.waitFor(10, TimeUnit.SECONDS)) {
+            probe.destroyForcibly();
+            throw new AssertionError("Executable-JAR semicolon-path probe timed out");
+        }
+        String output = new String(probe.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        if (probe.exitValue() != 0 || !output.contains("MCModSync")) {
+            throw new AssertionError("Executable-JAR semicolon-path probe failed\n" + output);
+        }
     }
 
     private static void deleteTree(Path root) throws IOException {

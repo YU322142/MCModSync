@@ -15,7 +15,7 @@ public final class ModSyncAgent {
 
     public static void premain(String agentArguments, Instrumentation instrumentation) {
         System.setProperty("modsync.agent.active", "true");
-        log("MCModSync 1.8.5 启动前校验开始", "MCModSync 1.8.5 pre-launch verification started");
+        log("MCModSync 1.8.6 启动前校验开始", "MCModSync 1.8.6 pre-launch verification started");
         try {
             Path bootstrapDirectory = ModSyncConfig.determineGameDirectory(agentArguments, null);
             language = DisplayLanguage.detect(bootstrapDirectory);

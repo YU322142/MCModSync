@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +41,11 @@ public final class PublisherMain {
     }
 
     public static void main(String[] arguments) {
+        if (arguments.length > 0
+                && arguments[0].equals(PortableUpdateHelper.INTERNAL_LAUNCH_ARGUMENT)) {
+            PortableUpdateHelper.main(Arrays.copyOfRange(arguments, 1, arguments.length));
+            return;
+        }
         if (arguments.length > 0) {
             int status = runCommandLine(arguments);
             if (status != 0) {
@@ -61,7 +67,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.8.5");
+            System.out.println("MCModSync 1.8.6");
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {

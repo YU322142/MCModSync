@@ -65,6 +65,7 @@ public final class AllTests {
         testUnquotedGameDirectoryWithSpacesCanBeParsed();
         testInstanceGuard();
         testRecentHelperRuntimeCopyIsNotDeleted();
+        testFailedHelperHandshakeTerminatesChild();
         testRedirectDownloadStrictSyncAndBackup();
         testParallelModDownloadFallsBackToSingleThread();
         testMissingLocalManifestAsksAboutEveryUnknownMod();
@@ -420,11 +421,11 @@ public final class AllTests {
                     "1".repeat(64),
                     "2".repeat(32),
                     "mcmodsync",
-                    "MCModSync-1.8.5.jar",
+                    "MCModSync-1.8.6.jar",
                     ModKind.REQUIRED,
                     Set.of(),
                     "MCModSync",
-                    "1.8.5",
+                    "1.8.6",
                     "同步器",
                     "Synchronizer");
             ModManifest catalog = ModManifest.fromEntries("managed-config-1", List.of(updater, bootstrap))
@@ -647,6 +648,45 @@ public final class AllTests {
             check(!Files.exists(stale), "超过保留期的旧 helper JAR 应被清理");
             pass("recent helper runtime copies survive concurrent cleanup");
         } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testFailedHelperHandshakeTerminatesChild() throws Exception {
+        Path root = Files.createTempDirectory("modsync-helper-handshake-failure-");
+        Path java = Path.of(
+                System.getProperty("java.home"),
+                "bin",
+                System.getProperty("os.name", "").toLowerCase().contains("windows") ? "java.exe" : "java");
+        Path readyFile = Files.writeString(root.resolve("ready.signal"), "-1", StandardCharsets.UTF_8);
+        Process child = new ProcessBuilder(
+                java.toString(),
+                "-cp",
+                System.getProperty("java.class.path"),
+                SleepingChild.class.getName())
+                .redirectErrorStream(true)
+                .start();
+        try {
+            IOException failure = null;
+            try {
+                PortableUpdateHelper.awaitHelperReadyOrTerminate(
+                        child,
+                        readyFile,
+                        root.resolve("helper.jar"),
+                        root.resolve("helper.log"),
+                        DisplayLanguage.EN_US);
+            } catch (IOException expected) {
+                failure = expected;
+            }
+
+            check(failure != null && failure.getMessage().contains("PID mismatch"),
+                    "错误 PID 的 helper ready 信号必须使握手失败");
+            check(child.waitFor(3, TimeUnit.SECONDS) && !child.isAlive(),
+                    "helper 握手失败后必须终止已创建的子进程");
+            pass("failed helper readiness terminates child process");
+        } finally {
+            child.destroyForcibly();
+            child.waitFor(3, TimeUnit.SECONDS);
             deleteTree(root);
         }
     }
@@ -2511,6 +2551,12 @@ public final class AllTests {
     private void pass(String name) {
         passed++;
         System.out.println("PASS: " + name);
+    }
+
+    public static final class SleepingChild {
+        public static void main(String[] arguments) throws InterruptedException {
+            Thread.sleep(Duration.ofMinutes(1));
+        }
     }
 
     @FunctionalInterface

@@ -3,8 +3,13 @@ package io.github.mcmodsync;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -12,8 +17,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
-import java.util.zip.ZipFile;
+import java.util.jar.Attributes;
+import java.util.jar.JarFile;
 
 /**
  * Runs the mutating transaction after the Fabric JVM has fully exited. This
@@ -22,8 +29,14 @@ import java.util.zip.ZipFile;
 public final class PortableUpdateHelper {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final Duration HELPER_COPY_RETENTION = Duration.ofHours(24);
+    private static final Duration HELPER_START_TIMEOUT = Duration.ofSeconds(10);
+    private static final String HELPER_RUNTIME_DIRECTORY = "helper-runtime-v2";
+    static final String INTERNAL_LAUNCH_ARGUMENT = "--internal-portable-helper";
+    private static final String HELPER_READY_PROPERTY = "modsync.helperReadyFile";
     private static final String HELPER_MAIN_CLASS_ENTRY =
             "io/github/mcmodsync/PortableUpdateHelper.class";
+    private static final String PUBLISHER_MAIN_CLASS_ENTRY =
+            "io/github/mcmodsync/PublisherMain.class";
     private static volatile DisplayLanguage language = DisplayLanguage.detect(null);
 
     private PortableUpdateHelper() {
@@ -35,6 +48,9 @@ public final class PortableUpdateHelper {
             HelperArguments parsed = HelperArguments.parse(arguments);
             System.setProperty("modsync.gameDir", parsed.config().gameDirectory().toString());
             language = DisplayLanguage.detect(parsed.config().gameDirectory());
+            signalReady();
+            log("更新辅助进程已完成主类加载，PID=" + ProcessHandle.current().pid(),
+                    "Update helper loaded successfully, PID=" + ProcessHandle.current().pid());
             RuntimeEnvironment environment = RuntimeEnvironment.detect();
             if (environment.mobile() || !environment.dialogsUsable()) {
                 log("运行环境: " + environment.summaryLine(),
@@ -80,12 +96,16 @@ public final class PortableUpdateHelper {
         Path logPath = stateDirectory.resolve("helper.log");
         Files.createDirectories(logPath.getParent());
         Path helperJar = prepareHelperRuntimeCopy(selfJar, stateDirectory, logger);
+        Path readyFile = stateDirectory.resolve(
+                "helper-ready-" + ProcessHandle.current().pid() + "-" + System.nanoTime() + ".signal");
+        Files.deleteIfExists(readyFile);
 
         List<String> command = new ArrayList<>();
         command.add(javaExecutable.toString());
         command.add("-Dfile.encoding=UTF-8");
         command.add("-Dsun.stdout.encoding=UTF-8");
         command.add("-Dsun.stderr.encoding=UTF-8");
+        command.add("-D" + HELPER_READY_PROPERTY + "=" + readyFile);
         String languageOverride = System.getProperty("modsync.language", "").strip();
         if (!languageOverride.isBlank()) {
             command.add("-Dmodsync.language=" + languageOverride);
@@ -109,18 +129,39 @@ public final class PortableUpdateHelper {
         if (!parentEnvironment.dialogsUsable() && !Boolean.getBoolean("modsync.disableDialogs")) {
             command.add("-Dmodsync.disableDialogs=true");
         }
-        command.add("-cp");
-        command.add(helperJar.toString());
-        command.add(PortableUpdateHelper.class.getName());
+        // -jar avoids the Windows class-path parser entirely. In particular,
+        // spaces, non-ASCII characters and ';' in an instance path can no
+        // longer split or corrupt the helper class path.
+        command.add("-jar");
+        // Pass only the ASCII-safe file name. Supplying the absolute instance
+        // path here still lets the Windows Java launcher reinterpret ';' as a
+        // class-path separator, even in -jar mode. The working directory is
+        // transferred separately through CreateProcessW and remains Unicode.
+        command.add(helperJar.getFileName().toString());
+        command.add(INTERNAL_LAUNCH_ARGUMENT);
         command.addAll(HelperArguments.forCurrentProcess(config).serialize());
 
         ProcessBuilder builder = new ProcessBuilder(command);
+        builder.directory(helperJar.getParent().toFile());
         builder.redirectOutput(ProcessBuilder.Redirect.appendTo(logPath.toFile()));
         builder.redirectError(ProcessBuilder.Redirect.appendTo(logPath.toFile()));
-        Process process = builder.start();
+        Process process;
+        // Keep a live read handle until the child acknowledges that its main
+        // class loaded. This also prevents an older MCModSync process from
+        // deleting the new runtime copy during the launch window on Windows.
+        try (JarFile pinned = openVerifiedHelperArchive(helperJar)) {
+            process = builder.start();
+            logger.accept(language.text(
+                    "已创建更新辅助进程，正在等待主类加载确认，PID=" + process.pid() + "，日志: " + logPath,
+                    "Created the update-helper process; waiting for main-class readiness, PID="
+                            + process.pid() + ", log: " + logPath));
+            awaitHelperReadyOrTerminate(process, readyFile, helperJar, logPath, language);
+        } finally {
+            deleteIfExistsBestEffort(readyFile);
+        }
         logger.accept(language.text(
-                "已启动退出后更新辅助进程，PID=" + process.pid() + "，日志: " + logPath,
-                "Started the post-exit update helper, PID=" + process.pid() + ", log: " + logPath));
+                "更新辅助进程已确认可用，父进程现在可以正常退出，PID=" + process.pid(),
+                "Update helper confirmed ready; the parent can now exit normally, PID=" + process.pid()));
         return true;
     }
 
@@ -128,33 +169,178 @@ public final class PortableUpdateHelper {
             Path selfJar,
             Path stateDirectory,
             Consumer<String> logger) throws IOException {
-        Path helperDirectory = stateDirectory.resolve("helper-runtime");
+        // A new directory name isolates this launcher from 1.8.5 and older
+        // cleanup code, which deleted every JAR in helper-runtime.
+        Path helperDirectory = stateDirectory.resolve(HELPER_RUNTIME_DIRECTORY);
         Files.createDirectories(helperDirectory);
         cleanupOldHelperCopies(helperDirectory, logger);
 
         Path helperJar = helperDirectory.resolve(
                 "MCModSync-helper-" + ProcessHandle.current().pid() + "-" + System.nanoTime() + ".jar");
-        // Do not COPY_ATTRIBUTES: preserving the release JAR's old timestamp
-        // makes another concurrently starting helper mistake this brand-new
-        // copy for stale data and delete it before Java loads the main class.
-        Files.copy(selfJar, helperJar);
-        String sourceMd5 = Hashing.md5(selfJar);
-        String copiedMd5 = Hashing.md5(helperJar);
-        if (!sourceMd5.equals(copiedMd5)) {
-            Files.deleteIfExists(helperJar);
-            throw new IOException("更新辅助副本 MD5 校验失败");
-        }
-        try (ZipFile archive = new ZipFile(helperJar.toFile())) {
-            if (archive.getEntry(HELPER_MAIN_CLASS_ENTRY) == null) {
-                Files.deleteIfExists(helperJar);
-                throw new IOException("更新辅助副本缺少主类: " + HELPER_MAIN_CLASS_ENTRY);
+        Path partial = helperDirectory.resolve("." + helperJar.getFileName() + ".part");
+        try {
+            Files.copy(selfJar, partial);
+            String sourceMd5 = Hashing.md5(selfJar);
+            String copiedMd5 = Hashing.md5(partial);
+            String sourceSha256 = Hashing.sha256(selfJar);
+            String copiedSha256 = Hashing.sha256(partial);
+            if (!sourceMd5.equals(copiedMd5) || !sourceSha256.equals(copiedSha256)) {
+                throw new IOException("更新辅助副本 MD5/SHA256 校验失败");
             }
+            try (JarFile ignored = openVerifiedHelperArchive(partial)) {
+            }
+            moveAtomically(partial, helperJar);
+            // Windows may preserve the source timestamp even without
+            // COPY_ATTRIBUTES. Set it explicitly so age-based cleanup can
+            // never classify a brand-new copy as stale.
+            Files.setLastModifiedTime(helperJar, FileTime.from(Instant.now()));
+            try (JarFile ignored = openVerifiedHelperArchive(helperJar)) {
+            }
+        } catch (IOException failure) {
+            Files.deleteIfExists(partial);
+            Files.deleteIfExists(helperJar);
+            throw failure;
+        } finally {
+            Files.deleteIfExists(partial);
         }
         DisplayLanguage language = DisplayLanguage.detect(stateDirectory.getParent());
         logger.accept(language.text(
-                "已创建独立更新辅助副本；MCModSync 本体可在退出后安全替换",
-                "Created an independent update-helper copy; MCModSync itself can be replaced safely after exit"));
+                "已创建并双哈希校验独立更新辅助副本: " + helperJar
+                        + " (" + Files.size(helperJar) + " bytes, SHA256=" + Hashing.sha256(helperJar) + ")",
+                "Created and dual-hash-verified an independent update-helper copy: " + helperJar
+                        + " (" + Files.size(helperJar) + " bytes, SHA256=" + Hashing.sha256(helperJar) + ")"));
         return helperJar;
+    }
+
+    private static JarFile openVerifiedHelperArchive(Path helperJar) throws IOException {
+        JarFile archive = new JarFile(helperJar.toFile());
+        try {
+            if (archive.getEntry(HELPER_MAIN_CLASS_ENTRY) == null) {
+                throw new IOException("更新辅助副本缺少主类: " + HELPER_MAIN_CLASS_ENTRY);
+            }
+            if (archive.getEntry(PUBLISHER_MAIN_CLASS_ENTRY) == null) {
+                throw new IOException("更新辅助副本缺少可执行入口: " + PUBLISHER_MAIN_CLASS_ENTRY);
+            }
+            if (archive.getManifest() == null) {
+                throw new IOException("更新辅助副本缺少可执行清单");
+            }
+            String mainClass = archive.getManifest().getMainAttributes().getValue(Attributes.Name.MAIN_CLASS);
+            if (!PublisherMain.class.getName().equals(mainClass)) {
+                throw new IOException("更新辅助副本 Main-Class 无效: " + mainClass);
+            }
+            return archive;
+        } catch (IOException | RuntimeException failure) {
+            archive.close();
+            throw failure;
+        }
+    }
+
+    private static void awaitHelperReady(
+            Process process,
+            Path readyFile,
+            Path helperJar,
+            Path logPath,
+            DisplayLanguage language) throws IOException {
+        Instant deadline = Instant.now().plus(HELPER_START_TIMEOUT);
+        try {
+            while (Instant.now().isBefore(deadline)) {
+                if (Files.isRegularFile(readyFile)) {
+                    String reportedPid = Files.readString(readyFile, StandardCharsets.UTF_8).strip();
+                    if (reportedPid.equals(Long.toString(process.pid()))) {
+                        return;
+                    }
+                    throw new IOException(language.text(
+                            "更新辅助进程就绪信号 PID 不匹配: ",
+                            "Update-helper readiness PID mismatch: ") + reportedPid);
+                }
+                if (!process.isAlive()) {
+                    throw new IOException(language.text(
+                            "更新辅助进程在加载主类前提前退出，退出码 ",
+                            "Update helper exited before loading its main class, exit code ")
+                            + process.exitValue() + language.text("；辅助 JAR: ", "; helper JAR: ") + helperJar
+                            + language.text("；日志: ", "; log: ") + logPath);
+                }
+                Thread.sleep(50L);
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            throw new IOException(language.text(
+                    "等待更新辅助进程启动时线程被中断",
+                    "Interrupted while waiting for the update helper to start"), exception);
+        }
+        process.destroyForcibly();
+        throw new IOException(language.text(
+                "更新辅助进程未在 10 秒内确认主类加载；辅助 JAR: ",
+                "Update helper did not confirm main-class loading within 10 seconds; helper JAR: ")
+                + helperJar + language.text("；日志: ", "; log: ") + logPath);
+    }
+
+    static void awaitHelperReadyOrTerminate(
+            Process process,
+            Path readyFile,
+            Path helperJar,
+            Path logPath,
+            DisplayLanguage language) throws IOException {
+        try {
+            awaitHelperReady(process, readyFile, helperJar, logPath, language);
+        } catch (IOException | RuntimeException failure) {
+            terminateFailedHelper(process);
+            throw failure;
+        }
+    }
+
+    private static void terminateFailedHelper(Process process) {
+        if (!process.isAlive()) {
+            return;
+        }
+        process.destroyForcibly();
+        try {
+            process.waitFor(2, TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void signalReady() throws IOException {
+        String configured = System.getProperty(HELPER_READY_PROPERTY, "").strip();
+        if (configured.isBlank()) {
+            return;
+        }
+        Path readyFile = Path.of(configured).toAbsolutePath().normalize();
+        Path parent = readyFile.getParent();
+        if (parent == null) {
+            throw new IOException("更新辅助进程就绪文件路径无效: " + readyFile);
+        }
+        Files.createDirectories(parent);
+        Path temporary = parent.resolve("." + readyFile.getFileName()
+                + "." + ProcessHandle.current().pid() + ".tmp");
+        try {
+            Files.writeString(
+                    temporary,
+                    Long.toString(ProcessHandle.current().pid()),
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE_NEW,
+                    StandardOpenOption.WRITE);
+            moveAtomically(temporary, readyFile);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
+    }
+
+    private static void moveAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException exception) {
+            Files.move(source, target);
+        }
+    }
+
+    private static void deleteIfExistsBestEffort(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+        }
     }
 
     static void cleanupOldHelperCopies(Path helperDirectory, Consumer<String> logger) {
