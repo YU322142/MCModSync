@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "mcmodsync",
-  "version": "1.8.7",
+  "version": "1.9.0",
   "name": "MCModSync",
   "description": "启动前同步必须/推荐 Mod、资源包和服务器列表；Pre-launch synchronization with MD5/SHA256 verification.",
   "authors": ["MCModSync Contributors"],
@@ -12,8 +12,8 @@
     ]
   },
   "depends": {
-    "fabricloader": ">=0.16.0",
-    "minecraft": ">=1.21.11",
+    "fabricloader": ">=0.15.11",
+    "minecraft": ["1.21.1", "1.21.11"],
     "java": ">=21"
   }
 }

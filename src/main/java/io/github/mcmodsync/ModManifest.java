@@ -308,7 +308,7 @@ final class ModManifest {
         if (format < 3) {
             StringBuilder legacy = new StringBuilder();
             legacy.append(format == 1 ? MAGIC_V1 : MAGIC_V2).append('\n');
-            legacy.append("# minecraft=1.21.11\n# loader=fabric\n");
+            legacy.append("# minecraft=1.21.1,1.21.11\n# loader=fabric\n");
             for (ManifestEntry entry : entries) {
                 legacy.append(entry.md5()).append('\t');
                 if (format == 2) {
@@ -322,7 +322,7 @@ final class ModManifest {
         StringBuilder builder = new StringBuilder();
         builder.append(format >= 4 ? MAGIC_V4 : MAGIC_V3).append('\n');
         builder.append("# catalog-version=").append(catalogVersion).append('\n');
-        builder.append("# minecraft=1.21.11\n# loader=fabric\n");
+        builder.append("# minecraft=1.21.1,1.21.11\n# loader=fabric\n");
         if (format >= 4) {
             if (managedClientConfig != null) {
                 builder.append(managedClientConfig.serializeManifestComments());

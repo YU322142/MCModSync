@@ -106,6 +106,8 @@ public final class AllTests {
             String text = generated.serialize();
             ModManifest parsed = ModManifest.parse(text);
 
+            check(text.contains("# minecraft=1.21.1,1.21.11\n"),
+                    "生成的 Mod 清单应声明两个已验证目标版本");
             check(parsed.entries().size() == 2, "应只扫描两个 JAR");
             check(parsed.entries().get(0).fileName().equals("a-mod.jar"), "应按文件名稳定排序");
             check(parsed.entries().get(0).md5().equals(Hashing.md5(first)), "第一个 MD5 应正确");
@@ -268,6 +270,8 @@ public final class AllTests {
                 "完整 Mod 集不得继续发布到旧版升级入口");
         check(transition.contains("# upgrade-components-only=true"),
                 "升级专用 v2 入口应包含可审计标记");
+        check(transition.contains("# minecraft=1.21.1,1.21.11\n"),
+                "升级专用 v2 入口应声明两个已验证目标版本");
         check(!transition.contains(ModManifest.MAGIC_V3) && !transition.contains(ModManifest.MAGIC_V4),
                 "永久升级入口不能包含会让旧解析器拒绝的新版 magic");
 
@@ -422,11 +426,11 @@ public final class AllTests {
                     "1".repeat(64),
                     "2".repeat(32),
                     "mcmodsync",
-                    "MCModSync-1.8.7.jar",
+                    "MCModSync-1.9.0.jar",
                     ModKind.REQUIRED,
                     Set.of(),
                     "MCModSync",
-                    "1.8.7",
+                    "1.9.0",
                     "同步器",
                     "Synchronizer");
             ModManifest catalog = ModManifest.fromEntries("managed-config-1", List.of(updater, bootstrap))
@@ -1029,6 +1033,8 @@ public final class AllTests {
             ResourcePackManifest generated = ResourcePackManifest.fromFile(resourcePack);
             String text = generated.serialize();
             ResourcePackManifest parsed = ResourcePackManifest.parse(text);
+            check(text.contains("# minecraft=1.21.1,1.21.11\n"),
+                    "资源包清单应声明两个已验证目标版本");
             check(parsed.entries().size() == 1, "资源包清单应包含一个 ZIP");
             check(parsed.entries().get(0).fileName().equals("世界指定资源包喵.zip"), "资源包中文文件名应保留");
             check(parsed.entries().get(0).md5().equals(Hashing.md5(content)), "资源包清单 MD5 应正确");
@@ -1047,7 +1053,10 @@ public final class AllTests {
             ServerListNbt.writeSimple(serversDat, List.of(
                     new ServerListNbt.ServerInfo("主服务器", "play.example.test")));
             ServerListManifest generated = ServerListManifest.fromFile(serversDat);
-            ServerListManifest parsed = ServerListManifest.parse(generated.serialize());
+            String text = generated.serialize();
+            ServerListManifest parsed = ServerListManifest.parse(text);
+            check(text.contains("# minecraft=1.21.1,1.21.11\n"),
+                    "服务器列表清单应声明两个已验证目标版本");
             check(parsed.md5().equals(Hashing.md5(serversDat)), "服务器列表清单 MD5 应正确");
             expectFailure(() -> ServerListManifest.parse(
                     ServerListManifest.MAGIC + "\n00000000000000000000000000000000\t../servers.dat\n"));

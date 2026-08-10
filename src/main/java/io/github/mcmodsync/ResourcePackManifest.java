@@ -96,7 +96,7 @@ final class ResourcePackManifest {
     String serialize() {
         StringBuilder builder = new StringBuilder();
         builder.append(MAGIC).append('\n');
-        builder.append("# minecraft=1.21.11\n");
+        builder.append("# minecraft=1.21.1,1.21.11\n");
         builder.append("# MD5\\t文件名\n");
         for (ResourcePackEntry entry : entries) {
             builder.append(entry.md5()).append('\t').append(entry.fileName()).append('\n');

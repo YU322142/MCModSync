@@ -58,7 +58,7 @@ final class LegacyUpgradeManifest {
         builder.append("# Current clients restore the complete set from mods-v4.txt.\n");
         catalog.managedClientConfig().ifPresent(config ->
                 builder.append(config.serializeManifestComments()));
-        builder.append("# minecraft=1.21.11\n# loader=fabric\n");
+        builder.append("# minecraft=1.21.1,1.21.11\n# loader=fabric\n");
         for (ManifestEntry entry : List.of(updater, bootstrap)) {
             builder.append(entry.md5()).append('\t')
                     .append(entry.modId().isBlank() ? "-" : entry.modId()).append('\t')

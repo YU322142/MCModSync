@@ -49,7 +49,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "tests failed with exit code $LASTEXITCODE"
 }
 
-$jarPath = Join-Path $distDirectory 'MCModSync-1.8.7.jar'
+$jarPath = Join-Path $distDirectory 'MCModSync-1.9.0.jar'
 $compileOnlyStubClass = Join-Path $mainClasses 'net\fabricmc\loader\api\entrypoint\PreLaunchEntrypoint.class'
 if (-not (Test-Path -LiteralPath $compileOnlyStubClass -PathType Leaf)) {
     throw "Expected compile-only Fabric API class not found: $compileOnlyStubClass"
@@ -71,6 +71,45 @@ $fabricLeak = & jar tf $jarPath | Select-String -Pattern '^net/fabricmc/'
 if ($fabricLeak) {
     throw "Refusing to ship Fabric Loader API classes inside MCModSync jar: $fabricLeak"
 }
+
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [System.IO.Compression.ZipFile]::OpenRead($jarPath)
+try {
+    $metadataEntry = $archive.GetEntry('fabric.mod.json')
+    if ($null -eq $metadataEntry) {
+        throw 'Packaged JAR is missing fabric.mod.json.'
+    }
+    $metadataStream = $metadataEntry.Open()
+    try {
+        $metadataReader = [System.IO.StreamReader]::new(
+            $metadataStream,
+            [System.Text.UTF8Encoding]::new($false, $true))
+        try {
+            $fabricMetadata = $metadataReader.ReadToEnd() | ConvertFrom-Json
+        } finally {
+            $metadataReader.Dispose()
+        }
+    } finally {
+        $metadataStream.Dispose()
+    }
+} finally {
+    $archive.Dispose()
+}
+$minecraftTargets = @($fabricMetadata.depends.minecraft)
+$metadataInvalid = ($fabricMetadata.version -ne '1.9.0') -or
+        ($fabricMetadata.depends.fabricloader -ne '>=0.15.11') -or
+        (($minecraftTargets -join ',') -ne '1.21.1,1.21.11') -or
+        ($fabricMetadata.depends.java -ne '>=21')
+if ($metadataInvalid) {
+    throw "Unexpected packaged compatibility metadata: version=$($fabricMetadata.version), " +
+            "loader=$($fabricMetadata.depends.fabricloader), minecraft=$($minecraftTargets -join ','), " +
+            "java=$($fabricMetadata.depends.java)"
+}
+$reportedVersion = (& java -jar $jarPath --version | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne 'MCModSync 1.9.0') {
+    throw "Packaged CLI reported an unexpected version: $reportedVersion"
+}
+Write-Output 'Packaged 1.21.1/1.21.11 metadata and CLI version passed.'
 
 $legacyJarForSmoke = $env:MCMODSYNC_LEGACY_JAR
 if ($legacyJarForSmoke) {
@@ -145,7 +184,7 @@ Write-Output '[8/8] Copying deliverables...'
 $workspaceRoot = [System.IO.Directory]::GetParent([System.IO.Directory]::GetParent($projectRoot).FullName).FullName
 $outputsDirectory = Join-Path $workspaceRoot 'outputs'
 New-Item -ItemType Directory -Path $outputsDirectory -Force | Out-Null
-$jarOutputName = 'MCModSync-1.8.7.jar'
+$jarOutputName = 'MCModSync-1.9.0.jar'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.jar' -ErrorAction SilentlyContinue |
     Where-Object Name -ne $jarOutputName |
     ForEach-Object {
@@ -169,7 +208,7 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.md' -Err
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $outputsDirectory $readmeDestinationName) -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'modsync.properties.example') -Destination (Join-Path $outputsDirectory 'modsync.properties.example') -Force
 
-$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.8.7-source.zip'
+$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.9.0-source.zip'
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*-source.zip' -ErrorAction SilentlyContinue |
     Where-Object FullName -ne $sourceZip |
     ForEach-Object {

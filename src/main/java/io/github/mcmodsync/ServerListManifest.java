@@ -70,7 +70,7 @@ record ServerListManifest(String md5) {
     }
 
     String serialize() {
-        return MAGIC + "\n# minecraft=1.21.11\n# MD5\\t文件名\n" + md5 + "\t" + FILE_NAME + "\n";
+        return MAGIC + "\n# minecraft=1.21.1,1.21.11\n# MD5\\t文件名\n" + md5 + "\t" + FILE_NAME + "\n";
     }
 
     void write(Path output) throws IOException {

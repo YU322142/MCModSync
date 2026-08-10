@@ -848,7 +848,7 @@ final class ModSyncEngine {
                 config.manifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.8.7",
+                "MCModSync/1.9.0",
                 language.text("Mod 清单", "Mod catalog"),
                 logger);
         return decodeUtf8Strict(bytes);
@@ -863,7 +863,7 @@ final class ModSyncEngine {
         URI fileUri = config.manifestUri().resolve("./" + Rfc3986.encodePathSegment(entry.fileName()));
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.8.7")
+                .header("User-Agent", "MCModSync/1.9.0")
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -948,7 +948,7 @@ final class ModSyncEngine {
                     "./" + Rfc3986.encodePathSegment(plan.entry().fileName()));
             HttpRequest request = HttpRequest.newBuilder(fileUri)
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.8.7")
+                    .header("User-Agent", "MCModSync/1.9.0")
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {
