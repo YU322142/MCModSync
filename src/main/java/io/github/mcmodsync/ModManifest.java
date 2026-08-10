@@ -98,7 +98,7 @@ final class ModManifest {
         for (Path jar : jars) {
             String fileName = jar.getFileName().toString();
             validateFileName(fileName);
-            String modId = FabricModMetadata.readModId(jar);
+            String modId = ModMetadata.readModId(jar);
             String lowerFileName = fileName.toLowerCase(Locale.ROOT);
             boolean legacySyncToolName = excluded.contains("mcmodsync")
                     && (lowerFileName.equals("mcmodsync.jar")
@@ -113,9 +113,9 @@ final class ModManifest {
                     fileName,
                     ModKind.REQUIRED,
                     Set.of(),
-                    FabricModMetadata.readName(jar),
-                    FabricModMetadata.readVersion(jar),
-                    FabricModMetadata.readDescription(jar)));
+                    ModMetadata.readName(jar),
+                    ModMetadata.readVersion(jar),
+                    ModMetadata.readDescription(jar)));
         }
         if (entries.isEmpty()) {
             throw new IOException("没有可发布的 .jar Mod；为防止生成空清单，操作已取消。");
@@ -255,7 +255,7 @@ final class ModManifest {
             return "";
         }
         String modId = value.toLowerCase(Locale.ROOT);
-        if (!FabricModMetadata.isValidModId(modId)) {
+        if (!ModMetadata.isValidModId(modId)) {
             throw new IllegalArgumentException("清单第 " + lineNumber + " 行 Mod ID 无效: " + raw);
         }
         return modId;
@@ -308,7 +308,7 @@ final class ModManifest {
         if (format < 3) {
             StringBuilder legacy = new StringBuilder();
             legacy.append(format == 1 ? MAGIC_V1 : MAGIC_V2).append('\n');
-            legacy.append("# minecraft=1.21.1,1.21.11\n# loader=fabric\n");
+            legacy.append("# minecraft=1.21.1,1.21.11\n# loader=fabric,neoforge\n");
             for (ManifestEntry entry : entries) {
                 legacy.append(entry.md5()).append('\t');
                 if (format == 2) {
@@ -322,7 +322,7 @@ final class ModManifest {
         StringBuilder builder = new StringBuilder();
         builder.append(format >= 4 ? MAGIC_V4 : MAGIC_V3).append('\n');
         builder.append("# catalog-version=").append(catalogVersion).append('\n');
-        builder.append("# minecraft=1.21.1,1.21.11\n# loader=fabric\n");
+        builder.append("# minecraft=1.21.1,1.21.11\n# loader=fabric,neoforge\n");
         if (format >= 4) {
             if (managedClientConfig != null) {
                 builder.append(managedClientConfig.serializeManifestComments());
@@ -380,7 +380,7 @@ final class ModManifest {
         Set<String> seen = new HashSet<>();
         for (ManifestEntry entry : entries) {
             if (!entry.modId().isEmpty() && !seen.add(entry.modId())) {
-                throw new IllegalArgumentException("清单包含重复 Fabric Mod ID: " + entry.modId());
+                throw new IllegalArgumentException("清单包含重复 Mod ID: " + entry.modId());
             }
         }
     }

@@ -28,7 +28,7 @@ final class LegacyUpgradeManifest {
                 .filter(entry -> entry.modId().equals("mcmodsync"))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(
-                        "升级清单必须包含当前 MCModSync JAR（Fabric Mod ID: mcmodsync）"));
+                        "升级清单必须包含当前 MCModSync JAR（Mod ID: mcmodsync）"));
         String targetVersion = versionOf(updater);
         if (targetVersion.isBlank()
                 || compareVersions(targetVersion, MINIMUM_V4_READER_VERSION) < 0) {
@@ -41,7 +41,7 @@ final class LegacyUpgradeManifest {
                 .filter(entry -> entry.modId().equals(ManagedClientConfig.BOOTSTRAP_MOD_ID))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException(
-                        "升级清单必须包含配置引导 JAR（Fabric Mod ID: "
+                        "升级清单必须包含配置引导 JAR（Mod ID: "
                                 + ManagedClientConfig.BOOTSTRAP_MOD_ID + "）"));
         if (!bootstrap.fileName().equals(ManagedClientConfig.BOOTSTRAP_FILE_NAME)) {
             throw new IllegalArgumentException(
@@ -58,7 +58,7 @@ final class LegacyUpgradeManifest {
         builder.append("# Current clients restore the complete set from mods-v4.txt.\n");
         catalog.managedClientConfig().ifPresent(config ->
                 builder.append(config.serializeManifestComments()));
-        builder.append("# minecraft=1.21.1,1.21.11\n# loader=fabric\n");
+        builder.append("# minecraft=1.21.1,1.21.11\n# loader=fabric,neoforge\n");
         for (ManifestEntry entry : List.of(updater, bootstrap)) {
             builder.append(entry.md5()).append('\t')
                     .append(entry.modId().isBlank() ? "-" : entry.modId()).append('\t')

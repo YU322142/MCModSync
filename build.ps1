@@ -1,6 +1,12 @@
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$projectVersion = '1.9.1'
+$jarFileName = "MCModSync-$projectVersion.jar"
+$sourceZipFileName = "MCModSync-$projectVersion-source.zip"
+$fabricMinecraftTargets = @('1.21.1', '1.21.11')
+$neoForgeMinecraftRange = '[1.21.1]'
+$neoForgeVersionRange = '[21.1.0,)'
 $buildDirectory = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'build'))
 $expectedBuildDirectory = [System.IO.Path]::GetFullPath((Join-Path $projectRoot 'build'))
 if ($buildDirectory -ne $expectedBuildDirectory -or -not $buildDirectory.StartsWith($projectRoot + [System.IO.Path]::DirectorySeparatorChar)) {
@@ -29,7 +35,7 @@ if (-not $mainSources) {
     throw 'No main Java sources found.'
 }
 
-Write-Output '[1/8] Compiling Java 21-compatible main classes with Fabric compile-only API shape...'
+Write-Output '[1/8] Compiling Java 21-compatible main classes with Fabric and NeoForge compile-only API shapes...'
 $mainArguments = @('--release', '21', '-encoding', 'UTF-8', '-d', $mainClasses) + $compileOnlySources + $mainSources
 & javac @mainArguments
 if ($LASTEXITCODE -ne 0) {
@@ -49,27 +55,37 @@ if ($LASTEXITCODE -ne 0) {
     throw "tests failed with exit code $LASTEXITCODE"
 }
 
-$jarPath = Join-Path $distDirectory 'MCModSync-1.9.0.jar'
+$jarPath = Join-Path $distDirectory $jarFileName
 $compileOnlyStubClass = Join-Path $mainClasses 'net\fabricmc\loader\api\entrypoint\PreLaunchEntrypoint.class'
 if (-not (Test-Path -LiteralPath $compileOnlyStubClass -PathType Leaf)) {
     throw "Expected compile-only Fabric API class not found: $compileOnlyStubClass"
 }
-Remove-Item -LiteralPath $compileOnlyStubClass -Force
+$neoForgeDistStubClass = Join-Path $mainClasses 'net\neoforged\api\distmarker\Dist.class'
+$neoForgeModStubClass = Join-Path $mainClasses 'net\neoforged\fml\common\Mod.class'
+$neoForgeStubsPresent = (Test-Path -LiteralPath $neoForgeDistStubClass -PathType Leaf) -and
+        (Test-Path -LiteralPath $neoForgeModStubClass -PathType Leaf)
+if (-not $neoForgeStubsPresent) {
+    throw "Expected compile-only NeoForge API classes were not found under $mainClasses"
+}
 $fabricStubRoot = Join-Path $mainClasses 'net\fabricmc'
 if (Test-Path -LiteralPath $fabricStubRoot) {
     Remove-Item -LiteralPath $fabricStubRoot -Recurse -Force
 }
+$neoForgeStubRoot = Join-Path $mainClasses 'net\neoforged'
+if (Test-Path -LiteralPath $neoForgeStubRoot) {
+    Remove-Item -LiteralPath $neoForgeStubRoot -Recurse -Force
+}
 
-Write-Output '[4/8] Building Fabric/executable/agent JAR...'
+Write-Output '[4/8] Building Fabric/NeoForge/executable/agent JAR...'
 & jar --create --file $jarPath --manifest (Join-Path $projectRoot 'manifest.mf') `
     -C $mainClasses . `
     -C (Join-Path $projectRoot 'src\main\resources') .
 if ($LASTEXITCODE -ne 0) {
     throw "jar failed with exit code $LASTEXITCODE"
 }
-$fabricLeak = & jar tf $jarPath | Select-String -Pattern '^net/fabricmc/'
-if ($fabricLeak) {
-    throw "Refusing to ship Fabric Loader API classes inside MCModSync jar: $fabricLeak"
+$loaderApiLeak = & jar tf $jarPath | Select-String -Pattern '^net/(fabricmc|neoforged)/'
+if ($loaderApiLeak) {
+    throw "Refusing to ship Fabric/NeoForge Loader API classes inside MCModSync jar: $loaderApiLeak"
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -95,21 +111,108 @@ try {
 } finally {
     $archive.Dispose()
 }
-$minecraftTargets = @($fabricMetadata.depends.minecraft)
-$metadataInvalid = ($fabricMetadata.version -ne '1.9.0') -or
-        ($fabricMetadata.depends.fabricloader -ne '>=0.15.11') -or
-        (($minecraftTargets -join ',') -ne '1.21.1,1.21.11') -or
-        ($fabricMetadata.depends.java -ne '>=21')
+    $minecraftTargets = @($fabricMetadata.depends.minecraft)
+    $metadataInvalid = ($fabricMetadata.version -ne $projectVersion) -or
+            ($fabricMetadata.depends.fabricloader -ne '>=0.15.11') -or
+            (($minecraftTargets -join ',') -ne ($fabricMinecraftTargets -join ',')) -or
+            ($fabricMetadata.depends.java -ne '>=21')
 if ($metadataInvalid) {
-    throw "Unexpected packaged compatibility metadata: version=$($fabricMetadata.version), " +
+    throw "Unexpected packaged Fabric compatibility metadata: version=$($fabricMetadata.version), " +
             "loader=$($fabricMetadata.depends.fabricloader), minecraft=$($minecraftTargets -join ','), " +
             "java=$($fabricMetadata.depends.java)"
 }
+$neoArchive = [System.IO.Compression.ZipFile]::OpenRead($jarPath)
+try {
+    $neoEntry = $neoArchive.GetEntry('META-INF/neoforge.mods.toml')
+    if ($null -eq $neoEntry) {
+        throw 'Packaged JAR is missing META-INF/neoforge.mods.toml.'
+    }
+    $neoStream = $neoEntry.Open()
+    try {
+        $neoReader = [System.IO.StreamReader]::new(
+            $neoStream,
+            [System.Text.UTF8Encoding]::new($false, $true))
+        try {
+            $neoText = $neoReader.ReadToEnd()
+        } finally {
+            $neoReader.Dispose()
+        }
+    } finally {
+        $neoStream.Dispose()
+    }
+    if ($neoText -match '\$\{') {
+        throw 'Packaged NeoForge metadata contains an unresolved ${...} placeholder.'
+    }
+    $loaderMetadataValid = ($neoText -match '(?m)^modLoader\s*=\s*"javafml"\s*$') -and
+            ($neoText -match '(?m)^loaderVersion\s*=\s*"\[1,\)"\s*$') -and
+            ($neoText -match '(?m)^license\s*=\s*"[^"]+"\s*$')
+    if (-not $loaderMetadataValid) {
+        throw 'Packaged NeoForge metadata has invalid loaderVersion/modLoader/license.'
+    }
+    $modsBlock = [regex]::Match($neoText, '(?ms)^\[\[mods\]\](.*?)(?=^\[\[|\z)').Value
+    $neoVersionPattern = '(?m)^version\s*=\s*"' + [regex]::Escape($projectVersion) + '"\s*$'
+    $neoMinecraftRangePattern = '(?m)^versionRange\s*=\s*"' + [regex]::Escape($neoForgeMinecraftRange) + '"\s*$'
+    $neoForgeRangePattern = '(?m)^versionRange\s*=\s*"' + [regex]::Escape($neoForgeVersionRange) + '"\s*$'
+    $modsMetadataValid = ($modsBlock -match '(?m)^modId\s*=\s*"mcmodsync"\s*$') -and
+            ($modsBlock -match $neoVersionPattern) -and
+            ($modsBlock -match '(?m)^description\s*=')
+    if (-not $modsMetadataValid) {
+        throw 'Packaged NeoForge [[mods]] metadata is invalid.'
+    }
+    $dependencyBlocks = [regex]::Matches($neoText, '(?ms)^\[\[dependencies\.mcmodsync\]\](.*?)(?=^\[\[|\z)')
+    $hasMinecraftDependency = $false
+    $hasNeoForgeDependency = $false
+    foreach ($dependency in $dependencyBlocks) {
+        $block = $dependency.Value
+        $minecraftDependencyValid = ($block -match '(?m)^modId\s*=\s*"minecraft"\s*$') -and
+                ($block -match $neoMinecraftRangePattern) -and
+                ($block -match '(?m)^type\s*=\s*"required"\s*$') -and
+                ($block -match '(?m)^side\s*=\s*"CLIENT"\s*$')
+        if ($minecraftDependencyValid) {
+            $hasMinecraftDependency = $true
+        }
+        $neoForgeDependencyValid = ($block -match '(?m)^modId\s*=\s*"neoforge"\s*$') -and
+                ($block -match $neoForgeRangePattern) -and
+                ($block -match '(?m)^type\s*=\s*"required"\s*$') -and
+                ($block -match '(?m)^side\s*=\s*"CLIENT"\s*$')
+        if ($neoForgeDependencyValid) {
+            $hasNeoForgeDependency = $true
+        }
+    }
+    if (-not $hasMinecraftDependency -or -not $hasNeoForgeDependency) {
+        throw 'Packaged NeoForge dependencies do not require NeoForge and Minecraft 1.21.1 on CLIENT.'
+    }
+    $entryClass = $neoArchive.GetEntry('io/github/mcmodsync/NeoForgeModEntrypoint.class')
+    if ($null -eq $entryClass) {
+        throw 'Packaged JAR is missing NeoForgeModEntrypoint.class.'
+    }
+    $manifestEntry = $neoArchive.GetEntry('META-INF/MANIFEST.MF')
+    if ($null -eq $manifestEntry) {
+        throw 'Packaged JAR is missing META-INF/MANIFEST.MF.'
+    }
+    $manifestStream = $manifestEntry.Open()
+    try {
+        $manifestReader = [System.IO.StreamReader]::new($manifestStream, [System.Text.Encoding]::ASCII)
+        try {
+            $jarManifest = $manifestReader.ReadToEnd()
+        } finally {
+            $manifestReader.Dispose()
+        }
+    } finally {
+        $manifestStream.Dispose()
+    }
+    $implementationVersionPattern = '(?m)^Implementation-Version:\s*' + [regex]::Escape($projectVersion) + '\s*$'
+    if ($jarManifest -notmatch $implementationVersionPattern) {
+        throw 'Packaged MANIFEST.MF has an unexpected Implementation-Version.'
+    }
+} finally {
+    $neoArchive.Dispose()
+}
 $reportedVersion = (& java -jar $jarPath --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne 'MCModSync 1.9.0') {
+if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne "MCModSync $projectVersion") {
     throw "Packaged CLI reported an unexpected version: $reportedVersion"
 }
-Write-Output 'Packaged 1.21.1/1.21.11 metadata and CLI version passed.'
+Write-Output 'Packaged Fabric/NeoForge metadata and CLI version passed.'
 
 $legacyJarForSmoke = $env:MCMODSYNC_LEGACY_JAR
 if ($legacyJarForSmoke) {
@@ -119,7 +222,7 @@ if ($legacyJarForSmoke) {
     }
     $legacyEntrypoint = $env:MCMODSYNC_LEGACY_ENTRYPOINT
     if (-not $legacyEntrypoint) {
-        $legacyEntrypoint = 'xyz.yu322142.modsync.FabricPreLaunchEntrypoint'
+        throw 'MCMODSYNC_LEGACY_ENTRYPOINT must be set when running a historical-JAR transition smoke.'
     }
     Write-Output "Running real historical-JAR transition smoke: $legacyJarForSmoke"
     & java --add-modules jdk.httpserver -cp "$mainClasses;$testClasses" `
@@ -184,7 +287,7 @@ Write-Output '[8/8] Copying deliverables...'
 $workspaceRoot = [System.IO.Directory]::GetParent([System.IO.Directory]::GetParent($projectRoot).FullName).FullName
 $outputsDirectory = Join-Path $workspaceRoot 'outputs'
 New-Item -ItemType Directory -Path $outputsDirectory -Force | Out-Null
-$jarOutputName = 'MCModSync-1.9.0.jar'
+$jarOutputName = $jarFileName
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.jar' -ErrorAction SilentlyContinue |
     Where-Object Name -ne $jarOutputName |
     ForEach-Object {
@@ -208,7 +311,7 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.md' -Err
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $outputsDirectory $readmeDestinationName) -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'modsync.properties.example') -Destination (Join-Path $outputsDirectory 'modsync.properties.example') -Force
 
-$sourceZip = Join-Path $outputsDirectory 'MCModSync-1.9.0-source.zip'
+$sourceZip = Join-Path $outputsDirectory $sourceZipFileName
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*-source.zip' -ErrorAction SilentlyContinue |
     Where-Object FullName -ne $sourceZip |
     ForEach-Object {

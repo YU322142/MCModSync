@@ -23,8 +23,8 @@ import java.util.jar.Attributes;
 import java.util.jar.JarFile;
 
 /**
- * Runs the mutating transaction after the Fabric JVM has fully exited. This
- * avoids Windows locks held by Fabric's cached JAR file systems.
+ * Runs the mutating transaction after the loader JVM has fully exited. This
+ * avoids Windows locks held by Fabric/NeoForge cached JAR file systems.
  */
 public final class PortableUpdateHelper {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
@@ -82,6 +82,10 @@ public final class PortableUpdateHelper {
     }
 
     static boolean schedule(ModSyncConfig config, Consumer<String> logger) throws IOException {
+        return schedule(config, logger, "Fabric");
+    }
+
+    static boolean schedule(ModSyncConfig config, Consumer<String> logger, String loaderName) throws IOException {
         DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         if (Boolean.getBoolean("modsync.disableHelperLaunch")) {
             logger.accept(language.text(
@@ -152,8 +156,8 @@ public final class PortableUpdateHelper {
         try (JarFile pinned = openVerifiedHelperArchive(helperJar)) {
             process = builder.start();
             logger.accept(language.text(
-                    "已创建更新辅助进程，正在等待主类加载确认，PID=" + process.pid() + "，日志: " + logPath,
-                    "Created the update-helper process; waiting for main-class readiness, PID="
+                    "已创建 " + loaderName + " 更新辅助进程，正在等待主类加载确认，PID=" + process.pid() + "，日志: " + logPath,
+                    "Created the " + loaderName + " update-helper process; waiting for main-class readiness, PID="
                             + process.pid() + ", log: " + logPath));
             awaitHelperReadyOrTerminate(process, readyFile, helperJar, logPath, language);
         } finally {
@@ -385,8 +389,8 @@ public final class PortableUpdateHelper {
         InstanceGuard guard = acquireGuardAfterParentExit(config.gameDirectory());
         try (guard) {
             logger.accept(language.text(
-                    "Fabric 进程已退出，开始执行无占用更新",
-                    "The Fabric process exited; starting an update without file locks"));
+                    "游戏进程已退出，开始执行无占用更新",
+                    "The game process exited; starting an update without file locks"));
             SyncResult result = ModSyncCoordinator.synchronize(config, logger, observer);
             logger.accept(language.text(
                     "退出后更新完成: " + result.status(),
@@ -400,12 +404,12 @@ public final class PortableUpdateHelper {
         if (parent.isEmpty() || !parent.get().isAlive()) {
             return;
         }
-        log("等待 Fabric 进程退出，PID=" + parentPid,
-                "Waiting for the Fabric process to exit, PID=" + parentPid);
+        log("等待游戏进程退出，PID=" + parentPid,
+                "Waiting for the game process to exit, PID=" + parentPid);
         try {
             parent.get().onExit().get();
         } catch (java.util.concurrent.ExecutionException exception) {
-            throw new IOException("等待 Fabric 进程退出失败", exception.getCause());
+            throw new IOException("等待游戏进程退出失败", exception.getCause());
         }
     }
 
@@ -420,7 +424,7 @@ public final class PortableUpdateHelper {
                 Thread.sleep(250L);
             }
         }
-        throw new IOException("Fabric 退出后仍无法取得客户端更新锁", last);
+        throw new IOException("游戏进程退出后仍无法取得客户端更新锁", last);
     }
 
     private static Path locateSelfJar() throws IOException {
@@ -436,8 +440,8 @@ public final class PortableUpdateHelper {
             throw new IOException("MCModSync JAR 路径格式无效", exception);
         }
 
-        // Some custom class loaders omit CodeSource. Fall back to Fabric's
-        // public mod-origin API without introducing another compile dependency.
+        // Some custom class loaders omit CodeSource. Fall back to either
+        // loader's public mod-origin API without introducing compile dependencies.
         try {
             Class<?> loaderClass = Class.forName("net.fabricmc.loader.api.FabricLoader");
             Object loader = loaderClass.getMethod("getInstance").invoke(null);
@@ -460,7 +464,30 @@ public final class PortableUpdateHelper {
                 }
             }
         } catch (ReflectiveOperationException exception) {
-            throw new IOException("无法通过 Fabric Loader 定位 MCModSync JAR", exception);
+            // Try NeoForge's ModList only after Fabric's API is unavailable.
+            try {
+                Class<?> modListClass = Class.forName("net.neoforged.fml.ModList");
+                Object modList = modListClass.getMethod("get").invoke(null);
+                Object optional = modListClass.getMethod("getModContainerById", String.class)
+                        .invoke(modList, "mcmodsync");
+                Object container = optional instanceof Optional<?> found ? found.orElse(null) : null;
+                if (container != null) {
+                    Class<?> containerApi = Class.forName("net.neoforged.fml.ModContainer");
+                    Object modInfo = containerApi.getMethod("getModInfo").invoke(container);
+                    Class<?> modInfoApi = Class.forName("net.neoforged.neoforgespi.language.IModInfo");
+                    Object owningFile = modInfoApi.getMethod("getOwningFile").invoke(modInfo);
+                    Class<?> fileInfoApi = Class.forName("net.neoforged.neoforgespi.language.IModFileInfo");
+                    Object modFile = fileInfoApi.getMethod("getFile").invoke(owningFile);
+                    Class<?> modFileApi = Class.forName("net.neoforged.neoforgespi.locating.IModFile");
+                    Object filePath = modFileApi.getMethod("getFilePath").invoke(modFile);
+                    if (filePath instanceof Path path && isJar(path.toAbsolutePath().normalize())) {
+                        return path.toAbsolutePath().normalize();
+                    }
+                }
+            } catch (ReflectiveOperationException ignored) {
+                // Report the original, more useful loader lookup failure below.
+            }
+            throw new IOException("无法通过 Fabric/NeoForge Loader 定位 MCModSync JAR", exception);
         }
         throw new IOException("无法定位正在运行的 MCModSync JAR");
     }

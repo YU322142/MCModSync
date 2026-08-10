@@ -67,7 +67,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync 1.9.0");
+            System.out.println("MCModSync " + BuildInfo.VERSION);
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {
@@ -159,8 +159,8 @@ public final class PublisherMain {
             manifest.ensureUniqueModIds();
         } catch (IllegalArgumentException exception) {
             throw new IOException(text(
-                    "发布目录包含重复 Fabric Mod ID: ",
-                    "The publishing directory contains duplicate Fabric mod IDs: ")
+                    "发布目录包含重复 Mod ID: ",
+                    "The publishing directory contains duplicate mod IDs: ")
                     + exception.getMessage(), exception);
         }
         manifest.write(output);
@@ -169,8 +169,8 @@ public final class PublisherMain {
         if (withoutModId > 0) {
             System.err.println(text("警告：有 ", "Warning: ") + withoutModId
                     + text(
-                            " 个 JAR 无法读取 fabric.mod.json/id，版本改名时将回退到文件名识别。",
-                            " JAR(s) have no readable fabric.mod.json/id; renamed versions will use filename matching."));
+                            " 个 JAR 无法读取 Fabric/NeoForge 元数据中的 Mod ID，版本改名时将回退到文件名识别。",
+                            " JAR(s) have no readable Fabric/NeoForge Mod ID; renamed versions will use filename matching."));
         }
         return manifest.entries().size();
     }
@@ -190,7 +190,7 @@ public final class PublisherMain {
                 .filter(entry -> entry.modId().equals("mcmodsync"))
                 .count();
         if (syncTools != 1) {
-            throw new IOException("发布目录必须恰好包含一个当前 MCModSync JAR（Fabric Mod ID: mcmodsync）");
+            throw new IOException("发布目录必须恰好包含一个当前 MCModSync JAR（Mod ID: mcmodsync）");
         }
         return new PublicationScan(scanned, managedConfig, bootstrapEntry, configurationTemplate);
     }

@@ -63,7 +63,7 @@ final class ModSyncEngine {
 
     /**
      * Checks whether JAR changes are required without moving, replacing or
-     * deleting any JAR. This is used after Fabric has already opened mod file
+     * deleting any JAR. This is used after the loader has already opened mod file
      * systems, so the actual transaction can be deferred to a helper process.
      */
     SyncProbeResult probeWithoutJarChanges() throws IOException, InterruptedException {
@@ -166,7 +166,7 @@ final class ModSyncEngine {
                 if (desiredByName.containsKey(localEntry.getKey())) {
                     continue;
                 }
-                String localModId = FabricModMetadata.readModId(localEntry.getValue());
+                String localModId = ModMetadata.readModId(localEntry.getValue());
                 if (excludedNames.contains(localEntry.getKey()) || excludedIds.contains(localModId)) {
                     log("便携模式检测到需要移出已取消/不兼容的推荐模组: "
                                     + localEntry.getValue().getFileName(),
@@ -273,7 +273,7 @@ final class ModSyncEngine {
         Map<String, Path> local = listLocalMods(modsDirectory);
         Map<String, String> localModIds = new HashMap<>();
         for (Map.Entry<String, Path> entry : local.entrySet()) {
-            localModIds.put(entry.getKey(), FabricModMetadata.readModId(entry.getValue()));
+            localModIds.put(entry.getKey(), ModMetadata.readModId(entry.getValue()));
         }
         Map<String, ManifestEntry> desired = new LinkedHashMap<>();
         Map<String, ManifestEntry> desiredByModId = new HashMap<>();
@@ -552,10 +552,10 @@ final class ModSyncEngine {
     private static LocalSelf newestLocalSync(Iterable<Path> localFiles) {
         LocalSelf newest = null;
         for (Path file : localFiles) {
-            if (!FabricModMetadata.readModId(file).equals("mcmodsync")) {
+            if (!ModMetadata.readModId(file).equals("mcmodsync")) {
                 continue;
             }
-            String candidate = FabricModMetadata.readVersion(file);
+            String candidate = ModMetadata.readVersion(file);
             if (candidate.isBlank()) {
                 candidate = versionIn(file.getFileName().toString());
             }
@@ -848,7 +848,7 @@ final class ModSyncEngine {
                 config.manifestUri(),
                 config.requestTimeout(),
                 config.maxManifestBytes(),
-                "MCModSync/1.9.0",
+                BuildInfo.USER_AGENT,
                 language.text("Mod 清单", "Mod catalog"),
                 logger);
         return decodeUtf8Strict(bytes);
@@ -863,7 +863,7 @@ final class ModSyncEngine {
         URI fileUri = config.manifestUri().resolve("./" + Rfc3986.encodePathSegment(entry.fileName()));
         HttpRequest request = HttpRequest.newBuilder(fileUri)
                 .timeout(config.requestTimeout())
-                .header("User-Agent", "MCModSync/1.9.0")
+                .header("User-Agent", BuildInfo.USER_AGENT)
                 .GET()
                 .build();
         HttpResponse<InputStream> response = client.send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -948,7 +948,7 @@ final class ModSyncEngine {
                     "./" + Rfc3986.encodePathSegment(plan.entry().fileName()));
             HttpRequest request = HttpRequest.newBuilder(fileUri)
                     .timeout(config.requestTimeout())
-                    .header("User-Agent", "MCModSync/1.9.0")
+                    .header("User-Agent", BuildInfo.USER_AGENT)
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build();
             try {
@@ -1057,7 +1057,7 @@ final class ModSyncEngine {
             IOException rollback,
             Path transactionDirectory) {
         String content = "MCModSync 自动回滚未完全成功。\n"
-                + "为避免 Fabric 加载不完整的 Mod 组合，后续启动已被阻止。\n"
+                + "为避免加载器加载不完整的 Mod 组合，后续启动已被阻止。\n"
                 + "事务文件目录: " + transactionDirectory + "\n"
                 + "原始错误: " + original + "\n"
                 + "回滚错误: " + rollback + "\n"
@@ -1071,7 +1071,7 @@ final class ModSyncEngine {
                     StandardOpenOption.TRUNCATE_EXISTING,
                     StandardOpenOption.WRITE);
         } catch (IOException ignored) {
-            // 已经没有更可靠的落盘位置；主异常仍会阻止 Fabric 启动。
+            // 已经没有更可靠的落盘位置；主异常仍会阻止加载器启动。
         }
     }
 

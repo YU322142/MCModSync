@@ -44,7 +44,7 @@ final class UserNotifier implements SyncObserver {
     private static JTextArea activePlanArea;
     private static JButton activeCloseButton;
     private static volatile Boolean dialogsAvailableCache;
-    private final boolean fabricPortableMode;
+    private final boolean portableMode;
     private final boolean mobileRuntime;
     private final DisplayLanguage language;
     private final SyncStatusReporter statusReporter;
@@ -57,12 +57,12 @@ final class UserNotifier implements SyncObserver {
         this(false, null);
     }
 
-    UserNotifier(boolean fabricPortableMode) {
-        this(fabricPortableMode, null);
+    UserNotifier(boolean portableMode) {
+        this(portableMode, null);
     }
 
-    UserNotifier(boolean fabricPortableMode, Path gameDirectory) {
-        this.fabricPortableMode = fabricPortableMode;
+    UserNotifier(boolean portableMode, Path gameDirectory) {
+        this.portableMode = portableMode;
         Path directory = gameDirectory;
         if (directory == null) {
             String configured = System.getProperty("modsync.gameDir");
@@ -81,8 +81,8 @@ final class UserNotifier implements SyncObserver {
             this.statusReporter.setEnvironment(environment);
             this.statusReporter.setMode(
                     mobileRuntime
-                            ? (fabricPortableMode ? "portable-mobile" : "agent-mobile")
-                            : (fabricPortableMode ? "portable-headless" : "agent-headless"));
+                            ? (portableMode ? "portable-mobile" : "agent-mobile")
+                            : (portableMode ? "portable-headless" : "agent-headless"));
             System.out.println("[MCModSync] " + environment.summaryLine());
         }
     }
@@ -107,7 +107,7 @@ final class UserNotifier implements SyncObserver {
 
     private void reportCompleted(int downloaded, int quarantined, int unchanged) {
         if (statusReporter != null) {
-            statusReporter.completed(downloaded, quarantined, unchanged, fabricPortableMode);
+            statusReporter.completed(downloaded, quarantined, unchanged, portableMode);
         }
     }
 
@@ -129,8 +129,8 @@ final class UserNotifier implements SyncObserver {
         return language.text("确定，返回启动器", "OK, Return to Launcher");
     }
 
-    static boolean shouldShowRestartRequired(boolean fabricPortableMode, boolean mobileRuntime) {
-        return fabricPortableMode && !mobileRuntime;
+    static boolean shouldShowRestartRequired(boolean portableMode, boolean mobileRuntime) {
+        return portableMode && !mobileRuntime;
     }
 
     private String localizePhase(String message) {
@@ -176,19 +176,19 @@ final class UserNotifier implements SyncObserver {
         String plan = text(
                 "MCModSync 已检测到 Mod、资源包或服务器列表变化。\n\n"
                         + "新版通常会让 Minecraft 自动正常退出。\n"
-                        + "如果 Fabric、Minecraft 或启动器仍显示错误/退出窗口，请将那个窗口关闭；"
+                        + "如果加载器、Minecraft 或启动器仍显示错误/退出窗口，请将那个窗口关闭；"
                         + "只要游戏 Java 进程结束，下载就会自动继续。\n\n"
                         + "请不要再次启动游戏，也不要手动改动 mods 目录。",
                 "MCModSync detected changes to mods, resource packs, or the server list.\n\n"
-                        + "Minecraft should exit normally. Close any remaining Fabric, Minecraft, or launcher window; "
+                        + "Minecraft should exit normally. Close any remaining loader, Minecraft, or launcher window; "
                         + "the download starts after the game Java process exits.\n\n"
                         + "Do not launch the game again or modify the mods directory.");
         if (!dialogsAvailable()) {
             reportPlan(plan + text(
                     "\n无独立弹窗环境可查看 .modsync/ui-status.txt、progress.log 与 helper.log。",
                     "\nWithout a GUI, see .modsync/ui-status.txt, progress.log, and helper.log."));
-            reportPhase(text("正在等待 Minecraft/Fabric 进程退出……",
-                            "Waiting for the Minecraft/Fabric process to exit…"),
+            reportPhase(text("正在等待 Minecraft/加载器进程退出……",
+                            "Waiting for the Minecraft/loader process to exit…"),
                     text("进程 PID ", "Process PID ") + parentPid
                             + text("；退出后将自动开始下载", "; download starts after exit"));
             return;
@@ -198,8 +198,8 @@ final class UserNotifier implements SyncObserver {
                 closeActiveDownloadDialog();
                 ensureProgressDialog();
                 activeDownloadDialog.setTitle(text("MCModSync 正在准备更新", "MCModSync Preparing Update"));
-                activePhaseLabel.setText(text("正在等待 Minecraft/Fabric 进程退出……",
-                        "Waiting for the Minecraft/Fabric process to exit…"));
+                activePhaseLabel.setText(text("正在等待 Minecraft/加载器进程退出……",
+                        "Waiting for the Minecraft/loader process to exit…"));
                 activeFileDetailLabel.setText(text("进程 PID ", "Process PID ") + parentPid
                         + text("；退出后将自动开始下载", "; download starts after exit"));
                 setWaitingProgress(activeFileProgressBar, text("等待游戏退出", "Waiting for game exit"));
@@ -220,7 +220,7 @@ final class UserNotifier implements SyncObserver {
         if (!dialogsAvailable()) {
             // Desktop headless keeps extras so operators are not surprised.
             // Mobile must clean leftovers (e.g. kuayue / c2me natives) or the next
-            // Fabric resolution can hard-fail before preLaunch ever runs again.
+            // Loader resolution can hard-fail before the next startup callback runs.
             if (mobileRuntime) {
                 reportPhase(text(
                                 "手机端：自动移出并备份服务器已移除/不在清单中的 Mod",
@@ -661,7 +661,7 @@ final class UserNotifier implements SyncObserver {
     public void afterUpdate(int downloaded, int quarantined, int unchanged) {
         if (mobileRuntime || !dialogsAvailable()) {
             reportCompleted(downloaded, quarantined, unchanged);
-            if (fabricPortableMode && Boolean.getBoolean("modsync.helperProcess")) {
+            if (portableMode && Boolean.getBoolean("modsync.helperProcess")) {
                 // Keep helper process short-lived on mobile/headless; logs already contain the summary.
                 helperExitScheduled = false;
             }
@@ -669,7 +669,7 @@ final class UserNotifier implements SyncObserver {
         }
         try {
             runOnUiThread(() -> {
-                if (shouldShowRestartRequired(fabricPortableMode, mobileRuntime)) {
+                if (shouldShowRestartRequired(portableMode, mobileRuntime)) {
                     ensureProgressDialog();
                     activeDownloadDialog.setTitle(restartRequiredTitle(language));
                     activePhaseLabel.setText(restartRequiredMessage(language));

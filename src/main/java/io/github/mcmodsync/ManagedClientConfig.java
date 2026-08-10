@@ -320,6 +320,28 @@ final class ManagedClientConfig {
                     + "  \"description\": \"MCModSync managed client configuration bootstrap\",\n"
                     + "  \"environment\": \"client\"\n"
                     + "}\n").getBytes(StandardCharsets.UTF_8));
+            // The bootstrap JAR has metadata but no @Mod class. NeoForge's
+            // lowcode loader is the supported metadata-only language loader.
+            putEntry(zip, "META-INF/neoforge.mods.toml", ("modLoader=\"lowcodefml\"\n"
+                    + "loaderVersion=\"[1,)\"\n"
+                    + "license=\"MIT\"\n"
+                    + "[[mods]]\n"
+                    + "modId=\"" + BOOTSTRAP_MOD_ID + "\"\n"
+                    + "version=\"1.0.0\"\n"
+                    + "displayName=\"MCModSync Client Configuration\"\n"
+                    + "description=\"MCModSync managed client configuration bootstrap\"\n"
+                    + "[[dependencies." + BOOTSTRAP_MOD_ID + "]]\n"
+                    + "modId=\"neoforge\"\n"
+                    + "type=\"required\"\n"
+                    + "versionRange=\"[21.1.0,)\"\n"
+                    + "ordering=\"NONE\"\n"
+                    + "side=\"CLIENT\"\n"
+                    + "[[dependencies." + BOOTSTRAP_MOD_ID + "]]\n"
+                    + "modId=\"minecraft\"\n"
+                    + "type=\"required\"\n"
+                    + "versionRange=\"[1.21.1]\"\n"
+                    + "ordering=\"NONE\"\n"
+                    + "side=\"CLIENT\"\n").getBytes(StandardCharsets.UTF_8));
             StringBuilder properties = new StringBuilder();
             for (String key : MANAGED_KEYS) {
                 String value = values.get(key);

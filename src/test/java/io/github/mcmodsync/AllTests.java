@@ -40,6 +40,7 @@ public final class AllTests {
     private void run() throws Exception {
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
+        testNeoForgeMetadataAndUniversalBootstrap();
         testV4ManifestBilingualMetadataAndDualHash();
         testV3ManifestBackwardCompatibility();
         testPublisherContinuesPreviousCatalog();
@@ -635,6 +636,63 @@ public final class AllTests {
         } finally {
             Locale.setDefault(previousLocale);
             restoreProperties(previous);
+            deleteTree(root);
+        }
+    }
+
+    private void testNeoForgeMetadataAndUniversalBootstrap() throws Exception {
+        Path root = Files.createTempDirectory("modsync-neoforge-metadata-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("mods"));
+            Path jar = mods.resolve("neo-demo-2.3.jar");
+            writeNeoForgeJar(jar, "neo_demo", "2.3");
+            check(ModMetadata.readModId(jar).equals("neo_demo"),
+                    "应从 neoforge.mods.toml 读取 Mod ID");
+            check(ModMetadata.readVersion(jar).equals("2.3"),
+                    "应从 neoforge.mods.toml 读取版本");
+            check(ModMetadata.readName(jar).equals("Neo Demo"),
+                    "应从 neoforge.mods.toml 读取显示名称");
+            check(ModMetadata.readDescription(jar).equals("NeoForge description with spaces"),
+                    "应读取并规范化 NeoForge 多行描述");
+            ModManifest manifest = ModManifest.scan(mods);
+            check(manifest.entries().get(0).modId().equals("neo_demo"),
+                    "发布器扫描应识别没有 fabric.mod.json 的 NeoForge JAR");
+
+            Path properties = root.resolve("modsync.properties");
+            Files.writeString(properties,
+                    "manifest=https://example.invalid/mods-v4.txt\n"
+                            + "requireManifest=true\n",
+                    StandardCharsets.UTF_8);
+            ManagedClientConfig config = ManagedClientConfig.fromPropertiesFile(properties);
+            ManagedClientConfig.writeBootstrapJar(mods, config);
+            try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(
+                    mods.resolve(ManagedClientConfig.BOOTSTRAP_FILE_NAME).toFile())) {
+                check(zip.getEntry("fabric.mod.json") != null,
+                        "配置引导 JAR 应保留 Fabric 元数据");
+                check(zip.getEntry("META-INF/neoforge.mods.toml") != null,
+                        "配置引导 JAR 应同时包含 NeoForge 元数据");
+                String bootstrapToml;
+                try (java.io.InputStream input = zip.getInputStream(
+                        zip.getEntry("META-INF/neoforge.mods.toml"))) {
+                    bootstrapToml = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                }
+                check(bootstrapToml.contains("modLoader=\"lowcodefml\""),
+                        "无 @Mod 类的配置引导 JAR 应使用 NeoForge lowcodefml 加载器");
+            }
+
+            net.neoforged.fml.common.Mod annotation =
+                    NeoForgeModEntrypoint.class.getAnnotation(net.neoforged.fml.common.Mod.class);
+            check(annotation != null && annotation.value().equals("mcmodsync"),
+                    "NeoForge 入口应声明 mcmodsync @Mod");
+            check(java.util.Arrays.equals(annotation.dist(),
+                            new net.neoforged.api.distmarker.Dist[]{
+                                    net.neoforged.api.distmarker.Dist.CLIENT}),
+                    "NeoForge 入口应限定为客户端");
+            net.neoforged.fml.loading.FMLPaths.setGameDir(root);
+            check(NeoForgeModEntrypoint.locateGameDirectory().equals(root.toAbsolutePath().normalize()),
+                    "NeoForge 入口必须从 FMLPaths.GAMEDIR 获取游戏目录");
+            pass("NeoForge TOML metadata, dual bootstrap metadata and @Mod entrypoint");
+        } finally {
             deleteTree(root);
         }
     }
@@ -2585,6 +2643,23 @@ public final class AllTests {
     private void pass(String name) {
         passed++;
         System.out.println("PASS: " + name);
+    }
+
+    private static void writeNeoForgeJar(Path output, String modId, String marker) throws IOException {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(output))) {
+            zip.putNextEntry(new ZipEntry("META-INF/neoforge.mods.toml"));
+            String toml = "modLoader=\"javafml\"\n"
+                    + "loaderVersion=\"[1,)\"\n"
+                    + "license=\"MIT\"\n"
+                    + "[[mods]]\n"
+                    + "modId=\"" + modId + "\"\n"
+                    + "version=\"" + marker + "\"\n"
+                    + "displayName=\"Neo Demo\"\n"
+                    + "description='''NeoForge\n"
+                    + "description with spaces'''\n";
+            zip.write(toml.getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
     }
 
     public static final class SleepingChild {

@@ -257,7 +257,7 @@ record ModSyncConfig(
 
     private static Path determineGameDirectory(Map<String, String> agent, Path detectedGameDirectory) {
         String explicit = agent.get("gamedir");
-        // When Fabric (or tests) already resolved the real game directory, that
+        // When a loader (or tests) already resolved the real game directory, that
         // wins over a stale modsync.gameDir system property. Agent gamedir= still wins.
         if ((explicit == null || explicit.isBlank()) && detectedGameDirectory != null) {
             return detectedGameDirectory.toAbsolutePath().normalize();
