@@ -23,6 +23,7 @@ import java.util.function.Consumer;
 
 final class ServerListSyncEngine {
     private static final DateTimeFormatter BACKUP_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
+    private static final String MANAGED_STATE_FILE = "server-list-managed-v1.dat";
 
     private final ModSyncConfig config;
     private final Consumer<String> logger;
@@ -64,7 +65,8 @@ final class ServerListSyncEngine {
             }
 
             Path cachedCloud = state.resolve("server-list-cloud.dat");
-            if (!isCurrentMergedState(local, cachedCloud, desired)) {
+            Path managedState = state.resolve(MANAGED_STATE_FILE);
+            if (!isCurrentMergedState(local, cachedCloud, managedState, desired)) {
                 log("检测到服务器列表需要下载或合并更新",
                         "Detected a server-list download or merge update");
                 return new SyncProbeResult(SyncProbeResult.Status.CHANGES_REQUIRED);
@@ -83,6 +85,7 @@ final class ServerListSyncEngine {
         Path state = game.resolve(".modsync");
         Path local = game.resolve(ServerListManifest.FILE_NAME);
         Path cachedCloud = state.resolve("server-list-cloud.dat");
+        Path managedState = state.resolve(MANAGED_STATE_FILE);
         Files.createDirectories(state);
         try (FileChannel channel = openLock(state); FileLock ignored = acquireLock(channel)) {
             observer.phaseChanged("正在读取云端服务器列表 MD5 清单……");
@@ -93,7 +96,7 @@ final class ServerListSyncEngine {
                 throw new IOException("无法取得必需的服务器列表清单，已阻止启动", exception);
             }
 
-            if (isCurrentMergedState(local, cachedCloud, desired)) {
+            if (isCurrentMergedState(local, cachedCloud, managedState, desired)) {
                 log("服务器列表云端 MD5 未变化；保留当前合并列表",
                         "The cloud server-list MD5 is unchanged; retaining the current merged list");
                 return new SyncResult(SyncResult.Status.UNCHANGED, 0, 0, 1);
@@ -105,6 +108,7 @@ final class ServerListSyncEngine {
             Files.createDirectories(staging);
             Path downloaded = staging.resolve("cloud-servers.dat.part");
             Path merged = staging.resolve("merged-servers.dat.part");
+            Path nextManagedState = staging.resolve("managed-servers.dat.part");
             try {
                 downloadServersDat(downloaded);
                 String actual = Hashing.md5(downloaded);
@@ -113,19 +117,34 @@ final class ServerListSyncEngine {
                 }
                 observer.phaseChanged("服务器列表下载完成，正在解析 NBT 并合并玩家条目……");
                 ServerListNbt.Document cloud = ServerListNbt.read(downloaded);
-                ServerListNbt.Document previous = readOptional(
-                        cachedCloud, "上次云端服务器列表", "Previous cloud server list");
-                ServerListNbt.Document current = readOptional(
-                        local, "本地服务器列表", "Local server list");
-                ServerListNbt.Document result = ServerListNbt.merge(cloud, current, previous);
-                ServerListNbt.write(merged, result);
+                ServerListNbt.Document current = readLocalServerList(local);
+                ServerListNbt.Document managed = readManagedState(managedState);
+                ServerListNbt.MergeResult result = ServerListNbt.merge(cloud, current, managed);
+                for (ServerListNbt.MergeNotice notice : result.notices()) {
+                    log(notice.chinese(), notice.english());
+                }
+                boolean localChanged = current == null || !ServerListNbt.documentsEqual(current, result.merged());
+                if (localChanged) {
+                    ServerListNbt.write(merged, result.merged());
+                }
+                ServerListNbt.write(nextManagedState, result.managedState());
 
-                observer.phaseChanged("服务器列表合并完成，正在备份并安全替换 servers.dat……");
-                installMerged(local, merged, state);
+                observer.phaseChanged("服务器列表合并完成，正在保存管理台账并安全更新 servers.dat……");
+                installMergedState(
+                        local,
+                        localChanged ? merged : null,
+                        managedState,
+                        nextManagedState,
+                        state);
                 updateCloudCache(downloaded, cachedCloud, state);
-                log("服务器列表更新完成；云端条目已更新，玩家自行添加的地址已保留",
-                        "Server-list update complete; cloud entries were updated and player-added addresses retained");
-                return new SyncResult(SyncResult.Status.UPDATED, 1, hadLocal ? 1 : 0, 0);
+                log("服务器列表更新完成；仅已记录的云端条目会更新或删除，玩家条目及其相对顺序已保留",
+                        "Server-list update complete; only recorded cloud-managed entries may be updated or removed, "
+                                + "and player entries retained their relative order");
+                return new SyncResult(
+                        SyncResult.Status.UPDATED,
+                        1,
+                        localChanged && hadLocal ? 1 : 0,
+                        0);
             } finally {
                 deleteTreeBestEffort(staging);
             }
@@ -203,15 +222,39 @@ final class ServerListSyncEngine {
                 Math.max(0, Math.min(1000, permille))));
     }
 
-    private ServerListNbt.Document readOptional(Path path, String chineseLabel, String englishLabel) throws IOException {
+    private ServerListNbt.Document readLocalServerList(Path path) throws IOException {
         if (!Files.isRegularFile(path)) {
+            if (Files.exists(path)) {
+                throw new IOException("servers.dat 被同名目录或非普通文件占用，无法安全合并: " + path);
+            }
             return null;
         }
         try {
             return ServerListNbt.read(path);
         } catch (IOException exception) {
-            log(chineseLabel + "无法解析，将先备份并使用可读取的条目继续: " + exception.getMessage(),
-                    englishLabel + " could not be parsed; it will be backed up and readable entries will be used: "
+            log("本地 servers.dat 无法解析；为保护玩家服务器，本次不会覆盖该文件: " + exception.getMessage(),
+                    "The local servers.dat could not be parsed; it will not be overwritten, protecting player servers: "
+                            + exception.getMessage());
+            throw new IOException("本地 servers.dat 无法安全解析，已保留原文件并阻止服务器列表同步", exception);
+        }
+    }
+
+    private ServerListNbt.Document readManagedState(Path path) {
+        if (!Files.isRegularFile(path)) {
+            if (Files.exists(path)) {
+                log("服务器列表管理台账不是普通文件，将进入保守模式且不删除任何既有条目: " + path,
+                        "The server-list ownership ledger is not a regular file; conservative mode will not delete "
+                                + "any existing entry: " + path);
+            }
+            return null;
+        }
+        try {
+            ServerListNbt.Document document = ServerListNbt.read(path);
+            ServerListNbt.validateManagedState(document);
+            return document;
+        } catch (IOException exception) {
+            log("服务器列表管理台账无法解析，将进入只保留/新增的安全模式: " + exception.getMessage(),
+                    "The server-list ownership ledger could not be parsed; safe retain/add-only mode is active: "
                             + exception.getMessage());
             return null;
         }
@@ -220,6 +263,7 @@ final class ServerListSyncEngine {
     private boolean isCurrentMergedState(
             Path local,
             Path cachedCloud,
+            Path managedState,
             ServerListManifest desired) throws IOException {
         if (!Files.isRegularFile(local)
                 || !Files.isRegularFile(cachedCloud)
@@ -227,9 +271,14 @@ final class ServerListSyncEngine {
             return false;
         }
         try {
-            return ServerListNbt.containsCurrentCloudEntries(
+            ServerListNbt.Document managed = readManagedState(managedState);
+            if (Files.exists(managedState) && managed == null) {
+                return false;
+            }
+            return ServerListNbt.isSynchronized(
                     ServerListNbt.read(cachedCloud),
-                    ServerListNbt.read(local));
+                    ServerListNbt.read(local),
+                    managed);
         } catch (IOException exception) {
             log("本地服务器列表需要重新合并: " + exception.getMessage(),
                     "The local server list must be merged again: " + exception.getMessage());
@@ -237,29 +286,58 @@ final class ServerListSyncEngine {
         }
     }
 
-    private void installMerged(Path local, Path merged, Path state) throws IOException {
-        boolean hadOriginal = Files.isRegularFile(local);
+    private void installMergedState(
+            Path local,
+            Path merged,
+            Path managedState,
+            Path nextManagedState,
+            Path state) throws IOException {
+        boolean localChanged = merged != null;
+        boolean hadOriginal = localChanged && Files.isRegularFile(local);
         Path backup = state.resolve("backups").resolve("server-list")
                 .resolve(BACKUP_TIME.format(LocalDateTime.now()) + "-" + UUID.randomUUID())
                 .resolve(ServerListManifest.FILE_NAME);
-        if (Files.exists(local) && !hadOriginal) {
+        if (localChanged && Files.exists(local) && !hadOriginal) {
             throw new IOException("servers.dat 被同名目录或非普通文件占用: " + local);
+        }
+        if (Files.exists(managedState) && !Files.isRegularFile(managedState)) {
+            throw new IOException("服务器列表管理台账被同名目录或非普通文件占用: " + managedState);
         }
         if (hadOriginal) {
             files.move(local, backup, false);
         }
+        boolean installedLocal = false;
         try {
-            files.move(merged, local, false);
+            if (localChanged) {
+                files.move(merged, local, false);
+                installedLocal = true;
+            }
+            files.move(nextManagedState, managedState, true);
         } catch (IOException failure) {
+            IOException rollbackFailure = null;
+            if (installedLocal && Files.exists(local)) {
+                try {
+                    files.deleteIfExists(local);
+                } catch (IOException rollback) {
+                    rollbackFailure = rollback;
+                }
+            }
             if (hadOriginal && Files.isRegularFile(backup) && !Files.exists(local)) {
                 try {
                     files.move(backup, local, false);
                 } catch (IOException rollback) {
-                    failure.addSuppressed(rollback);
-                    throw new IOException("服务器列表替换失败且自动回滚不完整，请检查 " + backup, failure);
+                    if (rollbackFailure == null) {
+                        rollbackFailure = rollback;
+                    } else {
+                        rollbackFailure.addSuppressed(rollback);
+                    }
                 }
             }
-            throw new IOException("服务器列表替换失败，已恢复原 servers.dat", failure);
+            if (rollbackFailure != null) {
+                failure.addSuppressed(rollbackFailure);
+                throw new IOException("服务器列表或管理台账写入失败且自动回滚不完整，请检查 " + backup, failure);
+            }
+            throw new IOException("服务器列表或管理台账写入失败，原 servers.dat 已恢复", failure);
         }
     }
 

@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
-$projectVersion = '1.9.1'
+$projectVersion = '1.9.2'
 $jarFileName = "MCModSync-$projectVersion.jar"
 $sourceZipFileName = "MCModSync-$projectVersion-source.zip"
 $fabricMinecraftTargets = @('1.21.1', '1.21.11')

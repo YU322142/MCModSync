@@ -3,7 +3,7 @@ loaderVersion="[1,)"
 license="MIT"
 [[mods]]
 modId="mcmodsync"
-version="1.9.1"
+version="1.9.2"
 displayName="MCModSync"
 authors="MCModSync Contributors"
 description='''Pre-launch synchronization for required and recommended Minecraft mods with MD5 and SHA256 verification. Supports Fabric and NeoForge clients.'''

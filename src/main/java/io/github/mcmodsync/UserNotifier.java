@@ -165,8 +165,8 @@ final class UserNotifier implements SyncObserver {
                 .replace("正在读取云端服务器列表 MD5 清单……", "Reading the cloud server-list MD5 catalog…")
                 .replace("服务器列表下载完成，正在解析 NBT 并合并玩家条目……",
                         "Server-list download complete; parsing NBT and merging player entries…")
-                .replace("服务器列表合并完成，正在备份并安全替换 servers.dat……",
-                        "Server-list merge complete; backing up and safely replacing servers.dat…")
+                .replace("服务器列表合并完成，正在保存管理台账并安全更新 servers.dat……",
+                        "Server-list merge complete; saving the ownership ledger and safely updating servers.dat…")
                 .replace("游戏进程已退出，正在读取云端清单……",
                         "The game process exited; reading the cloud catalog…");
     }
@@ -569,14 +569,16 @@ final class UserNotifier implements SyncObserver {
         String plan = text(
                 "检测到云端服务器列表 MD5 已变化。\n\n"
                         + "将自动下载并校验：" + fileName + "\n\n"
-                        + "云端维护的服务器条目会按新版本更新或移除。\n"
-                        + "玩家在多人游戏界面自行添加的服务器地址会原样保留。\n"
+                        + "只有 MCModSync 所有权台账确认的云端条目才会更新或移除。\n"
+                        + "玩家自行添加、同地址重复或无法确认所有权的条目都会原样保留。\n"
+                        + "现有条目保持原位置和相对顺序；新的云端服务器只追加到列表末尾。\n"
                         + "现有 servers.dat 会先保存到 .modsync/backups，再安全替换。\n\n"
                         + "下载内容只有通过 MD5 复核后才会提交，无需确认。",
                 "The cloud server-list MD5 changed.\n\n"
                         + "Download and verify automatically: " + fileName + "\n\n"
-                        + "Cloud-managed server entries are updated or removed.\n"
-                        + "Servers added by the player are retained.\n"
+                        + "Only cloud entries verified by the MCModSync ownership ledger may be updated or removed.\n"
+                        + "Player-added, duplicate-address, and ownership-ambiguous entries are retained unchanged.\n"
+                        + "Existing entries keep their positions and relative order; new cloud servers are appended.\n"
                         + "The existing servers.dat is backed up to .modsync/backups before replacement.\n\n"
                         + "The download is committed only after MD5 verification.");
         if (!dialogsAvailable()) {

@@ -73,6 +73,7 @@ public final class AllTests {
         testMissingLocalManifestAsksAboutEveryUnknownMod();
         testResourcePackMd5SyncAndClientPreservation();
         testBakaXLDualDirectoryResourcePackSync();
+        testServerListOwnershipLedgerAndOrderProtection();
         testBakaXLDualDirectoryServerListMerge();
         testVersionFilenameChangeIsAutomaticReplacement();
         testBakaXLDualDirectorySync();
@@ -1699,11 +1700,14 @@ public final class AllTests {
                 Path mods = Files.createDirectories(target.resolve("mods"));
                 Files.write(mods.resolve("managed.jar"), managedMod);
                 ServerListNbt.writeSimple(target.resolve("servers.dat"), List.of(
-                        new ServerListNbt.ServerInfo("本地旧名称", "managed.example.test"),
-                        new ServerListNbt.ServerInfo("本地待移除", "removed.example.test"),
+                        new ServerListNbt.ServerInfo("旧名称", "managed.example.test"),
+                        new ServerListNbt.ServerInfo("即将移除", "removed.example.test"),
                         new ServerListNbt.ServerInfo("玩家自己添加", "player-" + target.getParent().getFileName() + ".test")));
                 Path state = Files.createDirectories(target.resolve(".modsync"));
                 Files.copy(oldCloud, state.resolve("server-list-cloud.dat"));
+                ServerListNbt.write(
+                        state.resolve("server-list-managed-v1.dat"),
+                        serverListManagedDocument(oldCloud));
             }
 
             String modManifest = ModManifest.MAGIC + "\n"
@@ -1758,15 +1762,14 @@ public final class AllTests {
             check(completedProgress.get(), "服务器列表同步应计入总进度并最终达到 100%");
             for (Path target : List.of(persistent, runtime)) {
                 List<ServerListNbt.ServerInfo> entries = ServerListNbt.readServerInfo(target.resolve("servers.dat"));
-                check(entries.stream().anyMatch(entry -> entry.name().equals("云端新名称")
-                                && entry.address().equals("managed.example.test")),
-                        "云端管理的服务器应更新名称");
-                check(entries.stream().anyMatch(entry -> entry.address().equals("new.example.test")),
-                        "云端新增服务器应加入列表");
-                check(entries.stream().noneMatch(entry -> entry.address().equals("removed.example.test")),
-                        "云端移除服务器应从列表移除");
-                check(entries.stream().anyMatch(entry -> entry.address().startsWith("player-")),
-                        "玩家自行添加的服务器必须保留");
+                check(entries.equals(List.of(
+                                new ServerListNbt.ServerInfo("云端新名称", "managed.example.test"),
+                                new ServerListNbt.ServerInfo(
+                                        "玩家自己添加", "player-" + target.getParent().getFileName() + ".test"),
+                                new ServerListNbt.ServerInfo("云端新增", "new.example.test"))),
+                        "受管服务器应在原位置更新，移除项不应扰动玩家顺序，云端新增项应追加到末尾");
+                check(Files.isRegularFile(target.resolve(".modsync/server-list-managed-v1.dat")),
+                        "同步后应持久化服务器列表所有权台账");
                 try (var backups = Files.walk(target.resolve(".modsync/backups/server-list"))) {
                     check(backups.filter(Files::isRegularFile)
                                     .anyMatch(path -> path.getFileName().toString().equals("servers.dat")),
@@ -1791,6 +1794,11 @@ public final class AllTests {
                     "云端管理条目应恢复");
             check(repairedEntries.stream().anyMatch(entry -> entry.address().equals("late-player.test")),
                     "修复云端条目时仍应保留玩家后来添加的服务器");
+            check(repairedEntries.equals(List.of(
+                            new ServerListNbt.ServerInfo("玩家后来添加", "late-player.test"),
+                            new ServerListNbt.ServerInfo("云端新名称", "managed.example.test"),
+                            new ServerListNbt.ServerInfo("云端新增", "new.example.test"))),
+                    "恢复缺失受管条目时应保留玩家条目位置，并把恢复项追加到末尾");
             pass("BakaXL server list three-way merge preserves player entries");
         } finally {
             server.stop(0);
@@ -2643,6 +2651,158 @@ public final class AllTests {
     private void pass(String name) {
         passed++;
         System.out.println("PASS: " + name);
+    }
+
+    private void testServerListOwnershipLedgerAndOrderProtection() throws Exception {
+        Path root = Files.createTempDirectory("modsync-server-list-ownership-");
+        try {
+            ServerListNbt.Document initialCloud = serverListDocument(root.resolve("initial-cloud.dat"), List.of(
+                    new ServerListNbt.ServerInfo("云端同地址", "shared.example.test"),
+                    new ServerListNbt.ServerInfo("云端新增", "new.example.test")));
+            List<ServerListNbt.ServerInfo> playerEntries = List.of(
+                    new ServerListNbt.ServerInfo("玩家第一项", "first.example.test"),
+                    new ServerListNbt.ServerInfo("玩家同地址一", "shared.example.test"),
+                    new ServerListNbt.ServerInfo("玩家同地址二", "shared.example.test"),
+                    new ServerListNbt.ServerInfo("玩家最后一项", "last.example.test"));
+            ServerListNbt.Document legacyLocal = serverListDocument(root.resolve("legacy-local.dat"), playerEntries);
+
+            ServerListNbt.MergeResult migrated = ServerListNbt.merge(initialCloud, legacyLocal, null);
+            List<ServerListNbt.ServerInfo> migratedEntries = serverListInfo(
+                    root.resolve("migrated.dat"), migrated.merged());
+            check(migratedEntries.equals(List.of(
+                            playerEntries.get(0),
+                            playerEntries.get(1),
+                            playerEntries.get(2),
+                            playerEntries.get(3),
+                            new ServerListNbt.ServerInfo("云端新增", "new.example.test"))),
+                    "旧版升级时不得认领或去重玩家已有的同地址服务器，真正的新云端条目应追加到末尾");
+            check(serverListInfo(root.resolve("migrated-ledger.dat"), migrated.managedState()).equals(List.of(
+                            new ServerListNbt.ServerInfo("云端新增", "new.example.test"))),
+                    "首次建立所有权台账时只能记录本次实际添加的云端条目");
+            ServerListNbt.validateManagedState(migrated.managedState());
+            check(!initialCloud.rootName().equals(migrated.managedState().rootName()),
+                    "合法所有权台账必须使用区别于普通 servers.dat 的专用 root marker");
+            expectManagedStateValidationFailure(initialCloud);
+            check(ServerListNbt.isSynchronized(initialCloud, migrated.merged(), migrated.managedState()),
+                    "合并后的列表和所有权台账应被判定为已同步");
+
+            ServerListNbt.Document emptyCloud = serverListDocument(root.resolve("empty-cloud.dat"), List.of());
+            ServerListNbt.MergeResult removedNew = ServerListNbt.merge(
+                    emptyCloud, migrated.merged(), migrated.managedState());
+            check(serverListInfo(root.resolve("removed-new.dat"), removedNew.merged()).equals(playerEntries),
+                    "云端删除时只能删除台账内的受管条目，两个玩家同地址条目都必须保留");
+            check(serverListInfo(root.resolve("removed-new-ledger.dat"), removedNew.managedState()).isEmpty(),
+                    "已从云端删除的受管条目也应从所有权台账移除");
+
+            ServerListNbt.MergeResult missingLedgerRemoval = ServerListNbt.merge(
+                    emptyCloud, migrated.merged(), null);
+            check(serverListInfo(root.resolve("missing-ledger-removal.dat"), missingLedgerRemoval.merged())
+                            .equals(migratedEntries),
+                    "所有权台账缺失时，远端删除旧地址也不得删除任何现有本地条目");
+            ServerListNbt.MergeResult corruptLedgerRemoval = ServerListNbt.merge(
+                    emptyCloud, migrated.merged(), null);
+            check(serverListInfo(root.resolve("corrupt-ledger-removal.dat"), corruptLedgerRemoval.merged())
+                            .equals(migratedEntries),
+                    "所有权台账 marker 损坏并进入保守模式时，远端删除旧地址不得删除本地条目");
+
+            ServerListNbt.Document oldManaged = serverListManagedDocument(
+                    root.resolve("old-managed-source.dat"), List.of(
+                            new ServerListNbt.ServerInfo("旧 A", "a.example.test"),
+                            new ServerListNbt.ServerInfo("旧 B", "b.example.test")));
+            ServerListNbt.Document orderedLocal = serverListDocument(root.resolve("ordered-local.dat"), List.of(
+                    new ServerListNbt.ServerInfo("玩家头部", "player-head.example.test"),
+                    new ServerListNbt.ServerInfo("旧 B", "b.example.test"),
+                    new ServerListNbt.ServerInfo("玩家中部", "player-middle.example.test"),
+                    new ServerListNbt.ServerInfo("旧 A", "a.example.test")));
+            ServerListNbt.Document updatedCloud = serverListDocument(root.resolve("updated-cloud.dat"), List.of(
+                    new ServerListNbt.ServerInfo("新 A", "a.example.test"),
+                    new ServerListNbt.ServerInfo("新 B", "b.example.test"),
+                    new ServerListNbt.ServerInfo("新 C", "c.example.test")));
+            List<ServerListNbt.ServerInfo> expectedUpdatedOrder = List.of(
+                    new ServerListNbt.ServerInfo("玩家头部", "player-head.example.test"),
+                    new ServerListNbt.ServerInfo("新 B", "b.example.test"),
+                    new ServerListNbt.ServerInfo("玩家中部", "player-middle.example.test"),
+                    new ServerListNbt.ServerInfo("新 A", "a.example.test"),
+                    new ServerListNbt.ServerInfo("新 C", "c.example.test"));
+            ServerListNbt.MergeResult updated = ServerListNbt.merge(updatedCloud, orderedLocal, oldManaged);
+            check(serverListInfo(root.resolve("updated.dat"), updated.merged()).equals(expectedUpdatedOrder),
+                    "受管条目必须在本地原位置更新，玩家条目顺序不变，新云端条目追加到末尾");
+
+            ServerListNbt.Document reorderedCloud = serverListDocument(root.resolve("reordered-cloud.dat"), List.of(
+                    new ServerListNbt.ServerInfo("新 C", "c.example.test"),
+                    new ServerListNbt.ServerInfo("新 A", "a.example.test"),
+                    new ServerListNbt.ServerInfo("新 B", "b.example.test")));
+            ServerListNbt.MergeResult reordered = ServerListNbt.merge(
+                    reorderedCloud, updated.merged(), updated.managedState());
+            check(serverListInfo(root.resolve("reordered.dat"), reordered.merged()).equals(expectedUpdatedOrder),
+                    "只改变云端清单顺序不得改变玩家当前服务器列表顺序");
+
+            ServerListNbt.Document removedBCloud = serverListDocument(root.resolve("removed-b-cloud.dat"), List.of(
+                    new ServerListNbt.ServerInfo("新 A", "a.example.test"),
+                    new ServerListNbt.ServerInfo("新 C", "c.example.test")));
+            ServerListNbt.MergeResult removedB = ServerListNbt.merge(
+                    removedBCloud, reordered.merged(), reordered.managedState());
+            check(serverListInfo(root.resolve("removed-b.dat"), removedB.merged()).equals(List.of(
+                            new ServerListNbt.ServerInfo("玩家头部", "player-head.example.test"),
+                            new ServerListNbt.ServerInfo("玩家中部", "player-middle.example.test"),
+                            new ServerListNbt.ServerInfo("新 A", "a.example.test"),
+                            new ServerListNbt.ServerInfo("新 C", "c.example.test"))),
+                    "删除中间的受管条目时不得重排剩余玩家或受管条目");
+
+            ServerListNbt.Document ambiguousLedger = serverListManagedDocument(
+                    root.resolve("ambiguous-ledger-source.dat"), List.of(
+                            new ServerListNbt.ServerInfo("受管 X", "x.example.test")));
+            ServerListNbt.Document ambiguousLocal = serverListDocument(root.resolve("ambiguous-local.dat"), List.of(
+                    new ServerListNbt.ServerInfo("受管 X", "x.example.test"),
+                    new ServerListNbt.ServerInfo("受管 X", "x.example.test"),
+                    new ServerListNbt.ServerInfo("玩家 Y", "y.example.test")));
+            ServerListNbt.MergeResult ambiguous = ServerListNbt.merge(
+                    emptyCloud, ambiguousLocal, ambiguousLedger);
+            check(serverListInfo(root.resolve("ambiguous.dat"), ambiguous.merged()).equals(List.of(
+                            new ServerListNbt.ServerInfo("受管 X", "x.example.test"),
+                            new ServerListNbt.ServerInfo("受管 X", "x.example.test"),
+                            new ServerListNbt.ServerInfo("玩家 Y", "y.example.test"))),
+                    "所有权无法唯一确认时必须保守保留全部本地条目");
+            check(serverListInfo(root.resolve("ambiguous-next-ledger.dat"), ambiguous.managedState()).isEmpty(),
+                    "歧义条目不得继续保留受管身份");
+            check(!ambiguous.notices().isEmpty(), "所有权歧义应产生可记录的诊断信息");
+            pass("server list ownership ledger protects player order and entries");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private static ServerListNbt.Document serverListDocument(
+            Path path,
+            List<ServerListNbt.ServerInfo> servers) throws IOException {
+        ServerListNbt.writeSimple(path, servers);
+        return ServerListNbt.read(path);
+    }
+
+    private static ServerListNbt.Document serverListManagedDocument(Path source) throws IOException {
+        ServerListNbt.Document cloud = ServerListNbt.read(source);
+        return ServerListNbt.merge(cloud, null, null).managedState();
+    }
+
+    private static ServerListNbt.Document serverListManagedDocument(
+            Path source,
+            List<ServerListNbt.ServerInfo> servers) throws IOException {
+        return ServerListNbt.merge(serverListDocument(source, servers), null, null).managedState();
+    }
+
+    private static List<ServerListNbt.ServerInfo> serverListInfo(
+            Path path,
+            ServerListNbt.Document document) throws IOException {
+        ServerListNbt.write(path, document);
+        return ServerListNbt.readServerInfo(path);
+    }
+
+    private static void expectManagedStateValidationFailure(ServerListNbt.Document document) throws Exception {
+        try {
+            ServerListNbt.validateManagedState(document);
+            throw new AssertionError("普通 servers.dat 不得通过所有权台账 root marker 校验");
+        } catch (IOException expected) {
+        }
     }
 
     private static void writeNeoForgeJar(Path output, String modId, String marker) throws IOException {

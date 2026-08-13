@@ -16,11 +16,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 final class ServerListNbt {
+    private static final String MANAGED_STATE_ROOT = "MCModSyncManagedServersV1";
     private static final byte TAG_END = 0;
     private static final byte TAG_BYTE = 1;
     private static final byte TAG_SHORT = 2;
@@ -79,47 +81,138 @@ final class ServerListNbt {
         }
     }
 
-    static Document merge(Document cloud, Document local, Document previousCloud) throws IOException {
+    static MergeResult merge(Document cloud, Document local, Document managedState) throws IOException {
+        if (managedState != null) {
+            validateManagedState(managedState);
+        }
         List<Tag> desiredEntries = serverTags(cloud);
         List<Tag> localEntries = local == null ? List.of() : serverTags(local);
-        List<Tag> previousEntries = previousCloud == null ? List.of() : serverTags(previousCloud);
+        List<Tag> managedEntries = managedState == null ? List.of() : serverTags(managedState);
 
         LinkedHashMap<String, Tag> desiredByAddress = indexedByAddress(desiredEntries, "云端");
-        Set<String> previousAddresses = indexedByAddress(previousEntries, "上次云端").keySet();
-        List<Tag> merged = new ArrayList<>(desiredEntries);
-        Set<String> included = new LinkedHashSet<>(desiredByAddress.keySet());
-        for (Tag localEntry : localEntries) {
-            String address = address(localEntry);
-            if (desiredByAddress.containsKey(address) || previousAddresses.contains(address)) {
+        Map<Integer, Tag> replacements = new LinkedHashMap<>();
+        Set<Integer> removals = new LinkedHashSet<>();
+        Set<Integer> claimedLocalIndexes = new LinkedHashSet<>();
+        Set<String> handledRemoteAddresses = new LinkedHashSet<>();
+        List<Tag> nextManagedEntries = new ArrayList<>();
+        List<MergeNotice> notices = new ArrayList<>();
+
+        LinkedHashMap<String, List<Tag>> managedByAddress = new LinkedHashMap<>();
+        for (Tag managedEntry : managedEntries) {
+            String managedAddress;
+            try {
+                managedAddress = address(managedEntry);
+            } catch (IOException exception) {
+                notices.add(new MergeNotice(
+                        "服务器列表管理台账包含无法识别的条目，已忽略该条目的管理权",
+                        "The server-list ownership ledger contains an unrecognized entry; its ownership was ignored"));
                 continue;
             }
-            if (included.add(address)) {
-                merged.add(localEntry);
+            managedByAddress.computeIfAbsent(managedAddress, ignored -> new ArrayList<>()).add(managedEntry);
+        }
+
+        for (Map.Entry<String, List<Tag>> managedGroup : managedByAddress.entrySet()) {
+            String managedAddress = managedGroup.getKey();
+            if (managedGroup.getValue().size() != 1) {
+                notices.add(new MergeNotice(
+                        "服务器 " + managedAddress + " 在管理台账中不唯一，已保留本地条目且不作删除或覆盖",
+                        "Server " + managedAddress
+                                + " is not unique in the ownership ledger; local entries were retained without deletion or overwrite"));
+                continue;
             }
+            Tag managedEntry = managedGroup.getValue().get(0);
+            List<Integer> exactMatches = new ArrayList<>();
+            for (int index = 0; index < localEntries.size(); index++) {
+                if (!claimedLocalIndexes.contains(index) && tagsEqual(managedEntry, localEntries.get(index))) {
+                    exactMatches.add(index);
+                }
+            }
+            if (exactMatches.size() != 1) {
+                notices.add(new MergeNotice(
+                        "服务器 " + managedAddress + " 的管理身份无法唯一确认，已保留本地条目且不作删除或覆盖",
+                        "Ownership of server " + managedAddress
+                                + " could not be uniquely verified; local entries were retained without deletion or overwrite"));
+                continue;
+            }
+
+            int localIndex = exactMatches.get(0);
+            claimedLocalIndexes.add(localIndex);
+            Tag desiredEntry = desiredByAddress.get(managedAddress);
+            if (desiredEntry == null) {
+                removals.add(localIndex);
+            } else {
+                replacements.put(localIndex, desiredEntry);
+                handledRemoteAddresses.add(managedAddress);
+                nextManagedEntries.add(desiredEntry);
+            }
+        }
+
+        List<Tag> merged = new ArrayList<>();
+        for (int index = 0; index < localEntries.size(); index++) {
+            if (removals.contains(index)) {
+                continue;
+            }
+            merged.add(replacements.getOrDefault(index, localEntries.get(index)));
+        }
+
+        Set<String> retainedAddresses = new LinkedHashSet<>();
+        for (Tag entry : merged) {
+            try {
+                retainedAddresses.add(address(entry));
+            } catch (IOException exception) {
+                notices.add(new MergeNotice(
+                        "本地服务器列表包含无法识别的玩家条目，已原样保留",
+                        "The local server list contains an unrecognized player entry; it was retained unchanged"));
+            }
+        }
+        for (Tag desiredEntry : desiredEntries) {
+            String desiredAddress = address(desiredEntry);
+            if (handledRemoteAddresses.contains(desiredAddress)) {
+                continue;
+            }
+            if (retainedAddresses.contains(desiredAddress)) {
+                notices.add(new MergeNotice(
+                        "云端服务器 " + desiredAddress + " 已存在于玩家列表中；保留玩家条目且不取得管理权",
+                        "Cloud server " + desiredAddress
+                                + " already exists in the player's list; the player entry was retained and not claimed"));
+                continue;
+            }
+            merged.add(desiredEntry);
+            retainedAddresses.add(desiredAddress);
+            nextManagedEntries.add(desiredEntry);
         }
 
         Compound root = new Compound();
-        root.putAll(cloud.root());
+        Document rootSource = local != null ? local : cloud;
+        root.putAll(rootSource.root());
         root.put("servers", new Tag(TAG_LIST, new ListValue(TAG_COMPOUND, List.copyOf(merged))));
         boolean compressed = local != null ? local.compressed() : cloud.compressed();
-        return new Document(cloud.rootName(), root, compressed);
+        Document mergedDocument = new Document(rootSource.rootName(), root, compressed);
+        return new MergeResult(mergedDocument, managedDocument(nextManagedEntries), List.copyOf(notices));
     }
 
-    static boolean containsCurrentCloudEntries(Document cloud, Document local) throws IOException {
-        LinkedHashMap<String, Tag> desiredByAddress = indexedByAddress(serverTags(cloud), "云端");
-        LinkedHashMap<String, Tag> localByAddress = indexedByAddress(serverTags(local), "本地");
-        for (Map.Entry<String, Tag> desired : desiredByAddress.entrySet()) {
-            Tag localEntry = localByAddress.get(desired.getKey());
-            if (localEntry == null) {
-                return false;
-            }
-            String desiredName = stringValue(compound(desired.getValue(), "云端服务器条目"), "name");
-            String localName = stringValue(compound(localEntry, "本地服务器条目"), "name");
-            if (!desiredName.equals(localName)) {
-                return false;
-            }
+    static boolean isSynchronized(Document cloud, Document local, Document managedState) throws IOException {
+        if (local == null) {
+            return false;
         }
-        return true;
+        MergeResult planned = merge(cloud, local, managedState);
+        return documentsEqual(local, planned.merged())
+                && managedStatesEqual(managedState, planned.managedState());
+    }
+
+    static boolean documentsEqual(Document first, Document second) {
+        return first != null
+                && second != null
+                && first.compressed() == second.compressed()
+                && first.rootName().equals(second.rootName())
+                && compoundsEqual(first.root(), second.root());
+    }
+
+    static void validateManagedState(Document managedState) throws IOException {
+        if (!MANAGED_STATE_ROOT.equals(managedState.rootName()) || managedState.compressed()) {
+            throw new IOException("服务器列表管理台账缺少受支持的 v1 标记");
+        }
+        serverTags(managedState);
     }
 
     static void writeSimple(Path path, List<ServerInfo> servers) throws IOException {
@@ -153,6 +246,69 @@ final class ServerListNbt {
             }
         }
         return result;
+    }
+
+    private static Document managedDocument(List<Tag> entries) {
+        Compound root = new Compound();
+        root.put("servers", new Tag(TAG_LIST, new ListValue(TAG_COMPOUND, List.copyOf(entries))));
+        return new Document(MANAGED_STATE_ROOT, root, false);
+    }
+
+    private static boolean managedStatesEqual(Document first, Document second) throws IOException {
+        List<Tag> firstEntries = first == null ? List.of() : serverTags(first);
+        List<Tag> secondEntries = second == null ? List.of() : serverTags(second);
+        if (firstEntries.size() != secondEntries.size()) {
+            return false;
+        }
+        for (int index = 0; index < firstEntries.size(); index++) {
+            if (!tagsEqual(firstEntries.get(index), secondEntries.get(index))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean compoundsEqual(Compound first, Compound second) {
+        if (!first.keySet().equals(second.keySet())) {
+            return false;
+        }
+        for (String key : first.keySet()) {
+            if (!tagsEqual(first.get(key), second.get(key))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean tagsEqual(Tag first, Tag second) {
+        if (first == second) {
+            return true;
+        }
+        if (first == null || second == null || first.type() != second.type()) {
+            return false;
+        }
+        return switch (first.type()) {
+            case TAG_BYTE_ARRAY -> Arrays.equals((byte[]) first.value(), (byte[]) second.value());
+            case TAG_INT_ARRAY -> Arrays.equals((int[]) first.value(), (int[]) second.value());
+            case TAG_LONG_ARRAY -> Arrays.equals((long[]) first.value(), (long[]) second.value());
+            case TAG_LIST -> {
+                ListValue left = (ListValue) first.value();
+                ListValue right = (ListValue) second.value();
+                if (left.elementType() != right.elementType() || left.values().size() != right.values().size()) {
+                    yield false;
+                }
+                boolean equal = true;
+                for (int index = 0; index < left.values().size(); index++) {
+                    if (!tagsEqual(left.values().get(index), right.values().get(index))) {
+                        equal = false;
+                        break;
+                    }
+                }
+                yield equal;
+            }
+            case TAG_COMPOUND -> compoundsEqual((Compound) first.value(), (Compound) second.value());
+            default -> Objects.equals(first.value(), second.value());
+        };
     }
 
     private static String address(Tag entry) throws IOException {
@@ -338,6 +494,12 @@ final class ServerListNbt {
     }
 
     record Document(String rootName, Compound root, boolean compressed) {
+    }
+
+    record MergeResult(Document merged, Document managedState, List<MergeNotice> notices) {
+    }
+
+    record MergeNotice(String chinese, String english) {
     }
 
     record ServerInfo(String name, String address) {
