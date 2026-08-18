@@ -114,25 +114,14 @@ public final class PortableUpdateHelper {
         if (!languageOverride.isBlank()) {
             command.add("-Dmodsync.language=" + languageOverride);
         }
-        if (System.getProperty("os.name", "").toLowerCase().contains("windows")) {
-            command.add("-Djava.awt.headless=false");
-        }
-        if (Boolean.getBoolean("modsync.disableDialogs")) {
-            command.add("-Dmodsync.disableDialogs=true");
-        }
-        if (Boolean.getBoolean("modsync.forceHeadless")) {
-            command.add("-Dmodsync.forceHeadless=true");
-        }
-        if (Boolean.getBoolean("modsync.forceMobile")) {
-            command.add("-Dmodsync.forceMobile=true");
-        }
         RuntimeEnvironment parentEnvironment = RuntimeEnvironment.detect();
-        if (parentEnvironment.mobile() && !Boolean.getBoolean("modsync.forceMobile")) {
-            command.add("-Dmodsync.forceMobile=true");
-        }
-        if (!parentEnvironment.dialogsUsable() && !Boolean.getBoolean("modsync.disableDialogs")) {
-            command.add("-Dmodsync.disableDialogs=true");
-        }
+        command.addAll(helperUiArguments(
+                System.getProperty("os.name", "").toLowerCase().contains("windows"),
+                Boolean.getBoolean("modsync.disableDialogs"),
+                Boolean.getBoolean("modsync.forceHeadless"),
+                Boolean.getBoolean("modsync.forceMobile"),
+                parentEnvironment.mobile(),
+                parentEnvironment.cacioAwt()));
         // -jar avoids the Windows class-path parser entirely. In particular,
         // spaces, non-ASCII characters and ';' in an instance path can no
         // longer split or corrupt the helper class path.
@@ -167,6 +156,40 @@ public final class PortableUpdateHelper {
                 "更新辅助进程已确认可用，父进程现在可以正常退出，PID=" + process.pid(),
                 "Update helper confirmed ready; the parent can now exit normally, PID=" + process.pid()));
         return true;
+    }
+
+    static List<String> helperUiArguments(
+            boolean windows,
+            boolean disableDialogs,
+            boolean forceHeadless,
+            boolean forceMobile,
+            boolean parentMobile,
+            boolean parentCacioAwt) {
+        List<String> arguments = new ArrayList<>();
+        boolean desktopDialogProbe = !disableDialogs
+                && !forceHeadless
+                && !forceMobile
+                && !parentMobile
+                && !parentCacioAwt;
+        if (windows || desktopDialogProbe) {
+            // NeoForge/Prism may mark the loader JVM headless while the
+            // independent helper can still create normal Swing windows. On
+            // Linux this also overrides JAVA_TOOL_OPTIONS/_JAVA_OPTIONS when
+            // the launcher injected a stale -Djava.awt.headless=true flag.
+            arguments.add("-Djava.awt.headless=false");
+        }
+        if (disableDialogs || (parentCacioAwt && !parentMobile)) {
+            arguments.add("-Dmodsync.disableDialogs=true");
+        }
+        if (forceHeadless) {
+            arguments.add("-Dmodsync.forceHeadless=true");
+        }
+        if (forceMobile || parentMobile) {
+            arguments.add("-Dmodsync.forceMobile=true");
+        }
+        // Do not propagate a generic parent dialogsUsable/headless result.
+        // The helper is a fresh JVM and must probe its own graphics environment.
+        return List.copyOf(arguments);
     }
 
     private static Path prepareHelperRuntimeCopy(

@@ -26,6 +26,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class CatalogEditorDialog {
+    static final int DEFAULT_EDITOR_WIDTH = 1_650;
+    static final int DEFAULT_EDITOR_HEIGHT = 680;
     static final int FILE_COLUMN = 0;
     static final int REQUIRED_COLUMN = 1;
     static final int RECOMMENDED_COLUMN = 2;
@@ -108,7 +110,7 @@ final class CatalogEditorDialog {
         dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         dialog.add(heading, BorderLayout.NORTH);
         JScrollPane scroll = new JScrollPane(table);
-        scroll.setPreferredSize(new Dimension(1_450, 620));
+        scroll.setPreferredSize(new Dimension(DEFAULT_EDITOR_WIDTH, DEFAULT_EDITOR_HEIGHT));
         dialog.add(scroll, BorderLayout.CENTER);
         dialog.add(actions, BorderLayout.SOUTH);
         dialog.pack();

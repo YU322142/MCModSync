@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -46,6 +47,7 @@ public final class AllTests {
         testPublisherContinuesPreviousCatalog();
         testManagedClientConfigBootstrapAndCatalog();
         testRemoteCatalogMaintainsClientConfig();
+        testPersistentLocalV4CatalogCopy();
         testFileSizeLimitDefaultsToUnlimitedAndStaysLocal();
         testLegacyUpgradeManifestFor16And17();
         testCatalogTypeCheckboxesAreMutuallyExclusive();
@@ -67,9 +69,10 @@ public final class AllTests {
         testUnquotedGameDirectoryWithSpacesCanBeParsed();
         testInstanceGuard();
         testRecentHelperRuntimeCopyIsNotDeleted();
+        testHelperLaunchDialogPolicy();
         testFailedHelperHandshakeTerminatesChild();
         testRedirectDownloadStrictSyncAndBackup();
-        testParallelModDownloadFallsBackToSingleThread();
+        testParallelModDownloadRetriesOnlyFailedTask();
         testMissingLocalManifestAsksAboutEveryUnknownMod();
         testResourcePackMd5SyncAndClientPreservation();
         testBakaXLDualDirectoryResourcePackSync();
@@ -300,7 +303,7 @@ public final class AllTests {
         pass("permanent v2 gateway contains upgrade components only");
     }
 
-    private void testPublisherContinuesPreviousCatalog() {
+    private void testPublisherContinuesPreviousCatalog() throws Exception {
         ManifestEntry oldSodium = new ManifestEntry(
                 "a".repeat(64),
                 "b".repeat(32),
@@ -350,7 +353,8 @@ public final class AllTests {
         ModManifest scanned = ModManifest.fromEntries("fresh-scan", List.of(currentSodium, added));
 
         ModManifest merged = PublisherMain.mergeCatalog(scanned, previous);
-        check(merged.catalogVersion().equals("published-catalog-7"), "继续编辑应保留上次清单版本供用户修改");
+        check(merged.catalogVersion().equals("fresh-scan"),
+                "继续编辑只继承条目元数据，清单版本必须保留本次扫描生成的当前时间版本");
         check(merged.entries().size() == 2, "继续编辑的条目集合必须以当前 mods 扫描结果为准");
         ManifestEntry sodium = merged.entries().get(0);
         check(sodium.fileName().equals("sodium-new.jar") && sodium.version().equals("2.0"),
@@ -365,6 +369,26 @@ public final class AllTests {
                         && sodium.descriptionEn().equals("Sodium rendering optimization"),
                 "继续编辑应保留上次维护的显示名称和双语描述");
         check(merged.entries().get(1).modId().equals("new_mod"), "当前目录中的新增 Mod 应加入清单");
+
+        Path modsDirectory = Files.createTempDirectory("modsync-publisher-auto-previous-");
+        try {
+            check(PublisherMain.automaticallyMatchedPreviousCatalog(modsDirectory).isEmpty(),
+                    "mods 目录没有 mods-v4.txt 时不得误匹配其他文件");
+            Path localCatalog = Files.writeString(
+                    modsDirectory.resolve(ManagedClientConfig.MANIFEST_FILE_NAME),
+                    previous.serialize(),
+                    StandardCharsets.UTF_8);
+            check(PublisherMain.automaticallyMatchedPreviousCatalog(modsDirectory)
+                            .orElseThrow().equals(localCatalog.toAbsolutePath().normalize()),
+                    "应自动匹配所选 mods 目录中的 mods-v4.txt");
+        } finally {
+            deleteTree(modsDirectory);
+        }
+        check(PublisherMain.LOAD_PREVIOUS_CATALOG_BY_DEFAULT,
+                "独立发布器应默认勾选读取上次清单");
+        check(PublisherMain.PUBLISHER_WINDOW_WIDTH >= 1_000
+                        && CatalogEditorDialog.DEFAULT_EDITOR_WIDTH >= 1_600,
+                "独立发布器和清单编辑器的默认宽度应加宽");
         pass("publisher continues from a previous catalog after scanning mods");
     }
 
@@ -535,6 +559,100 @@ public final class AllTests {
         }
     }
 
+    private void testPersistentLocalV4CatalogCopy() throws Exception {
+        Path root = Files.createTempDirectory("modsync-persistent-v4-copy-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        AtomicInteger catalogMode = new AtomicInteger();
+        try {
+            Path serverFiles = Files.createDirectories(root.resolve("server-files"));
+            Path servedJar = serverFiles.resolve("persistent.jar");
+            writeFabricJar(servedJar, "persistent_mod", "1.0");
+            byte[] jarBytes = Files.readAllBytes(servedJar);
+            ManifestEntry entry = new ManifestEntry(
+                    Hashing.sha256(jarBytes),
+                    Hashing.md5(jarBytes),
+                    "persistent_mod",
+                    "persistent.jar",
+                    ModKind.REQUIRED,
+                    Set.of(),
+                    "Persistent Test Mod",
+                    "1.0",
+                    "\u6301\u4e45\u5316\u6d4b\u8bd5",
+                    "Persistence test");
+            String canonicalCatalog = ModManifest.fromEntries("persistent-copy-1", List.of(entry)).serialize();
+            String exactCatalog = canonicalCatalog
+                    .replace(
+                            ModManifest.MAGIC_V4 + "\n",
+                            ModManifest.MAGIC_V4
+                                    + "\n# opaque-server-note=  \u4fdd\u7559\u539f\u6587\u4e0e\u7a7a\u683c  \n")
+                    .replace("\n", "\r\n");
+            byte[] exactCatalogBytes = exactCatalog.getBytes(StandardCharsets.UTF_8);
+
+            server.createContext("/base/mods-v4.txt", exchange -> {
+                int mode = catalogMode.get();
+                if (mode == 1) {
+                    respond(exchange, 200, "<html>invalid catalog</html>".getBytes(StandardCharsets.UTF_8), null);
+                } else if (mode == 2) {
+                    respond(exchange, 503, "temporarily unavailable".getBytes(StandardCharsets.UTF_8), null);
+                } else {
+                    respond(exchange, 200, exactCatalogBytes, null);
+                }
+            });
+            server.createContext("/base/persistent.jar", exchange -> respond(exchange, 200, jarBytes, null));
+            server.start();
+
+            URI catalogUri = URI.create(
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods-v4.txt");
+            ModSyncConfig config = config(root, catalogUri, true, true);
+            SyncResult first = new ModSyncEngine(config, message -> { }).synchronize();
+            check(first.status() == SyncResult.Status.UPDATED,
+                    "The first successful sync should download the managed JAR");
+
+            Path mods = root.resolve("mods");
+            Path localCatalog = mods.resolve(ManagedClientConfig.MANIFEST_FILE_NAME);
+            check(Files.isRegularFile(localCatalog),
+                    "A successful sync must retain mods/mods-v4.txt");
+            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
+                    "The local mods-v4.txt must preserve the exact validated remote text, including CRLF/comments");
+
+            String localSnapshot = Files.readString(mods.resolve("mods.txt"), StandardCharsets.UTF_8);
+            check(!localSnapshot.contains(ManagedClientConfig.MANIFEST_FILE_NAME),
+                    "mods-v4.txt must never be recorded as an installed mod in mods.txt");
+            ModManifest scanned = ModManifest.scan(mods);
+            check(scanned.entries().size() == 1
+                            && scanned.entries().get(0).fileName().equals("persistent.jar"),
+                    "JAR scanning must ignore the persistent mods-v4.txt copy");
+
+            Files.delete(localCatalog);
+            SyncResult unchanged = new ModSyncEngine(config, message -> { }).synchronize();
+            check(unchanged.status() == SyncResult.Status.UNCHANGED,
+                    "A no-change sync should remain unchanged when only mods-v4.txt was deleted");
+            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
+                    "A no-change sync must recreate a deleted mods-v4.txt from the validated remote catalog");
+
+            Files.delete(localCatalog);
+            SyncProbeResult probe = new ModSyncEngine(config, message -> { }).probeWithoutJarChanges();
+            check(probe.status() == SyncProbeResult.Status.UP_TO_DATE,
+                    "The portable read-only probe should recognize an unchanged installation");
+            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
+                    "An UP_TO_DATE probe must recreate the deleted persistent catalog copy");
+
+            catalogMode.set(1);
+            expectIOException(() -> new ModSyncEngine(config, message -> { }).synchronize());
+            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
+                    "An invalid remote catalog must not overwrite the last valid mods-v4.txt");
+
+            catalogMode.set(2);
+            expectIOException(() -> new ModSyncEngine(config, message -> { }).synchronize());
+            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
+                    "An unavailable remote catalog must not overwrite the last valid mods-v4.txt");
+            pass("persistent raw cloud catalog copy survives deletion and remote failures");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
     private void testFileSizeLimitDefaultsToUnlimitedAndStaysLocal() throws Exception {
         Path root = Files.createTempDirectory("modsync-unlimited-file-size-");
         try {
@@ -630,6 +748,9 @@ public final class AllTests {
             Files.writeString(root.resolve("modsync.properties"), "language=zh_cn\n", StandardCharsets.UTF_8);
             check(DisplayLanguage.detect(root) == DisplayLanguage.ZH_CN,
                     "modsync.properties 应覆盖系统语言");
+            Files.writeString(root.resolve("modsync.properties"), "language=\\uZZZZ\n", StandardCharsets.UTF_8);
+            check(DisplayLanguage.detect(root) == DisplayLanguage.ZH_CN,
+                    "损坏的 Java Properties 转义不应让同步窗口语言检测抛异常或改变当前系统语言");
             System.setProperty("modsync.language", "en_us");
             check(DisplayLanguage.detect(root) == DisplayLanguage.EN_US,
                     "系统属性应覆盖配置文件语言");
@@ -714,6 +835,58 @@ public final class AllTests {
         } finally {
             deleteTree(root);
         }
+    }
+
+    private void testHelperLaunchDialogPolicy() {
+        List<String> neoForgeHeadlessDesktop = PortableUpdateHelper.helperUiArguments(
+                true, false, false, false, false, false);
+        check(neoForgeHeadlessDesktop.contains("-Djava.awt.headless=false"),
+                "Windows helper 应在独立 JVM 中重新启用 AWT");
+        check(!neoForgeHeadlessDesktop.contains("-Dmodsync.disableDialogs=true"),
+                "NeoForge 父 JVM headless 不得自动禁用桌面 helper 窗口");
+        check(!neoForgeHeadlessDesktop.contains("-Dmodsync.forceHeadless=true"),
+                "未显式 forceHeadless 时不得向 helper 添加该参数");
+        check(!neoForgeHeadlessDesktop.contains("-Dmodsync.forceMobile=true"),
+                "桌面 helper 不得被误标记为手机端");
+
+        List<String> explicitlyDisabled = PortableUpdateHelper.helperUiArguments(
+                true, true, false, false, false, false);
+        check(explicitlyDisabled.contains("-Dmodsync.disableDialogs=true"),
+                "用户显式禁用窗口时必须继续传递给 helper");
+
+        List<String> explicitlyHeadless = PortableUpdateHelper.helperUiArguments(
+                true, false, true, false, false, false);
+        check(explicitlyHeadless.contains("-Dmodsync.forceHeadless=true"),
+                "用户显式强制无界面时必须继续传递给 helper");
+
+        List<String> detectedMobile = PortableUpdateHelper.helperUiArguments(
+                false, false, false, false, true, false);
+        check(detectedMobile.contains("-Dmodsync.forceMobile=true"),
+                "识别到支持的手机启动器时 helper 必须保持手机端模式");
+        check(!detectedMobile.contains("-Dmodsync.disableDialogs=true"),
+                "手机端应由 forceMobile 禁窗，不应误写通用 disableDialogs");
+
+        List<String> cacioDesktop = PortableUpdateHelper.helperUiArguments(
+                false, false, false, false, false, true);
+        check(cacioDesktop.contains("-Dmodsync.disableDialogs=true"),
+                "非白名单 Cacio 环境仍应避免启动不可靠的独立 Swing 窗口");
+
+        List<String> linuxDesktop = PortableUpdateHelper.helperUiArguments(
+                false, false, false, false, false, false);
+        check(linuxDesktop.contains("-Djava.awt.headless=false"),
+                "Linux 桌面 helper 应在独立 JVM 中重新启用 AWT，避免继承父 JVM 的过时 headless 标记");
+
+        for (List<String> arguments : List.of(
+                neoForgeHeadlessDesktop,
+                explicitlyDisabled,
+                explicitlyHeadless,
+                detectedMobile,
+                cacioDesktop,
+                linuxDesktop)) {
+            check(arguments.stream().distinct().count() == arguments.size(),
+                    "helper UI 参数不得重复: " + arguments);
+        }
+        pass("helper dialog policy retries desktop Swing without changing mobile/headless overrides");
     }
 
     private void testRestartRequiredPromptLocalizationAndPolicy() {
@@ -1352,7 +1525,24 @@ public final class AllTests {
         }
     }
 
-    private void testParallelModDownloadFallsBackToSingleThread() throws Exception {
+    private void testParallelModDownloadRetriesOnlyFailedTask() throws Exception {
+        check(ParallelDownloadRunner.threadCount(20) == 8,
+                "并行下载默认线程上限应为 8");
+        AtomicInteger retryAttempts = new AtomicInteger();
+        AtomicReference<Thread> retryThread = new AtomicReference<>();
+        ParallelDownloadRunner.run(2, index -> {
+            if (index != 0) {
+                return;
+            }
+            Thread current = Thread.currentThread();
+            Thread original = retryThread.updateAndGet(existing -> existing == null ? current : existing);
+            check(original == current, "失败任务必须在原工作线程内重试");
+            if (retryAttempts.incrementAndGet() == 1) {
+                throw new IOException("expected first-attempt failure");
+            }
+        });
+        check(retryAttempts.get() == 2, "失败任务应独立重试一次并成功");
+
         Path root = Files.createTempDirectory("modsync-parallel-fallback-");
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         ExecutorService serverExecutor = Executors.newCachedThreadPool();
@@ -1417,12 +1607,12 @@ public final class AllTests {
             server.start();
 
             Files.createDirectories(root.resolve("mods"));
-            AtomicBoolean fallbackShown = new AtomicBoolean();
+            AtomicBoolean serialFallbackShown = new AtomicBoolean();
             SyncObserver observer = new SyncObserver() {
                 @Override
                 public void phaseChanged(String message) {
-                    if (message.contains("回退单线程")) {
-                        fallbackShown.set(true);
+                    if (message.contains("仅重试失败")) {
+                        serialFallbackShown.set(true);
                     }
                 }
             };
@@ -1432,14 +1622,14 @@ public final class AllTests {
                     config(root, manifestUri, true, true), message -> { }, observer).synchronize();
 
             check(result.status() == SyncResult.Status.UPDATED && result.downloaded() == 2,
-                    "并发失败后单线程回退应完成两个 Mod 更新");
+                    "并发失败后只重试失败任务也应完成两个 Mod 更新");
             check(maximumActiveGets.get() >= 2, "首轮应确实同时发起至少两个下载");
-            check(aGets.get() == 2 && bGets.get() == 2,
-                    "并发失败后应清理首轮内容并用单线程完整重下");
-            check(fallbackShown.get(), "并发失败时进度窗口应说明正在回退单线程");
+            check(aGets.get() == 2 && bGets.get() == 1,
+                    "并发失败后只应重试失败的 a.jar，成功的 b.jar 不得重复下载");
+            check(!serialFallbackShown.get(), "单个任务在线程内重试成功后不应触发全局单线程补偿");
             check(Arrays.equals(Files.readAllBytes(root.resolve("mods/a.jar")), aBytes), "a.jar 应正确安装");
             check(Arrays.equals(Files.readAllBytes(root.resolve("mods/b.jar")), bBytes), "b.jar 应正确安装");
-            pass("parallel Mod download falls back to single thread");
+            pass("parallel Mod download retries only failed task");
         } finally {
             server.stop(0);
             serverExecutor.shutdownNow();
@@ -2454,6 +2644,16 @@ public final class AllTests {
         }
     }
 
+
+    private static void expectIOException(ThrowingRunnable runnable) {
+        try {
+            runnable.run();
+            throw new AssertionError("Expected an IOException, but the operation succeeded");
+        } catch (IOException expected) {
+        } catch (Exception exception) {
+            throw new AssertionError("Expected an IOException, but got " + exception.getClass().getName(), exception);
+        }
+    }
 
     private void testZalithMobileEnvironmentDetection() throws Exception {
         Map<String, String> previous = snapshotProperties(

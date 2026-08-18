@@ -36,6 +36,9 @@ import java.util.Optional;
 
 public final class PublisherMain {
     private static final DisplayLanguage LANGUAGE = DisplayLanguage.detect(null);
+    static final int PUBLISHER_WINDOW_WIDTH = 1_020;
+    static final int PUBLISHER_WINDOW_HEIGHT = 460;
+    static final boolean LOAD_PREVIOUS_CATALOG_BY_DEFAULT = true;
 
     private PublisherMain() {
     }
@@ -236,7 +239,7 @@ public final class PublisherMain {
 
         JFrame frame = new JFrame(text("MCModSync 清单发布工具", "MCModSync Catalog Publisher"));
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setSize(760, 410);
+        frame.setSize(PUBLISHER_WINDOW_WIDTH, PUBLISHER_WINDOW_HEIGHT);
         frame.setLocationRelativeTo(null);
 
         JPanel form = new JPanel(new GridBagLayout());
@@ -249,6 +252,7 @@ public final class PublisherMain {
         JButton browseButton = new JButton(text("选择 mods 目录", "Choose mods directory"));
         JCheckBox loadPreviousCatalog = new JCheckBox(text(
                 "扫描后选择上次清单", "Choose previous catalog after scanning"));
+        loadPreviousCatalog.setSelected(LOAD_PREVIOUS_CATALOG_BY_DEFAULT);
         loadPreviousCatalog.setToolTipText(text(
                 "保留上次的分类、平台、名称和中英文描述，并更新当前 JAR 的哈希与版本",
                 "Keep previous types, platforms, names and descriptions while refreshing current JAR hashes and versions"));
@@ -357,7 +361,10 @@ public final class PublisherMain {
                                 + publication.configurationTemplate() + "\n");
                         ModManifest scanned = publication.scanned();
                         if (choosePreviousCatalog) {
-                            Optional<Path> previousPath = choosePreviousCatalog(frame, modsDirectory);
+                            Optional<Path> automaticallyMatched = automaticallyMatchedPreviousCatalog(modsDirectory);
+                            Optional<Path> previousPath = automaticallyMatched.isPresent()
+                                    ? automaticallyMatched
+                                    : choosePreviousCatalog(frame, modsDirectory);
                             if (previousPath.isEmpty()) {
                                 log.append(text(
                                         "已取消选择上次清单。\n",
@@ -367,10 +374,12 @@ public final class PublisherMain {
                             ModManifest previous = readPreviousCatalog(previousPath.get());
                             scanned = mergeCatalog(scanned, previous);
                             log.append(text(
-                                    "已加载并合并上次清单：",
-                                    "Loaded and merged previous catalog: ") + previousPath.get() + "\n");
-                        } else {
-                            scanned = mergeExistingCatalog(scanned, output);
+                                    automaticallyMatched.isPresent()
+                                            ? "已自动匹配并合并 mods 目录中的上次清单："
+                                            : "已加载并合并上次清单：",
+                                    automaticallyMatched.isPresent()
+                                            ? "Automatically matched and merged the previous catalog in the mods directory: "
+                                            : "Loaded and merged previous catalog: ") + previousPath.get() + "\n");
                         }
                         long missingChinese = scanned.entries().stream()
                                 .filter(entry -> entry.descriptionZh().isBlank())
@@ -555,15 +564,13 @@ public final class PublisherMain {
         frame.setVisible(true);
     }
 
-    private static ModManifest mergeExistingCatalog(ModManifest scanned, Path output) {
-        if (!Files.isRegularFile(output)) {
-            return scanned;
+    static Optional<Path> automaticallyMatchedPreviousCatalog(Path modsDirectory) {
+        if (modsDirectory == null) {
+            return Optional.empty();
         }
-        try {
-            return mergeCatalog(scanned, readPreviousCatalog(output));
-        } catch (IOException | IllegalArgumentException exception) {
-            return scanned;
-        }
+        Path candidate = modsDirectory.toAbsolutePath().normalize()
+                .resolve(ManagedClientConfig.MANIFEST_FILE_NAME);
+        return Files.isRegularFile(candidate) ? Optional.of(candidate) : Optional.empty();
     }
 
     private static Optional<Path> choosePreviousCatalog(JFrame owner, Path modsDirectory) {
@@ -574,6 +581,7 @@ public final class PublisherMain {
         chooser.setFileFilter(new FileNameExtensionFilter(text(
                 "MCModSync 清单 (*.txt)", "MCModSync catalog (*.txt)"), "txt"));
         chooser.setCurrentDirectory(modsDirectory.toFile());
+        chooser.setSelectedFile(modsDirectory.resolve(ManagedClientConfig.MANIFEST_FILE_NAME).toFile());
         if (chooser.showOpenDialog(owner) != JFileChooser.APPROVE_OPTION) {
             return Optional.empty();
         }
@@ -628,7 +636,10 @@ public final class PublisherMain {
                     old.descriptionZh().isBlank() ? current.descriptionZh() : old.descriptionZh(),
                     old.descriptionEn().isBlank() ? current.descriptionEn() : old.descriptionEn());
         }).toList();
-        return ModManifest.fromEntries(previous.catalogVersion(), merged);
+        // A continued catalog inherits the hand-maintained metadata, but it is
+        // still a new publication batch. Keep the freshly scanned timestamp
+        // instead of reusing the previous catalog-version.
+        return ModManifest.fromEntries(scanned.catalogVersion(), merged);
     }
 
     private static void printUsage() {

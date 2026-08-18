@@ -57,7 +57,7 @@ enum DisplayLanguage {
         try (InputStream input = Files.newInputStream(propertiesPath)) {
             properties.load(input);
             return properties.getProperty("language", "").strip();
-        } catch (IOException exception) {
+        } catch (IOException | IllegalArgumentException exception) {
             return "";
         }
     }

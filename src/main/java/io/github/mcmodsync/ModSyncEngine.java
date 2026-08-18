@@ -36,6 +36,8 @@ import java.util.regex.Pattern;
 final class ModSyncEngine {
     private static final DateTimeFormatter BACKUP_TIME = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
     private static final Pattern NUMERIC_VERSION = Pattern.compile("(?<!\\d)(\\d+(?:\\.\\d+){1,3})(?!\\d)");
+    /** The last successfully validated raw cloud catalog kept beside the installed JARs. */
+    private static final String LOCAL_MANIFEST_FILE_NAME = ManagedClientConfig.MANIFEST_FILE_NAME;
 
     private final ModSyncConfig config;
     private final HttpClient client;
@@ -190,6 +192,7 @@ final class ModSyncEngine {
 
             refreshAndVerifyLocalSnapshot(modsDirectory);
             persistServerHistory(desiredManifest, stateDirectory, modsDirectory);
+            persistLocalManifestCopy(manifestText, modsDirectory);
             log("便携模式只读检查完成：云端管理文件无需更改，可继续启动。",
                     "Portable read-only check complete: cloud-managed files need no changes; startup may continue.");
             return new SyncProbeResult(SyncProbeResult.Status.UP_TO_DATE);
@@ -406,6 +409,7 @@ final class ModSyncEngine {
         if (downloads.isEmpty() && extras.isEmpty()) {
             refreshAndVerifyLocalSnapshot(modsDirectory);
             persistServerHistory(manifest, stateDirectory, modsDirectory);
+            persistLocalManifestCopy(manifestText, modsDirectory);
             RecommendedSelectionStore.markMobileCompleted(selection);
             log("服务器管理的 Mod 与云端清单一致，共 " + unchanged + " 个文件；客户端 Mod 已保留。",
                     "Server-managed mods match the cloud catalog (" + unchanged
@@ -471,13 +475,12 @@ final class ModSyncEngine {
                             true));
                     downloadedInParallel = true;
                 } catch (IOException parallelFailure) {
-                    log("并行下载失败，将清理暂存内容并回退单线程下载: "
+                    log("并行下载出现错误，仅重试失败的 Mod；成功文件保留并回退单线程: "
                                     + parallelFailure.getMessage(),
-                            "Parallel download failed; clearing staging data and retrying with one thread: "
+                            "Parallel download had an error; keeping successful files and retrying only failed mods "
+                                    + "with one thread: "
                                     + parallelFailure.getMessage());
-                    observer.phaseChanged("并行下载未成功，正在自动回退单线程重新下载……");
-                    deleteTreeBestEffort(parallelStaging);
-                    downloads.forEach(plan -> plan.stagedFile(null));
+                    observer.phaseChanged("并行下载出现错误，正在仅重试失败的 Mod……");
                 }
             }
 
@@ -487,6 +490,9 @@ final class ModSyncEngine {
                 DownloadProgressTracker tracker = new DownloadProgressTracker(
                         observer, downloads.size(), sizePlan.totalBytes());
                 for (int index = 0; index < downloads.size(); index++) {
+                    if (downloads.get(index).stagedFile() != null) {
+                        continue;
+                    }
                     downloadAndValidateMod(
                             downloads.get(index),
                             serialStaging,
@@ -502,6 +508,7 @@ final class ModSyncEngine {
             observer.phaseChanged("正在生成并校验本地 Mod 清单……");
             refreshAndVerifyLocalSnapshot(modsDirectory);
             persistServerHistory(manifest, stateDirectory, modsDirectory);
+            persistLocalManifestCopy(manifestText, modsDirectory);
             RecommendedSelectionStore.markMobileCompleted(selection);
         } finally {
             deleteTreeBestEffort(stagingDirectory);
@@ -710,16 +717,38 @@ final class ModSyncEngine {
     }
 
     private void writeSnapshotAtomically(ModManifest manifest, Path snapshotPath) throws IOException {
-        Path temporary = snapshotPath.getParent().resolve("."
-                + snapshotPath.getFileName() + "." + UUID.randomUUID() + ".tmp");
+        writeTextAtomically(manifest.serialize(), snapshotPath);
+    }
+
+    /**
+     * Persists the exact validated cloud text in the client's mods directory.
+     * This is a mirror for inspection and local archival, not an offline trust
+     * source. It is committed only after synchronization succeeds.
+     */
+    private void persistLocalManifestCopy(String manifestText, Path modsDirectory) throws IOException {
+        Path manifestPath = modsDirectory.resolve(LOCAL_MANIFEST_FILE_NAME);
+        writeTextAtomically(manifestText, manifestPath);
+        log("已将最后一次成功校验的云端 Mod 清单永久保存到 mods/" + LOCAL_MANIFEST_FILE_NAME,
+                "The last successfully validated cloud catalog was permanently saved to mods/"
+                        + LOCAL_MANIFEST_FILE_NAME);
+    }
+
+    private void writeTextAtomically(String text, Path destination) throws IOException {
+        Path parent = destination.getParent();
+        if (parent == null) {
+            throw new IOException("Cannot atomically write a file without a parent directory: " + destination);
+        }
+        Files.createDirectories(parent);
+        Path temporary = parent.resolve("."
+                + destination.getFileName() + "." + UUID.randomUUID() + ".tmp");
         try {
             Files.writeString(
                     temporary,
-                    manifest.serialize(),
+                    text,
                     StandardCharsets.UTF_8,
                     StandardOpenOption.CREATE_NEW,
                     StandardOpenOption.WRITE);
-            files.move(temporary, snapshotPath, true);
+            files.move(temporary, destination, true);
         } finally {
             try {
                 Files.deleteIfExists(temporary);
@@ -919,26 +948,36 @@ final class ModSyncEngine {
         log(prefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName(),
                 englishPrefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName());
         Path staged = stagingDirectory.resolve(plan.entry().fileName() + ".part");
-        downloadMod(plan.entry(), staged, fileIndex, fileCount, tracker);
-        if (!parallel) {
-            observer.phaseChanged("正在校验 MD5/SHA256：[" + fileIndex + "/" + fileCount + "] "
-                    + plan.entry().fileName());
-        }
-        String actualMd5 = Hashing.md5(staged);
-        if (!actualMd5.equals(plan.entry().md5())) {
-            throw new IOException(
-                    "下载文件 MD5 不符: " + plan.entry().fileName()
-                            + "，期望 " + plan.entry().md5() + "，实际 " + actualMd5);
-        }
-        if (!plan.entry().sha256().isBlank()) {
-            String actualSha256 = Hashing.sha256(staged);
-            if (!actualSha256.equals(plan.entry().sha256())) {
-                throw new IOException(
-                        "下载文件 SHA256 不符: " + plan.entry().fileName()
-                                + "，期望 " + plan.entry().sha256() + "，实际 " + actualSha256);
+        try {
+            Files.deleteIfExists(staged);
+            downloadMod(plan.entry(), staged, fileIndex, fileCount, tracker);
+            if (!parallel) {
+                observer.phaseChanged("正在校验 MD5/SHA256：[" + fileIndex + "/" + fileCount + "] "
+                        + plan.entry().fileName());
             }
+            String actualMd5 = Hashing.md5(staged);
+            if (!actualMd5.equals(plan.entry().md5())) {
+                throw new IOException(
+                        "下载文件 MD5 不符: " + plan.entry().fileName()
+                                + "，期望 " + plan.entry().md5() + "，实际 " + actualMd5);
+            }
+            if (!plan.entry().sha256().isBlank()) {
+                String actualSha256 = Hashing.sha256(staged);
+                if (!actualSha256.equals(plan.entry().sha256())) {
+                    throw new IOException(
+                            "下载文件 SHA256 不符: " + plan.entry().fileName()
+                                    + "，期望 " + plan.entry().sha256() + "，实际 " + actualSha256);
+                }
+            }
+            plan.stagedFile(staged);
+        } catch (IOException | InterruptedException failure) {
+            try {
+                Files.deleteIfExists(staged);
+            } catch (IOException cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
         }
-        plan.stagedFile(staged);
     }
 
     private DownloadSizePlan probeDownloadSizes(List<DownloadPlan> downloads) throws InterruptedException {

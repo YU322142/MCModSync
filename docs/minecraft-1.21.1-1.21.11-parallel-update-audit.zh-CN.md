@@ -1,10 +1,10 @@
-# MCModSync 1.9.2：Minecraft 1.21.1 / 1.21.11 并行更新可行性审计
+# MCModSync 1.9.6：Minecraft 1.21.1 / 1.21.11 并行更新可行性审计
 
 审计日期：2026-08-13
 
 ## 一、结论
 
-公开版 `MCModSync-1.9.2.jar` 可以作为同一个同步器二进制文件用于 Fabric Minecraft `1.21.1`/`1.21.11`，以及 NeoForge Minecraft `1.21.1`。运行要求为 Java 21；Fabric 元数据声明 Loader `>=0.15.11`，NeoForge 元数据声明 `javafml`、Minecraft `[1.21.1]` 和 NeoForge `[21.1.0,)`。公开 JAR 不使用 `>=1.21.1` 之类会意外放行其他版本的范围。
+公开版 `MCModSync-1.9.6.jar` 可以作为同一个同步器二进制文件用于 Fabric Minecraft `1.21.1`/`1.21.11`，以及 NeoForge Minecraft `1.21.1`。运行要求为 Java 21；Fabric 元数据声明 Loader `>=0.15.11`，NeoForge 元数据声明 `javafml`、Minecraft `[1.21.1]` 和 NeoForge `[21.1.0,)`。公开 JAR 不使用 `>=1.21.1` 之类会意外放行其他版本的范围。
 
 并行更新可行，但有一个不可放宽的部署条件：两个 Minecraft 版本必须使用彼此独立的 URL、服务器目录、本地 `modsync.properties`、永久 `mods.txt`、正式 `mods-v4.txt`、`catalog-version` 历史、配置引导 JAR 和 Mod JAR 集合。公开同步器可以相同，业务清单不能合并。
 
@@ -34,24 +34,24 @@ https://files.example.com/minecraft/
 ├─ 1.21.1/fabric/
 │  ├─ mods.txt
 │  ├─ mods-v4.txt
-│  ├─ MCModSync-1.9.2.jar
+│  ├─ MCModSync-1.9.6.jar
 │  ├─ MCModSync-Config.jar
 │  └─ 仅适用于 1.21.1 Fabric 的其他 JAR
 ├─ 1.21.1/neoforge/
 │  ├─ mods.txt
 │  ├─ mods-v4.txt
-│  ├─ MCModSync-1.9.2.jar
+│  ├─ MCModSync-1.9.6.jar
 │  ├─ MCModSync-Config.jar
 │  └─ 仅适用于 1.21.1 NeoForge 的其他 JAR
 └─ 1.21.11/fabric/
    ├─ mods.txt
    ├─ mods-v4.txt
-   ├─ MCModSync-1.9.2.jar
+   ├─ MCModSync-1.9.6.jar
    ├─ MCModSync-Config.jar
    └─ 仅适用于 1.21.11 Fabric 的其他 JAR
 ```
 
-这里的“同一个公开 JAR”只指三个目录中的 `MCModSync-1.9.2.jar` 字节可以相同。`MCModSync-Config.jar` 应分别从各自游戏根目录的模板生成，因为它写入的 `manifest` URL 不同。其他 JAR 即使文件名相同，也必须按目标版本和加载器分别验证并计算 MD5/SHA256。
+这里的“同一个公开 JAR”只指三个目录中的 `MCModSync-1.9.6.jar` 字节可以相同。`MCModSync-Config.jar` 应分别从各自游戏根目录的模板生成，因为它写入的 `manifest` URL 不同。其他 JAR 即使文件名相同，也必须按目标版本和加载器分别验证并计算 MD5/SHA256。
 
 禁止以下布局：
 
@@ -69,12 +69,12 @@ D:\Release\MCModSync\
 ├─ 1.21.1\
 │  ├─ modsync.properties
 │  └─ mods\
-│     ├─ MCModSync-1.9.2.jar
+│     ├─ MCModSync-1.9.6.jar
 │     └─ 1.21.1 目标 Mod
 └─ 1.21.11\
    ├─ modsync.properties
    └─ mods\
-      ├─ MCModSync-1.9.2.jar
+      ├─ MCModSync-1.9.6.jar
       └─ 1.21.11 目标 Mod
 ```
 
@@ -129,7 +129,7 @@ requireManifest=true
 1. 完全停止该目标版本的发布任务，确认没有另一进程写同一目录。
 2. 在隔离实例验证全部必须 Mod 和推荐 Mod 确实适配目标 Minecraft/加载器组合。
 3. 用该版本工作区生成新的 `mods-v4.txt`、永久 `mods.txt` 和 `MCModSync-Config.jar`。
-4. 检查清单中的同步器版本为 1.9.2，检查所有 JAR 的 MD5/SHA256，检查 `client-config.manifest` 指向本版本 URL。
+4. 检查清单中的同步器版本为 1.9.6，检查所有 JAR 的 MD5/SHA256，检查 `client-config.manifest` 指向本版本 URL。
 5. 先上传该版本目录中的全部 JAR，并验证 HTTP 状态、文件长度和 SHA256。
 6. 再上传该版本的 `MCModSync-Config.jar` 和永久 `mods.txt` 所需文件。
 7. 上传该版本的新 `mods-v4.txt`，最后才更新属于该版本的旧硬编码 URL 下的 `mods.txt`。
@@ -159,7 +159,7 @@ requireManifest=true
 | `https://old-1-21-1.example.com/client/` | 1.21.1 Fabric | `https://files.example.com/minecraft/1.21.1/fabric/mods-v4.txt` |
 | `https://old-1-21-11.example.com/client/` | 1.21.11 Fabric | `https://files.example.com/minecraft/1.21.11/fabric/mods-v4.txt` |
 
-旧地址继续永久提供只包含同步器和配置引导 JAR 的 `mods.txt`。升级后，1.9.2 从固定名 `MCModSync-Config.jar` 创建或更新游戏根目录的 `modsync.properties`，以后只读取该目标版本/加载器的新地址。手机端与电脑端可在同一组合内合并 URL，但不能把不同 Minecraft 版本或加载器合并。
+旧地址继续永久提供只包含同步器和配置引导 JAR 的 `mods.txt`。升级后，1.9.6 从固定名 `MCModSync-Config.jar` 创建或更新游戏根目录的 `modsync.properties`，以后只读取该目标版本/加载器的新地址。手机端与电脑端可在同一组合内合并 URL，但不能把不同 Minecraft 版本或加载器合并。
 
 对无法确定目标版本的旧地址，不要自动猜测或统一重定向。先从原整合包、启动器实例目录或服务端发布记录确认 Minecraft 版本，再生成对应配置引导 JAR。
 
@@ -174,14 +174,14 @@ requireManifest=true
 - 无论玩家关闭窗口还是确认提示，都不运行 Minecraft 主类；
 - 最终调用正常退出路径并返回退出码 `0`，让启动器显示正常退出而不是崩溃；
 - 只通过私下渠道分发，不提交 Git、不创建 GitHub Release、不放入公开源码包；
-- 不放入公开 1.9.2 的 `mods-v4.txt`，也不放入任何 1.21.1 目录；
+- 不放入公开 1.9.6 的 `mods-v4.txt`，也不放入任何 1.21.1 目录；
 - 保存私有 JAR 的 SHA256、部署日期、目标旧地址和撤回方案。
 
-该阻止版不是普通并行更新节点。一旦某个 1.21.11 地址切换到阻止版，该地址的业务目标就是引导迁移，而不是继续同步 1.21.11 Mod。仍要运营 1.21.11 的其他实例必须使用另一个独立 URL 和普通公开版 1.9.2。
+该阻止版不是普通并行更新节点。一旦某个 1.21.11 地址切换到阻止版，该地址的业务目标就是引导迁移，而不是继续同步 1.21.11 Mod。仍要运营 1.21.11 的其他实例必须使用另一个独立 URL 和普通公开版 1.9.6。
 
 ## 十、发布验收表
 
-1. 在 JAR 内检查 Fabric `fabric.mod.json` 和 NeoForge `META-INF/neoforge.mods.toml`：版本 1.9.2；Fabric Minecraft 精确为 1.21.1/1.21.11；NeoForge Minecraft 精确为 1.21.1；Java >=21。
+1. 在 JAR 内检查 Fabric `fabric.mod.json` 和 NeoForge `META-INF/neoforge.mods.toml`：版本 1.9.6；Fabric Minecraft 精确为 1.21.1/1.21.11；NeoForge Minecraft 精确为 1.21.1；Java >=21。
 2. 在真实 1.21.1 Fabric 实例中完成首次同步、更新后正常退出、重新启动和进入游戏。
 3. 在真实 1.21.1 NeoForge 实例重复同样流程，并确认 `FMLPaths.GAMEDIR` 下的目录被使用。
 4. 在真实 1.21.11 Fabric 实例重复同样流程。

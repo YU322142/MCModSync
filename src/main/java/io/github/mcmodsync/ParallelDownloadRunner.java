@@ -11,7 +11,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 final class ParallelDownloadRunner {
-    private static final int MAX_THREADS = 4;
+    private static final int MAX_THREADS = 8;
+    private static final int TASK_RETRY_ATTEMPTS = 3;
+    private static final long TASK_RETRY_DELAY_MILLIS = 400L;
 
     private ParallelDownloadRunner() {
     }
@@ -38,7 +40,7 @@ final class ParallelDownloadRunner {
             for (int index = 0; index < taskCount; index++) {
                 int taskIndex = index;
                 futures.add(completion.submit(() -> {
-                    task.run(taskIndex);
+                    runWithRetries(task, taskIndex);
                     return null;
                 }));
             }
@@ -74,6 +76,33 @@ final class ParallelDownloadRunner {
                 throw interrupted;
             }
         }
+    }
+
+    private static void runWithRetries(IndexedTask task, int taskIndex) throws Exception {
+        Exception lastFailure = null;
+        for (int attempt = 1; attempt <= TASK_RETRY_ATTEMPTS; attempt++) {
+            try {
+                task.run(taskIndex);
+                return;
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            } catch (Exception failure) {
+                lastFailure = failure;
+                if (attempt == TASK_RETRY_ATTEMPTS) {
+                    break;
+                }
+                try {
+                    Thread.sleep(TASK_RETRY_DELAY_MILLIS * attempt);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw interrupted;
+                }
+            }
+        }
+        throw lastFailure == null
+                ? new IOException("并行下载任务失败")
+                : lastFailure;
     }
 
     @FunctionalInterface
