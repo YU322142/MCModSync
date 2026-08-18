@@ -88,10 +88,6 @@ Fabric 和 NeoForge 的普通模组不能混在一份清单里。建议至少使
 
 发布器会先读取 `fabric.mod.json`，没有 Fabric 元数据时再读取 NeoForge 的第一个 `[[mods]]` 表，因此 NeoForge-only JAR 也能按 Mod ID 和版本自动替换。NeoForge 的普通 `@Mod` 入口发生在模组扫描之后；MCModSync 在该进程中只探测变化，桌面端由独立 helper 等待 JVM 退出后再改 `mods`，更新完成后显示 `Restart Required`。这避免在 NeoForge/SecureJar 仍占用文件时直接替换。官方格式说明见 [NeoForge 1.21.1 Mod Files](https://docs.neoforged.net/docs/1.21.1/gettingstarted/modfiles/)。
 
-#### 1.21.11 私有迁移阻止版
-
-需要停用旧 1.21.11 客户端时，可以在该旧实例的 `mods` 目录单独替换同步器为私有的迁移阻止版。它不是公开 1.9.6，也不会提交或发布到 GitHub，不应放入公开清单或 1.21.1 目录。该 JAR 只匹配 Minecraft 1.21.11，启动前始终显示中英双语提示“请更换为 Minecraft 1.21.1”，然后以退出码 `0` 正常结束，使启动器显示正常退出而不是崩溃。迁移阻止版会从现有 `modsync.properties` 的 `manifest`（或旧 `-javaagent` 的 `manifest=...` 参数）取 Mod 下载目录，自动请求同目录的 `migration-message.txt`；也可用 `-Dmcmodsync.migrationMessageUrl=https://.../migration-message.txt` 指定直链。云端 TXT 使用 UTF-8，大小上限 128 KiB，网络不可用时回退到 JAR 内置 TXT。迁移阻止版的实际文件应通过你自己的私下分发渠道提供，并在发布记录中保存校验值。
-
 ## 运行规则
 
 ### 必须模组 / Required
