@@ -31,7 +31,7 @@
 | `ReleaseArtifactResolver.java` | 解析 publisher/direct/Modrinth/CurseForge/镜像候选；缓存已验哈希文件，任何来源都不能绕过清单 SHA256。 |
 | `ParallelDownloadRunner.java` | 为旧清单与 schema-v5 提供统一的有界并发；默认 128，按任务数缩小，并允许通过系统属性下调。 |
 | `PublisherModAutoMatcher.java` | 仅识别 `mods/*.jar`；批量计算并匹配 Modrinth SHA-512 与 CurseForge fingerprint，无法精确匹配时回退本地托管。 |
-| `PublisherPlatformResolver.java` | 仅在发布者本机把 Modrinth versionId 与 CurseForge fileId/API 解析为当前哈希对应的固定文件 URL；API key 不进入清单、JAR、客户端或日志。 |
+| `PublisherPlatformResolver.java` | 仅在发布者本机把 Modrinth versionId 与 CurseForge fileId/API 解析为当前哈希对应的固定文件 URL；CurseForge 候选必须下载并通过大小/SHA-256 复核，否则放弃；API key 不进入清单、JAR、客户端或日志。 |
 | `ConfigMutationEngine.java` | 对 TOML、严格 JSON、properties 做键级 set/merge；凭据键、歧义键、类型漂移和无前像替换失败闭锁。 |
 | `ManagedPathPolicy.java` | 定义可 OTA 的路径边界，拒绝存档、区块、玩家数据、缓存、原生库、符号链接和 `servers.dat` 普通覆盖。 |
 | `MinecraftWindowStatus.java` / `SyncStatusReporter.java` | 在已有 Minecraft 窗口标题和 `.modsync/ui-status.json/.txt` 输出启动期状态；无额外更新器窗口，失败回退日志。 |

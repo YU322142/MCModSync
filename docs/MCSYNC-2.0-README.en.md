@@ -54,7 +54,7 @@ File content is the only reliable identity.
 
 - Local installation, v5 import, backup, and rollback use **SHA-256**.
 - Modrinth lookup uses the current JAR's **SHA-512**.
-- CurseForge lookup uses the current JAR's official **fingerprint**.
+- CurseForge's fingerprint is only a platform-file matching signal, not byte-level proof; the publisher must also download the candidate and verify the current JAR's size and SHA-256. If that verification cannot be completed, the CurseForge source is abandoned and no downloadable candidate is generated.
 - Filenames, display names, and version strings are not used to confirm an upstream file.
 - A unique `modId` may inherit editable metadata such as descriptions and required/recommended state after a version upgrade.
 - After metadata inheritance, the current JAR is still queried against upstream sources again; old download coordinates are not reused directly.

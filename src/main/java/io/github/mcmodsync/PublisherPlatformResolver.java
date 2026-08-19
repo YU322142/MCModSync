@@ -54,6 +54,10 @@ final class PublisherPlatformResolver {
                     + "/files/" + fileId + "/download-url");
             try {
                 URI fileUri = requestDownloadUrl(requestUri);
+                if (strictHashRequested(expectedSha256, expectedSize)
+                        && !downloadMatches(fileUri, expectedSha256, expectedSize)) {
+                    throw new IOException("CurseForge 下载内容未通过 SHA-256/大小复核，已放弃该平台来源");
+                }
                 LinkedHashMap<String, Object> fileEndpoint = new LinkedHashMap<>(endpoint);
                 fileEndpoint.put("url", fileUri.toASCIIString());
                 fileEndpoint.put("purpose", "file");
@@ -67,6 +71,21 @@ final class PublisherPlatformResolver {
         }
         source.put("endpoints", resolved);
         return source;
+    }
+
+    private static boolean strictHashRequested(String expectedSha256, long expectedSize) {
+        return expectedSha256 != null && expectedSha256.matches("[0-9a-fA-F]{64}") && expectedSize >= 0;
+    }
+
+    private boolean downloadMatches(URI fileUri, String expectedSha256, long expectedSize)
+            throws IOException, InterruptedException {
+        HttpResponse<byte[]> response = client.send(HttpRequest.newBuilder(fileUri)
+                .timeout(Duration.ofSeconds(90))
+                .header("User-Agent", BuildInfo.USER_AGENT)
+                .GET().build(), HttpResponse.BodyHandlers.ofByteArray());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) return false;
+        byte[] bytes = response.body();
+        return bytes.length == expectedSize && Hashing.sha256(bytes).equalsIgnoreCase(expectedSha256);
     }
 
     private Map<String, Object> resolveModrinth(

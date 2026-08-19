@@ -54,6 +54,7 @@ public final class AllTests {
         testV5CustomBuildUsesPublisherHostedDistribution();
         testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates();
         testPublisherResolvesCurseForgeWithoutLeakingCredentials();
+        testCurseForgeStrictHashGateRejectsUnverifiableFile();
         testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
         testV5MirrorHashFailureFallsBackToOfficialCandidate();
         testReleaseSequenceAntiDowngradeGate();
@@ -387,6 +388,33 @@ public final class AllTests {
                             && !serialized.toLowerCase(Locale.ROOT).contains("x-api-key"),
                     "发布器应把固定 fileId 解析成无凭据下载候选，绝不把 API key 写进清单");
             pass("publisher resolves CurseForge file IDs without leaking credentials");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private void testCurseForgeStrictHashGateRejectsUnverifiableFile() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            server.createContext("/v1/mods/238222/files/987654/download-url", exchange ->
+                    respond(exchange, 200,
+                            "{\"data\":\"https://cdn.example.invalid/files/not-verifiable.jar\"}"
+                                    .getBytes(StandardCharsets.UTF_8), "application/json"));
+            server.start();
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1/";
+            boolean blocked = false;
+            try {
+                new PublisherPlatformResolver(HttpClient.newHttpClient()).resolve(Map.of(
+                        "type", "curseforge", "projectId", "238222", "fileId", new BigDecimal("987654"),
+                        "distributionPolicy", "upstream-only",
+                        "endpoints", List.of(Map.of("url", base, "role", "mirror", "purpose", "api",
+                                "region", "test", "priority", new BigDecimal("10"), "thirdParty", true))),
+                        "a".repeat(64), 12);
+            } catch (IOException expected) {
+                blocked = true;
+            }
+            check(blocked, "CurseForge 无法用 SHA-256/大小复核下载内容时必须放弃平台来源");
+            pass("CurseForge strict hash gate rejects unverifiable files");
         } finally {
             server.stop(0);
         }

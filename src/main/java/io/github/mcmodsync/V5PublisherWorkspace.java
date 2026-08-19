@@ -1390,6 +1390,7 @@ final class V5PublisherWorkspace {
         remote.put("serverListManifestPath", cloudPath(serverListManifestPath.getText()));
         remote.put("gameRoot", gameRoot.getText().strip());
         remote.put("outputDirectory", outputDirectory.getText().strip());
+        remote.put("previousManifestPath", previousManifestPath.getText().strip());
         remote.put("autoReleaseSequence", autoReleaseSequence.isSelected());
         remote.put("generateLegacyGateways", generateLegacyGateways.isSelected());
         project.put("remote", remote);
