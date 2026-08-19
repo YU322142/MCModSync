@@ -32,7 +32,7 @@ Mods 页只处理 `mods/*.jar`。
 
 1. SHA-256 用于本地身份和旧 v5 精确对应。
 2. SHA-512 查询 Modrinth 精确文件。
-3. CurseForge fingerprint 查询精确文件。
+3. CurseForge fingerprint 只定位候选文件；导出时下载候选并复核大小与 SHA-256，失败则放弃该来源。
 4. 两个平台均无精确结果时回退本地托管。
 5. 自制或手工适配 Mod 可以保持本地托管。
 

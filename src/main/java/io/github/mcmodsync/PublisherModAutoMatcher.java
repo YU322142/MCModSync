@@ -39,7 +39,7 @@ final class PublisherModAutoMatcher {
         }
     }
 
-    private record Signature(String sha512, long curseForgeFingerprint) {
+    private record Signature(String sha256, String sha512, long curseForgeFingerprint) {
     }
 
     Match match(Path jar) {
@@ -57,7 +57,7 @@ final class PublisherModAutoMatcher {
             try {
                 byte[] bytes = Files.readAllBytes(jar);
                 readable.put(jar, new Signature(
-                        digest("SHA-512", bytes), curseForgeFingerprint(bytes)));
+                        digest("SHA-256", bytes), digest("SHA-512", bytes), curseForgeFingerprint(bytes)));
             } catch (IOException failure) {
                 result.put(jar, local("读取失败，使用本地文件"));
             }
@@ -179,7 +179,9 @@ final class PublisherModAutoMatcher {
                     source.put("fileId", BigDecimal.valueOf(fileId));
                     source.put("distributionPolicy", "upstream-only");
                     source.put("endpoints", endpointJson(DownloadEndpointPresets.forPlatform("curseforge", true)));
-                    result.put(path, new Match(source, "CurseForge 精确 fingerprint 匹配 " + projectId + "/" + fileId));
+                    String expectedSha256 = jars.get(path).sha256();
+                    result.put(path, new Match(source,
+                            curseForgeCandidateDetail(projectId, fileId, expectedSha256)));
                 }
                 if (fingerprints.values().stream().allMatch(result::containsKey)) return;
             } catch (Exception ignored) {
@@ -267,6 +269,13 @@ final class PublisherModAutoMatcher {
         hash *= m;
         hash ^= hash >>> 15;
         return Integer.toUnsignedLong(hash);
+    }
+
+    static String curseForgeCandidateDetail(long projectId, long fileId, String expectedSha256) {
+        String hash = expectedSha256 == null ? "" : expectedSha256.strip().toUpperCase();
+        String shortHash = hash.length() > 16 ? hash.substring(0, 16) + "…" : hash;
+        return "CurseForge 候选 " + projectId + "/" + fileId
+                + "；待导出时下载并复核 SHA-256 " + shortHash;
     }
 
     private static String digest(String algorithm, byte[] bytes) {

@@ -50,6 +50,7 @@ public final class AllTests {
         testOnlyModsMayUsePlatformDownloadSources();
         testDefaultDownloadConcurrencyIs128();
         testModArtifactClassificationAndFingerprintNormalization();
+        testCurseForgeCandidateStatusDoesNotClaimFingerprintProof();
         testClientOnlyMetadataDefaultsToRecommended();
         testV5CustomBuildUsesPublisherHostedDistribution();
         testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates();
@@ -145,6 +146,16 @@ public final class AllTests {
         check(BuildInfo.VERSION.equals("2.0.0"), "首个 MCSync 版本应为 2.0.0");
         check(BuildInfo.TECHNICAL_MOD_ID.equals("mcmodsync"), "必须保留旧 modId 才能从 1.9.x 原地升级");
         pass("MCSync branding preserves the legacy technical upgrade identity");
+    }
+
+    private void testCurseForgeCandidateStatusDoesNotClaimFingerprintProof() {
+        String detail = PublisherModAutoMatcher.curseForgeCandidateDetail(
+                123, 456, "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+        check(detail.contains("候选") && detail.contains("待导出时下载并复核 SHA-256")
+                        && detail.contains("ABCDEF0123456789")
+                        && !detail.contains("精确 fingerprint"),
+                "CurseForge UI 必须把 fingerprint 表述为候选定位，不能冒充字节级证明");
+        pass("CurseForge candidate status waits for SHA-256 verification");
     }
 
     private void testV5RecommendedSelectionIsDeferredToMinecraftWindow() throws Exception {

@@ -212,7 +212,8 @@ final class V5PublisherWorkspace {
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         JTextArea help = new JTextArea(
                 "必须 Mod 会始终同步；推荐 Mod 由玩家在 Minecraft 窗口内首次启动或推荐清单新增时选择，"
-                        + "默认全选。Mod 会优先按哈希自动匹配 Modrinth/CurseForge；未匹配的自制或适配 Mod 回退为本地托管。"
+                        + "默认全选。Modrinth 按哈希匹配；CurseForge 先定位候选，导出时必须下载并通过大小/SHA-256 复核。"
+                        + "无法复核或未匹配的自制、适配 Mod 回退为本地托管。"
                         + "中文描述永不被平台英文覆盖；扫描会把唯一 modId 的新版 JAR 识别为替换升级并继承人工设置。"
                         + "同一 modId 出现多个 JAR 时会标记冲突并阻止导出。");
         help.setEditable(false);
@@ -919,7 +920,7 @@ final class V5PublisherWorkspace {
             return;
         }
         if (button != null) button.setEnabled(false);
-        validation.append("正在批量查询 Modrinth/CurseForge 精确哈希…\n");
+        validation.append("正在按 SHA-512 查询 Modrinth，并定位 CurseForge 候选；CurseForge 将在导出时复核 SHA-256…\n");
         new SwingWorker<Map<Path, PublisherModAutoMatcher.Match>, Void>() {
             @Override protected Map<Path, PublisherModAutoMatcher.Match> doInBackground() {
                 return modMatcher.matchAll(mods.stream().map(row -> rootPath.resolve(row.path)).toList());
