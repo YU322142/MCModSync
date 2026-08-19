@@ -1,5 +1,9 @@
 # MCSync 2.0
 
+> 当前正式版本：`2.0.0`。下载请使用 GitHub Release 中的 `MCSync-2.0.0.jar`。仓库保留 `mcmodsync` 技术 Mod ID、`modsync.properties` 和旧状态目录，以支持 1.9.x 原地升级；文档中出现的 `MCModSync-1.9.x` 文件名仅指旧版升级材料，不是当前正式客户端。
+
+[English documentation](docs/MCSYNC-2.0-README.en.md) · [中文 2.0 操作指南](docs/MCSYNC-2.0-OPERATIONS.md) · [需求与安全边界](docs/MCSYNC-2.0-REQUIREMENTS.md) · [开发结构](docs/MCSYNC-2.0-DEVELOPMENT.md)
+
 MCSync 是 MCModSync 1.9.x 的兼容后继版本，用于在 Minecraft/NeoForge 完成模组加载前自动检查和暂存客户端 OTA。2.0 引入结构化 v5 发布清单、单调发布序号防降级和精确配置键事务；旧 v1-v4 清单与 1.9.x 升级入口继续保留。图形发布器默认在导出瞬间按本机系统时间生成 `yyyyMMddHHmmssSSS` 发布序号，也可关闭自动刷新以重放一个已审计的固定项目。
 
 > 兼容性约束：产品名和产物名已改为 `MCSync`，但技术 `modId` 仍为 `mcmodsync`，旧 `modsync.properties`、`.modsync/` 状态目录和 `MCModSync-Config.jar` 引导文件暂时继续识别。不要为了统一命名而删除这些旧入口，否则会切断已安装 1.9.x 客户端的原地升级路径。
@@ -12,7 +16,15 @@ MCSync 是 MCModSync 1.9.x 的兼容后继版本，用于在 Minecraft/NeoForge 
 
 ## 版本和文件角色
 
-当前公开发布版本为 `1.9.2`，要求 Java 21；同一个公开 JAR 同时提供 Fabric 入口（Fabric Loader `>=0.15.11`）和 NeoForge 入口（NeoForge 1.21.1、`javafml`）。Fabric 元数据精确支持 Minecraft `1.21.1` 与 `1.21.11`，NeoForge 元数据精确支持 Minecraft `1.21.1`。源码同时保留 v1/v2/v3 读取兼容性。加载器和 Minecraft 版本匹配仍由实例自身负责，不能把一个版本或加载器的 Mod 清单装入另一个实例。
+当前公开发布版本为 `2.0.0`，要求 Java 21；同一个公开 JAR 提供 Fabric 与 NeoForge 入口。2.0 客户端读取结构化 `mods-v5.json`，并保留 v1-v4 与 1.9.x 升级入口。加载器和 Minecraft 版本匹配仍由实例自身负责，不能把一个版本或加载器的 Mod 清单装入另一个实例。
+
+### 2.0 的文件身份规则
+
+- 当前文件的 SHA-256 是客户端安装、替换、事务回滚和 v5 导入的首要身份。
+- 发布器查询 Modrinth 时使用当前 JAR 的 SHA-512；查询 CurseForge 时使用官方 fingerprint。只有精确响应才可生成上游下载条目。
+- 文件名、展示名称和版本字符串不能证明上游身份。
+- 唯一 `modId` 只允许在版本升级后继承中文/英文描述、必选状态等编辑元数据；继承后仍必须用当前 JAR 重新查询上游。
+- 上游或镜像下载完成后必须与 v5 清单锁定的大小和 SHA-256 一致，否则拒绝安装并尝试下一候选。
 
 电脑端便携更新完成后，置顶进度窗口会明确显示双语 `Restart Required` 提示，并等待玩家点击“确定，返回启动器”；不再于 5 秒后自动消失。手机端及无图形环境继续只写入日志和状态文件，不显示 Swing 弹窗。
 
