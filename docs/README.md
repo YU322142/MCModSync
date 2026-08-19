@@ -7,6 +7,7 @@
 1. [`../README.md`](../README.md)：产品范围、启动流程、文件身份和最短发布流程。
 2. [`MCSYNC-2.0-OPERATIONS.md`](MCSYNC-2.0-OPERATIONS.md)：发布者从打开项目到上传云端的完整操作顺序。
 3. [`MCSYNC-2.0-README.en.md`](MCSYNC-2.0-README.en.md)：英文使用说明。
+4. [`../CHANGELOG.zh-CN.md`](../CHANGELOG.zh-CN.md) / [`../CHANGELOG.md`](../CHANGELOG.md)：中英文发布更新日志。
 
 ## 开发与验收
 

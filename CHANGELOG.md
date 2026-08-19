@@ -1,0 +1,32 @@
+# Changelog
+
+[中文](CHANGELOG.zh-CN.md)
+
+## 2.0.0
+
+### Highlights
+
+- Renamed MCModSync to MCSync while preserving the legacy upgrade entry points.
+- Added the `mods-v5.json` manifest, release-sequence downgrade protection, and same-sequence fork rejection.
+- Added early-start transactional synchronization with verified download, backup, commit, and rollback.
+- Added in-game required/recommended selection for first launch and newly added optional content.
+- Added the 2.0 publishing GUI for Mods, managed files, key-level configuration OTA, optional packs, server lists, validation, and export.
+- Matches Modrinth and CurseForge files by content hash or official fingerprint rather than filename.
+- Detects a unique modId replacement as an upgrade, inherits publisher-edited settings, and re-resolves the new JAR by content hash.
+- Marks every JAR in a duplicate-modId set as a conflict and blocks export instead of choosing a version automatically.
+- Restricts mod-platform matching to JAR files directly under `mods/`; other managed files use ordinary download sources.
+- Supports direct hosting, Modrinth, CurseForge, and configurable mirrors with final size and SHA-256 verification.
+- Includes upgrade material for supported 1.6.x, 1.7, and 1.9.x clients.
+
+## 1.9.6
+
+### Highlights
+
+- Final public MCModSync 1.9.x maintenance release.
+- Fixed desktop synchronization dialogs for NeoForge/Linux helper processes.
+- Used up to eight parallel download threads and retried only failed tasks.
+- Preserved validated downloads and kept a local `mods-v4.txt` catalog copy.
+- Continued editing earlier catalogs with a new timestamp-based catalog version.
+- Included bilingual UI/logging and Fabric/NeoForge 1.21.1 metadata.
+
+Older 1.9.x development history remains available in Git history.

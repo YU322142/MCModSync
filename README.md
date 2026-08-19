@@ -9,7 +9,7 @@ MCSync 是面向 Minecraft 整合包的启动前 OTA 工具。它在正常模组
 当前清单：**mods-v5.json**
 技术 Mod ID：**mcmodsync**（为兼容 1.9.x 保留）
 
-[文档导航](docs/README.md) · [English](docs/MCSYNC-2.0-README.en.md) · [发布与运维](docs/MCSYNC-2.0-OPERATIONS.md) · [需求与安全边界](docs/MCSYNC-2.0-REQUIREMENTS.md) · [开发结构](docs/MCSYNC-2.0-DEVELOPMENT.md) · [旧版升级](docs/中文使用指南.md)
+[更新日志](CHANGELOG.zh-CN.md) · [Changelog](CHANGELOG.md) · [文档导航](docs/README.md) · [English](docs/MCSYNC-2.0-README.en.md) · [发布与运维](docs/MCSYNC-2.0-OPERATIONS.md) · [需求与安全边界](docs/MCSYNC-2.0-REQUIREMENTS.md) · [开发结构](docs/MCSYNC-2.0-DEVELOPMENT.md) · [旧版升级](docs/中文使用指南.md)
 
 ## MCSync 管理什么
 
@@ -80,6 +80,8 @@ MCSync 不承诺在 JVM 已加载 JAR 后热替换模组。涉及模组、KubeJS
 9. 先上传不可变文件，再最后上传 `mods-v5.json`。
 
 重新发布时可以只在 Mods 页导入旧 `mods-v5.json`。它只继承可安全对应的模组元数据，不改变其他发布设置；随后按当前 JAR 重新计算哈希和匹配来源。
+
+直接点击“扫描并识别升级”时，当前 `mods/` 会作为权威集合重新建立 Mods 表格。唯一 modId 的新版 JAR 会替换旧行并继承必须/推荐、双语描述、作用端和平台限制；下载来源仍按新版 JAR 的哈希重新匹配。若同一 modId 同时存在多个不同 JAR/版本，GUI 会把所有相关行标为冲突并阻止导出。
 
 ## 推荐的云端布局
 

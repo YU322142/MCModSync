@@ -209,7 +209,8 @@ final class V5PublisherWorkspace {
         JTextArea help = new JTextArea(
                 "必须 Mod 会始终同步；推荐 Mod 由玩家在 Minecraft 窗口内首次启动或推荐清单新增时选择，"
                         + "默认全选。Mod 会优先按哈希自动匹配 Modrinth/CurseForge；未匹配的自制或适配 Mod 回退为本地托管。"
-                        + "中文描述永不被平台英文覆盖；可单独从 mods-v4.txt 或 mods-v5.json 继承模组信息，不改其他发布配置。");
+                        + "中文描述永不被平台英文覆盖；扫描会把唯一 modId 的新版 JAR 识别为替换升级并继承人工设置。"
+                        + "同一 modId 出现多个 JAR 时会标记冲突并阻止导出。");
         help.setEditable(false);
         help.setLineWrap(true);
         help.setWrapStyleWord(true);
@@ -219,7 +220,7 @@ final class V5PublisherWorkspace {
         panel.add(new JScrollPane(modsTable), BorderLayout.CENTER);
 
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JButton scan = new JButton("扫描 mods");
+        JButton scan = new JButton("扫描并识别升级");
         JButton importV4 = new JButton("从 mods-v4.txt 导入");
         JButton importV5 = new JButton("从 mods-v5.json 导入模组信息…");
         JButton rematch = new JButton("自动匹配全部 Mod");
@@ -234,7 +235,11 @@ final class V5PublisherWorkspace {
         required.addActionListener(event -> setSelectedModKind(true));
         recommended.addActionListener(event -> setSelectedModKind(false));
         editMetadata.addActionListener(event -> editSelectedModMetadata());
-        remove.addActionListener(event -> removeSelected(modsTable, files.rows));
+        remove.addActionListener(event -> {
+            removeSelected(modsTable, files.rows);
+            refreshModConflicts();
+            refreshSummary();
+        });
         buttons.add(scan);
         buttons.add(importV4);
         buttons.add(importV5);
@@ -560,11 +565,11 @@ final class V5PublisherWorkspace {
             return;
         }
         button.setEnabled(false);
-        validation.append("\n正在扫描 mods 并读取本地元数据…\n");
+        validation.append("\n正在扫描 mods、读取本地元数据并识别替换升级…\n");
         new SwingWorker<List<FileRow>, Void>() {
             @Override
             protected List<FileRow> doInBackground() throws Exception {
-                return discoverMods(rootPath);
+                return discoverCurrentMods(rootPath);
             }
 
             @Override
@@ -572,12 +577,15 @@ final class V5PublisherWorkspace {
                 button.setEnabled(true);
                 try {
                     List<FileRow> found = get();
-                    files.rows.addAll(found);
+                    ModScanResult result = reconcileScannedMods(found);
                     files.rows.sort(Comparator.comparing(row -> row.path));
                     files.fireTableDataChanged();
                     refreshSummary();
-                    validation.append("mods 扫描完成：新增 " + found.size()
-                            + " 个 Mod；默认按保守规则标记为必须，正在执行平台精确匹配。\n");
+                    validation.append("mods 扫描完成：当前 " + found.size() + " 个 Mod；继承设置 "
+                            + result.inherited() + "，其中替换升级 " + result.replaced()
+                            + "；新增 " + result.added() + "；移除旧行 " + result.removed()
+                            + "；冲突 " + result.conflicts() + "。\n");
+                    if (result.conflicts() > 0) showModConflictWarning();
                     autoMatchMods(null);
                 } catch (Exception failure) {
                     showError(cause(failure).getMessage());
@@ -623,6 +631,58 @@ final class V5PublisherWorkspace {
         if (!row.required) row.matchDetail = "客户端可选元数据：默认推荐";
     }
 
+    private ModScanResult reconcileScannedMods(List<FileRow> current) {
+        List<FileRow> existing = files.rows.stream().filter(row -> row.kind.equals("mod")).toList();
+        PublisherModUpgradePlanner.Plan plan = PublisherModUpgradePlanner.plan(
+                existing.stream().map(row -> new PublisherModUpgradePlanner.ExistingMod(
+                        row.path, row.modId, row.modVersion)).toList(),
+                current.stream().map(row -> new PublisherModUpgradePlanner.CurrentMod(
+                        row.path, row.modId, row.modVersion)).toList());
+        Map<String, FileRow> existingByPath = new LinkedHashMap<>();
+        for (FileRow row : existing) {
+            existingByPath.put(PublisherModUpgradePlanner.normalizePath(row.path), row);
+        }
+
+        int inherited = 0;
+        int replaced = 0;
+        for (FileRow row : current) {
+            String currentPath = PublisherModUpgradePlanner.normalizePath(row.path);
+            String oldPath = plan.inheritedFromByCurrentPath().get(currentPath);
+            if (oldPath != null) {
+                FileRow previous = existingByPath.get(oldPath);
+                if (previous != null) {
+                    inheritScannedModSettings(row, previous, !currentPath.equals(oldPath));
+                    inherited++;
+                    if (!currentPath.equals(oldPath)) replaced++;
+                }
+            }
+            String conflict = plan.conflictByCurrentPath().get(currentPath);
+            if (conflict != null) row.markConflict(conflict);
+        }
+
+        files.rows.removeIf(row -> row.kind.equals("mod"));
+        files.rows.addAll(current);
+        refreshModConflicts();
+        int conflictGroups = new HashSet<>(plan.conflictByCurrentPath().values()).size();
+        return new ModScanResult(inherited, replaced, plan.newCurrentPaths().size(),
+                plan.staleExistingPaths().size(), conflictGroups);
+    }
+
+    private static void inheritScannedModSettings(FileRow current, FileRow previous, boolean replacement) {
+        current.required = previous.required;
+        current.restart = previous.restart;
+        current.side = previous.side;
+        if (!previous.displayName.isBlank()) current.displayName = previous.displayName;
+        if (!previous.descriptionZh.isBlank()) current.descriptionZh = previous.descriptionZh;
+        if (!previous.descriptionEn.isBlank()) current.descriptionEn = previous.descriptionEn;
+        current.incompatiblePlatforms.clear();
+        current.incompatiblePlatforms.addAll(previous.incompatiblePlatforms);
+        current.chinaMirror = previous.chinaMirror;
+        current.resetDownloadMatch(replacement
+                ? "检测到替换升级：" + previous.path + " → " + current.path + "；已继承设置，等待按新 JAR 重新匹配"
+                : "已继承现有设置，等待按当前 JAR 重新匹配");
+    }
+
     private void importV4Catalog() {
         Path rootPath;
         try {
@@ -656,7 +716,7 @@ final class V5PublisherWorkspace {
                 if (entry == null) continue;
                 row.required = !entry.recommended();
                 if (!entry.displayName().isBlank()) row.displayName = entry.displayName();
-                if (!entry.version().isBlank()) row.modVersion = entry.version();
+                if (row.modVersion.isBlank() && !entry.version().isBlank()) row.modVersion = entry.version();
                 if (!entry.descriptionZh().isBlank()) row.descriptionZh = entry.descriptionZh();
                 if (row.descriptionEn.isBlank() && !entry.descriptionEn().isBlank()) {
                     row.descriptionEn = entry.descriptionEn();
@@ -673,6 +733,7 @@ final class V5PublisherWorkspace {
                 matched++;
             }
             files.rows.sort(Comparator.comparing(row -> row.path));
+            refreshModConflicts();
             files.fireTableDataChanged();
             refreshSummary();
             validation.append("已从 " + manifestPath.getFileName() + " 导入 " + matched
@@ -720,6 +781,7 @@ final class V5PublisherWorkspace {
             files.rows.removeIf(row -> row.kind.equals("mod"));
             files.rows.addAll(current);
             files.rows.sort(Comparator.comparing(row -> row.path));
+            refreshModConflicts();
             files.fireTableDataChanged();
             refreshSummary();
             validation.append("已从 " + manifestPath.getFileName() + " 仅导入 Mods 元数据：按 SHA-256 精确优先、唯一 modId 仅作升级元数据后备，匹配 "
@@ -738,7 +800,7 @@ final class V5PublisherWorkspace {
         row.side = entry.side().stream().sorted().findFirst().orElse("client");
         if (!entry.modId().isBlank()) row.modId = entry.modId();
         if (!entry.displayName().isBlank()) row.displayName = entry.displayName();
-        if (!entry.version().isBlank()) row.modVersion = entry.version();
+        if (row.modVersion.isBlank() && !entry.version().isBlank()) row.modVersion = entry.version();
         if (!entry.descriptionZh().isBlank()) row.descriptionZh = entry.descriptionZh();
         if (!entry.descriptionEn().isBlank()) row.descriptionEn = entry.descriptionEn();
         row.incompatiblePlatforms.clear();
@@ -833,8 +895,14 @@ final class V5PublisherWorkspace {
             showError(failure.getMessage());
             return;
         }
+        List<String> conflicts = refreshModConflicts();
+        files.fireTableDataChanged();
+        if (!conflicts.isEmpty()) {
+            validation.append("检测到 " + conflicts.size() + " 组重复 modId；冲突项不会自动匹配，导出保持阻断。\n");
+        }
         List<FileRow> mods = files.rows.stream()
                 .filter(row -> PublisherModAutoMatcher.isModArtifact(row.path, row.kind))
+                .filter(row -> row.conflictDetail.isBlank())
                 .toList();
         if (mods.isEmpty()) {
             validation.append("没有需要匹配的 mods/*.jar。\n");
@@ -891,13 +959,16 @@ final class V5PublisherWorkspace {
             String relative = rootPath.relativize(path).toString().replace('\\', '/');
             if (existing.add(relative.toLowerCase(Locale.ROOT))) {
                 FileRow row = FileRow.scanned(relative, kindFor(relative));
-                if (!PublisherModAutoMatcher.isModArtifact(relative, row.kind)) {
+                if (PublisherModAutoMatcher.isModArtifact(relative, row.kind)) {
+                    populateLocalModMetadata(path, row);
+                } else {
                     row.confirmed = true;
                     row.applyLocal("非 Mod 文件固定本地托管");
                 }
                 files.rows.add(row);
             }
         }
+        refreshModConflicts();
         files.rows.sort(Comparator.comparing(row -> row.path));
         files.fireTableDataChanged();
         refreshSummary();
@@ -918,6 +989,8 @@ final class V5PublisherWorkspace {
 
     private List<String> validateProject() {
         ArrayList<String> errors = new ArrayList<>();
+        List<String> modConflicts = refreshModConflicts();
+        for (String conflict : modConflicts) errors.add("Mod 冲突：" + conflict);
         Path rootPath = null;
         try {
             rootPath = requireGameRoot();
@@ -955,7 +1028,7 @@ final class V5PublisherWorkspace {
         for (int i = 0; i < files.rows.size(); i++) {
             FileRow row = files.rows.get(i);
             String at = "文件第 " + (i + 1) + " 行：";
-            if (!row.confirmed) errors.add(at + "Mod 自动来源匹配尚未完成。");
+            if (!row.confirmed && row.conflictDetail.isBlank()) errors.add(at + "Mod 自动来源匹配尚未完成。");
             if (row.path.isBlank() || row.path.startsWith("/") || row.path.contains("..")
                     || !unique.add(row.path.toLowerCase(Locale.ROOT))) errors.add(at + "路径为空、不安全或重复。");
             if (rootPath != null && !Files.isRegularFile(rootPath.resolve(row.path), LinkOption.NOFOLLOW_LINKS)) {
@@ -1474,6 +1547,7 @@ final class V5PublisherWorkspace {
             config.rows.add(item);
         }
         scopes.fireTableDataChanged();
+        refreshModConflicts();
         files.fireTableDataChanged();
         config.fireTableDataChanged();
         refreshSummary();
@@ -1494,8 +1568,49 @@ final class V5PublisherWorkspace {
 
     private void refreshSummary() {
         long confirmed = files.rows.stream().filter(row -> row.confirmed).count();
+        long conflicts = files.rows.stream().filter(row -> !row.conflictDetail.isBlank()).count();
         summary.setText("文件 " + files.rows.size() + " / 已确认 " + confirmed
-                + "  ·  范围 " + scopes.rows.size() + "  ·  配置操作 " + config.rows.size());
+                + " / 冲突 " + conflicts + "  ·  范围 " + scopes.rows.size()
+                + "  ·  配置操作 " + config.rows.size());
+    }
+
+    private List<String> refreshModConflicts() {
+        LinkedHashMap<String, List<FileRow>> byId = new LinkedHashMap<>();
+        for (FileRow row : files.rows) {
+            if (!row.kind.equals("mod")) continue;
+            if (!row.conflictDetail.isBlank()) {
+                row.conflictDetail = "";
+                row.confirmed = false;
+                row.matchDetail = "冲突已解除，等待重新匹配";
+            }
+            String id = row.modId.strip().toLowerCase(Locale.ROOT);
+            if (!id.isBlank()) byId.computeIfAbsent(id, ignored -> new ArrayList<>()).add(row);
+        }
+        ArrayList<String> conflicts = new ArrayList<>();
+        byId.forEach((id, rows) -> {
+            if (rows.size() < 2) return;
+            String detail = "同一 modId=" + id + " 检测到多个 JAR：" + rows.stream()
+                    .map(row -> row.path + (row.modVersion.isBlank() ? "" : " (" + row.modVersion + ")"))
+                    .sorted()
+                    .reduce((left, right) -> left + "；" + right)
+                    .orElse("");
+            conflicts.add(detail);
+            for (FileRow row : rows) row.markConflict(detail);
+        });
+        return List.copyOf(conflicts);
+    }
+
+    private void showModConflictWarning() {
+        List<String> conflicts = refreshModConflicts();
+        if (conflicts.isEmpty()) return;
+        StringBuilder message = new StringBuilder("检测到重复模组版本，已阻止自动选择和导出：\n\n");
+        for (String conflict : conflicts.stream().limit(8).toList()) {
+            message.append("• ").append(conflict).append('\n');
+        }
+        if (conflicts.size() > 8) message.append("…其余 ").append(conflicts.size() - 8).append(" 组请在 Mods 表格中查看。\n");
+        message.append("\n请移除旧版或重复 JAR 后重新扫描。");
+        JOptionPane.showMessageDialog(owner, message.toString(), "MCSync Mod 冲突",
+                JOptionPane.WARNING_MESSAGE);
     }
 
     private void showError(String message) {
@@ -1523,6 +1638,9 @@ final class V5PublisherWorkspace {
         return source.equals("publisher-hosted") ? "redistributable" : source.equals("manual") ? "manual" : "upstream-only";
     }
 
+    private record ModScanResult(int inherited, int replaced, int added, int removed, int conflicts) {
+    }
+
     private static final class FileRow {
         boolean confirmed;
         String path;
@@ -1543,6 +1661,7 @@ final class V5PublisherWorkspace {
         String modVersion = "";
         String descriptionZh = "";
         String descriptionEn = "";
+        String conflictDetail = "";
         final Set<String> incompatiblePlatforms = new HashSet<>();
 
         static FileRow scanned(String path, String kind) {
@@ -1569,6 +1688,7 @@ final class V5PublisherWorkspace {
         }
 
         void applyMatch(PublisherModAutoMatcher.Match match) {
+            if (!conflictDetail.isBlank()) return;
             Map<String, Object> download = match.download();
             source = String.valueOf(download.getOrDefault("type", "publisher-hosted"));
             policy = String.valueOf(download.getOrDefault("distributionPolicy", "redistributable"));
@@ -1584,6 +1704,24 @@ final class V5PublisherWorkspace {
                 descriptionEn = match.descriptionEn();
             }
             confirmed = true;
+        }
+
+        void resetDownloadMatch(String detail) {
+            confirmed = false;
+            source = "publisher-hosted";
+            policy = "redistributable";
+            projectId = "";
+            versionId = "";
+            fileId = "";
+            directUrl = "";
+            matchDetail = detail;
+            conflictDetail = "";
+        }
+
+        void markConflict(String detail) {
+            conflictDetail = detail;
+            confirmed = false;
+            matchDetail = "冲突：" + detail;
         }
     }
 
@@ -1604,7 +1742,8 @@ final class V5PublisherWorkspace {
         @Override public Object getValueAt(int rowIndex, int columnIndex) {
             FileRow r = rows.get(rowIndex);
             return switch (columnIndex) {
-                case 0 -> r.confirmed ? "已确定" : "待匹配"; case 1 -> r.path; case 2 -> r.kind;
+                case 0 -> !r.conflictDetail.isBlank() ? "冲突" : r.confirmed ? "已确定" : "待匹配";
+                case 1 -> r.path; case 2 -> r.kind;
                 case 3 -> r.required; case 4 -> Set.of("mod", "resource-pack", "shader-pack").contains(r.kind) && !r.required;
                 case 5 -> r.restart; case 6 -> r.side;
                 case 7 -> r.source.equals("publisher-hosted") ? "本地托管" : "上游平台";

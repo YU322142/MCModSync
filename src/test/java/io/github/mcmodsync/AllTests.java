@@ -45,6 +45,7 @@ public final class AllTests {
         testV5RecommendedSelectionIsDeferredToMinecraftWindow();
         testV5ResourceAndShaderPacksCanBeOptional();
         testV5ModCatalogImportRespectsCurrentClientDeletions();
+        testPublisherModUpgradeReplacementAndConflictPlanning();
         testV5PlatformDownloadSourcesAndMirrorTrustBoundary();
         testOnlyModsMayUsePlatformDownloadSources();
         testDefaultDownloadConcurrencyIs128();
@@ -300,6 +301,44 @@ public final class AllTests {
                         "mods/deleted.jar", "mods/ambiguous-1.jar", "mods/ambiguous-2.jar")),
                 "旧 v5 中已从客户端删除或无法唯一对应的 Mod 不得被恢复");
         pass("v5 Mods-only import preserves translations without reviving deleted mods");
+    }
+
+    private void testPublisherModUpgradeReplacementAndConflictPlanning() {
+        PublisherModUpgradePlanner.Plan upgrade = PublisherModUpgradePlanner.plan(
+                List.of(new PublisherModUpgradePlanner.ExistingMod(
+                        "mods/example-1.0.jar", "example", "1.0")),
+                List.of(new PublisherModUpgradePlanner.CurrentMod(
+                        "mods/example-2.0.jar", "example", "2.0")));
+        check(upgrade.inheritedFromByCurrentPath().get("mods/example-2.0.jar")
+                        .equals("mods/example-1.0.jar")
+                        && upgrade.newCurrentPaths().isEmpty()
+                        && upgrade.staleExistingPaths().isEmpty(),
+                "唯一 modId 的新版 JAR 应替换旧路径并继承 GUI 设置");
+
+        PublisherModUpgradePlanner.Plan duplicates = PublisherModUpgradePlanner.plan(
+                List.of(new PublisherModUpgradePlanner.ExistingMod(
+                        "mods/example-1.0.jar", "example", "1.0")),
+                List.of(
+                        new PublisherModUpgradePlanner.CurrentMod(
+                                "mods/example-1.0.jar", "example", "1.0"),
+                        new PublisherModUpgradePlanner.CurrentMod(
+                                "mods/example-2.0.jar", "example", "2.0")));
+        check(duplicates.inheritedFromByCurrentPath().isEmpty()
+                        && duplicates.conflictByCurrentPath().size() == 2
+                        && duplicates.conflictByCurrentPath().values().stream()
+                                .allMatch(detail -> detail.contains("example-1.0.jar (1.0)")
+                                        && detail.contains("example-2.0.jar (2.0)")),
+                "同一 modId 的多个版本必须全部标记冲突，不能自动选择其中一个");
+
+        PublisherModUpgradePlanner.Plan ambiguousHistory = PublisherModUpgradePlanner.plan(
+                List.of(
+                        new PublisherModUpgradePlanner.ExistingMod("mods/old-a.jar", "duplicate", "1"),
+                        new PublisherModUpgradePlanner.ExistingMod("mods/old-b.jar", "duplicate", "1")),
+                List.of(new PublisherModUpgradePlanner.CurrentMod("mods/new.jar", "duplicate", "2")));
+        check(ambiguousHistory.inheritedFromByCurrentPath().isEmpty()
+                        && ambiguousHistory.newCurrentPaths().contains("mods/new.jar"),
+                "旧项目中不唯一的 modId 不得被猜测为升级来源");
+        pass("publisher detects mod upgrades and blocks duplicate mod versions");
     }
 
     private void testPublisherResolvesCurseForgeWithoutLeakingCredentials() throws Exception {
