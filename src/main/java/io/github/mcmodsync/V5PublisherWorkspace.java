@@ -138,14 +138,15 @@ final class V5PublisherWorkspace {
         c.weightx = 0;
         form.add(autoReleaseSequence, c);
         addFieldRow(form, c, 4, "最低 MCSync 版本：", minimumVersion);
-        addPathRow(form, c, 5, "上一版发布输出目录（推荐）：", previousOutputDirectory, "选择目录", true);
+        addBaselinePathRow(form, c, 5, "上一版完整发布输出/升级包（推荐）：", previousOutputDirectory, "选择基线");
 
         JTextArea note = new JTextArea(
                 "此工作台直接产生 schema-v5 发布。releaseSequence 只能增加，客户端会拒绝降级。\n"
                         + "自动扫描只查找 mods/resourcepacks/shaderpacks/kubejs 等可分发内容；"
                         + "config/defaultconfigs 默认不整树扫描，应在“配置 OTA”按键级管理，防止携带密钥。\n"
-                        + "增量发布以“上一版发布输出目录”对比当前输出；程序从旧输出中的 manifest-v5.json 读取不可变文件地址，\n"
-                        + "不再要求把 mods-v5.json 单独作为比较基线。");
+                        + "增量发布以“上一版完整发布输出/升级包”对比当前客户端；程序只需要其中完整的 manifest-v5.json，\n"
+                        + "旧文件本体不必重复携带。ZIP 升级包、releases/<序号> 目录和完整输出目录均可作为基线；只有差分清单而没有完整索引时会阻止导出。\n"
+                        + "未变化文件复用旧不可变地址，当前 releases/<序号>/ 只输出新增或变化的文件。");
         note.setEditable(false);
         note.setLineWrap(true);
         note.setWrapStyleWord(true);
@@ -441,6 +442,22 @@ final class V5PublisherWorkspace {
         addFilePathRow(form, c, row, label, field, buttonText, "选择测试客户端的 servers.dat");
     }
 
+    private void addBaselinePathRow(
+            JPanel form, GridBagConstraints c, int row, String label, JTextField field, String buttonText) {
+        c.gridx = 0;
+        c.gridy = row;
+        c.weightx = 0;
+        form.add(new JLabel(label), c);
+        c.gridx = 1;
+        c.weightx = 1;
+        form.add(field, c);
+        JButton button = new JButton(buttonText);
+        c.gridx = 2;
+        c.weightx = 0;
+        form.add(button, c);
+        button.addActionListener(event -> chooseBaseline(field));
+    }
+
     private void addFilePathRow(
             JPanel form, GridBagConstraints c, int row, String label, JTextField field, String buttonText,
             String dialogTitle) {
@@ -496,6 +513,16 @@ final class V5PublisherWorkspace {
         JFileChooser chooser = new JFileChooser();
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         chooser.setDialogTitle(title);
+        if (!target.getText().isBlank()) chooser.setSelectedFile(Path.of(target.getText()).toFile());
+        if (chooser.showOpenDialog(owner) == JFileChooser.APPROVE_OPTION) {
+            target.setText(chooser.getSelectedFile().toPath().toAbsolutePath().normalize().toString());
+        }
+    }
+
+    private void chooseBaseline(JTextField target) {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
+        chooser.setDialogTitle("选择上一版完整输出目录或 ZIP 升级包");
         if (!target.getText().isBlank()) chooser.setSelectedFile(Path.of(target.getText()).toFile());
         if (chooser.showOpenDialog(owner) == JFileChooser.APPROVE_OPTION) {
             target.setText(chooser.getSelectedFile().toPath().toAbsolutePath().normalize().toString());

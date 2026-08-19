@@ -23,6 +23,9 @@
 - Fixed MCSync progress being pushed outside the visible NeoForge early window in large modpacks. MCSync now prepends its progress meter and uses status labels that the early window's ASCII font can render reliably.
 - Clearly separates download/cache/hash verification shown in the Minecraft window from the hidden atomic commit after exit, instead of reporting the hidden commit helper as an unavailable GUI window.
 - Shows a non-skippable countdown in the Minecraft early window before the hidden commit starts, explicitly telling players to wait for the atomic commit before relaunching.
+- Shows an estimated hidden-commit duration before Minecraft exits, based on the actual number and size of files to write, while warning that many small files or slower disks can take longer.
+- Fixed schema-v5 releases restaging, backing up, and rewriting every file in the complete desired-state manifest whenever the release sequence changed. The complete manifest is still verified and recorded in the ownership ledger, but the transaction now commits only additions, changes, removals, and configuration mutations.
+- The previous baseline can now be a complete publisher output, a standalone `manifest-v5.json`/`mods-v5.json`, or a ZIP upgrade package. An upgrade package only needs the complete desired-state index, not duplicate old payloads; publication is blocked when that index is absent.
 
 ## 1.9.6
 

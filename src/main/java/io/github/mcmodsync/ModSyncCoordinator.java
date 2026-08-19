@@ -20,18 +20,25 @@ final class ModSyncCoordinator {
         Optional<V5ReleaseSync.Loaded> v5 = V5ReleaseSync.load(config, logger);
         if (v5.isPresent()) {
             boolean changed = false;
+            int estimatedCommitFiles = 0;
+            long estimatedCommitBytes = 0L;
             for (BakaXLLayout.Target target : BakaXLLayout.syncTargets(config.gameDirectory())) {
                 ModSyncConfig targetConfig = config.forGameDirectory(target.gameDirectory());
-                changed |= V5ReleaseSync.probe(targetConfig, v5.get(), logger, observer).status()
-                        == SyncProbeResult.Status.CHANGES_REQUIRED;
+                SyncProbeResult targetResult = V5ReleaseSync.probe(targetConfig, v5.get(), logger, observer);
+                changed |= targetResult.status() == SyncProbeResult.Status.CHANGES_REQUIRED;
+                estimatedCommitFiles = saturatedAdd(estimatedCommitFiles, targetResult.estimatedCommitFiles());
+                estimatedCommitBytes = saturatedAdd(estimatedCommitBytes, targetResult.estimatedCommitBytes());
                 if (config.syncServerList()) {
-                    changed |= new ServerListSyncEngine(targetConfig, logger).probeWithoutChanges().status()
-                            == SyncProbeResult.Status.CHANGES_REQUIRED;
+                    boolean serverListChanged = new ServerListSyncEngine(targetConfig, logger)
+                            .probeWithoutChanges().status() == SyncProbeResult.Status.CHANGES_REQUIRED;
+                    changed |= serverListChanged;
+                    if (serverListChanged) estimatedCommitFiles = saturatedAdd(estimatedCommitFiles, 1);
                 }
             }
-            return new SyncProbeResult(changed
-                    ? SyncProbeResult.Status.CHANGES_REQUIRED
-                    : SyncProbeResult.Status.UP_TO_DATE);
+            return new SyncProbeResult(
+                    changed ? SyncProbeResult.Status.CHANGES_REQUIRED : SyncProbeResult.Status.UP_TO_DATE,
+                    estimatedCommitFiles,
+                    estimatedCommitBytes);
         }
         DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         boolean skippedOffline = false;
@@ -206,6 +213,16 @@ final class ModSyncCoordinator {
 
     private static Consumer<String> prefixedLogger(Consumer<String> logger, String label) {
         return message -> logger.accept("[" + label + "] " + message);
+    }
+
+    private static int saturatedAdd(int left, int right) {
+        if (right > 0 && left > Integer.MAX_VALUE - right) return Integer.MAX_VALUE;
+        return left + Math.max(right, 0);
+    }
+
+    private static long saturatedAdd(long left, long right) {
+        if (right > 0L && left > Long.MAX_VALUE - right) return Long.MAX_VALUE;
+        return left + Math.max(right, 0L);
     }
 
     private static String localizeTargetLabel(String label, DisplayLanguage language) {

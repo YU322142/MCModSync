@@ -89,8 +89,8 @@ final class ReleaseTransactionEngine {
         Files.createDirectories(stage);
         Files.createDirectories(backup);
 
-        LinkedHashMap<String, byte[]> desired = new LinkedHashMap<>();
-        LinkedHashMap<String, String> desiredHashes = new LinkedHashMap<>();
+        LinkedHashMap<String, byte[]> writes = new LinkedHashMap<>();
+        LinkedHashMap<String, String> finalHashes = new LinkedHashMap<>();
         for (ReleaseManifestV5.FileEntry entry : manifest.files()) {
             if (!appliesToClient(entry.side())) continue;
             Path localTarget = paths.resolve(entry.path(), true);
@@ -99,23 +99,24 @@ final class ReleaseTransactionEngine {
             }
             byte[] bytes;
             if (entry.download().type().equals("manual")) {
-                Path local = paths.resolve(entry.path(), true);
-                if (!Files.isRegularFile(local) || Files.size(local) != entry.size()
-                        || !Hashing.sha256(local).equals(entry.sha256())) {
+                if (!Files.isRegularFile(localTarget) || Files.size(localTarget) != entry.size()
+                        || !Hashing.sha256(localTarget).equals(entry.sha256())) {
                     continue;
                 }
-                bytes = Files.readAllBytes(local);
+                finalHashes.put(entry.path(), entry.sha256());
+                continue;
             } else if (Files.isRegularFile(localTarget) && Files.size(localTarget) == entry.size()
                     && Hashing.sha256(localTarget).equals(entry.sha256())) {
-                bytes = Files.readAllBytes(localTarget);
+                finalHashes.put(entry.path(), entry.sha256());
+                continue;
             } else {
                 bytes = provider.fetch(entry);
             }
             if (bytes.length != entry.size()) throw new IOException("下载文件大小不匹配: " + entry.path());
             String hash = Hashing.sha256(bytes);
             if (!hash.equals(entry.sha256())) throw new IOException("下载文件 SHA256 不匹配: " + entry.path());
-            desired.put(entry.path(), bytes);
-            desiredHashes.put(entry.path(), hash);
+            writes.put(entry.path(), bytes);
+            finalHashes.put(entry.path(), hash);
         }
 
         int configChanged = 0;
@@ -123,9 +124,11 @@ final class ReleaseTransactionEngine {
             if (!appliesToClientConfig(operation.side()) || !operation.phase().equals("prelaunch")) continue;
             Path target = paths.resolve(operation.path(), true);
             if (operation.operation().equals("file-replace")) {
-                if (!desired.containsKey(operation.path())) {
+                if (!finalHashes.containsKey(operation.path())) {
                     throw new IOException("file-replace 缺少同路径文件条目: " + operation.path());
                 }
+                if (!writes.containsKey(operation.path()) && Files.isRegularFile(target)
+                        && Hashing.sha256(target).equals(finalHashes.get(operation.path()))) continue;
                 boolean exists = Files.isRegularFile(target);
                 if (operation.expectedSha256().equals("absent")) {
                     if (exists) throw new IOException("file-replace 前像应不存在但目标已存在: " + operation.path());
@@ -134,31 +137,33 @@ final class ReleaseTransactionEngine {
                 }
                 continue;
             }
-            byte[] base = desired.get(operation.path());
+            byte[] base = writes.get(operation.path());
             if (base == null) {
                 base = Files.isRegularFile(target) ? Files.readAllBytes(target) : emptyDocument(operation.format());
             }
             ConfigMutationEngine.MutationResult mutation = ConfigMutationEngine.apply(base, operation);
-            if (mutation.changed()) configChanged++;
-            desired.put(operation.path(), mutation.bytes());
-            desiredHashes.put(operation.path(), Hashing.sha256(mutation.bytes()));
+            if (mutation.changed()) {
+                configChanged++;
+                writes.put(operation.path(), mutation.bytes());
+            }
+            finalHashes.put(operation.path(), Hashing.sha256(mutation.bytes()));
         }
 
         LinkedHashSet<String> removals = new LinkedHashSet<>();
         for (Map.Entry<String, String> previous : previousOwnership.entrySet()) {
-            if (desired.containsKey(previous.getKey()) || !paths.isManaged(previous.getKey())) continue;
+            if (finalHashes.containsKey(previous.getKey()) || !paths.isManaged(previous.getKey())) continue;
             Path target = paths.resolve(previous.getKey(), true);
             if (Files.isRegularFile(target) && Hashing.sha256(target).equals(previous.getValue())) {
                 removals.add(previous.getKey());
             }
         }
 
-        for (Map.Entry<String, byte[]> entry : desired.entrySet()) {
+        for (Map.Entry<String, byte[]> entry : writes.entrySet()) {
             Path staged = stage.resolve(entry.getKey()).normalize();
             if (!staged.startsWith(stage)) throw new IOException("暂存路径逃逸: " + entry.getKey());
             Files.createDirectories(staged.getParent());
             Files.write(staged, entry.getValue());
-            if (!Hashing.sha256(staged).equals(desiredHashes.get(entry.getKey()))) {
+            if (!Hashing.sha256(staged).equals(finalHashes.get(entry.getKey()))) {
                 throw new IOException("暂存后复核失败: " + entry.getKey());
             }
             if (entry.getKey().toLowerCase(java.util.Locale.ROOT).endsWith(".jar")
@@ -173,12 +178,12 @@ final class ReleaseTransactionEngine {
                 }
             }
         }
-        addLegacySelfUpdateRemovals(paths, stage, desired.keySet(), removals);
+        addLegacySelfUpdateRemovals(paths, stage, finalHashes.keySet(), removals);
 
         List<BackupEntry> backups = new ArrayList<>();
         boolean commitStarted = false;
         try {
-            Set<String> touched = new LinkedHashSet<>(desired.keySet());
+            Set<String> touched = new LinkedHashSet<>(writes.keySet());
             touched.addAll(removals);
             for (String relative : touched) {
                 Path target = paths.resolve(relative, true);
@@ -195,23 +200,24 @@ final class ReleaseTransactionEngine {
             Path journal = writePreparedJournal(transaction, manifest, manifestSha256, backups);
             commitStarted = true;
             for (String relative : removals) fileOperations.deleteIfExists(paths.resolve(relative, true));
-            for (Map.Entry<String, byte[]> entry : desired.entrySet()) {
+            for (Map.Entry<String, byte[]> entry : writes.entrySet()) {
                 Path staged = stage.resolve(entry.getKey());
                 Path target = paths.resolve(entry.getKey(), true);
                 Files.createDirectories(target.getParent());
                 fileOperations.move(staged, target, true);
             }
-            for (Map.Entry<String, String> expected : desiredHashes.entrySet()) {
+            for (Map.Entry<String, String> expected : finalHashes.entrySet()) {
                 Path target = paths.resolve(expected.getKey(), true);
                 if (!Files.isRegularFile(target) || !Hashing.sha256(target).equals(expected.getValue())) {
                     throw new IOException("事务写后校验失败: " + expected.getKey());
                 }
             }
-            ownership.write(manifest.releaseId(), manifest.releaseSequence(), desiredHashes);
+            ownership.write(manifest.releaseId(), manifest.releaseSequence(), finalHashes);
             sequenceGate.commit(manifest, manifestSha256);
-            Path receipt = writeReceipt(transaction, manifest, manifestSha256, desiredHashes, removals);
+            Path receipt = writeReceipt(
+                    transaction, manifest, manifestSha256, finalHashes, writes.keySet(), removals);
             Files.deleteIfExists(journal);
-            return new Result(!desired.isEmpty() || !removals.isEmpty(), desired.size(), removals.size(), configChanged, receipt);
+            return new Result(!writes.isEmpty() || !removals.isEmpty(), writes.size(), removals.size(), configChanged, receipt);
         } catch (Throwable failure) {
             if (commitStarted) {
                 try {
@@ -239,8 +245,12 @@ final class ReleaseTransactionEngine {
         List<String> selfCandidates = new ArrayList<>();
         for (String relative : desiredPaths) {
             if (!relative.toLowerCase(java.util.Locale.ROOT).endsWith(".jar")) continue;
-            Path staged = stage.resolve(relative);
-            if (ModMetadata.readModId(staged).equals(BuildInfo.TECHNICAL_MOD_ID)) selfCandidates.add(relative);
+            Path candidate = stage.resolve(relative).normalize();
+            if (!Files.isRegularFile(candidate)) candidate = paths.resolve(relative, true);
+            if (Files.isRegularFile(candidate)
+                    && ModMetadata.readModId(candidate).equals(BuildInfo.TECHNICAL_MOD_ID)) {
+                selfCandidates.add(relative);
+            }
         }
         if (selfCandidates.size() > 1) {
             throw new IOException("v5 发布不能包含多个 MCSync 自更新候选");
@@ -379,6 +389,7 @@ final class ReleaseTransactionEngine {
             ReleaseManifestV5 manifest,
             String manifestSha256,
             Map<String, String> files,
+            Set<String> written,
             Set<String> removals) throws IOException {
         LinkedHashMap<String, Object> receipt = new LinkedHashMap<>();
         receipt.put("schema", 1);
@@ -386,6 +397,9 @@ final class ReleaseTransactionEngine {
         receipt.put("releaseSequence", manifest.releaseSequence());
         receipt.put("manifestSha256", manifestSha256);
         receipt.put("committedAt", Instant.now().toString());
+        receipt.put("verifiedFileCount", files.size());
+        receipt.put("writtenFileCount", written.size());
+        receipt.put("written", List.copyOf(written));
         receipt.put("files", new LinkedHashMap<>(files));
         receipt.put("removed", List.copyOf(removals));
         Path result = transaction.resolve("receipt.json");

@@ -64,6 +64,7 @@ public final class AllTests {
         testLoadedProjectSequenceAlwaysAdvances();
         testStructuredConfigMutationEngine();
         testV5AtomicReleaseTransactionAndOwnership();
+        testV5NewReleaseDoesNotRewriteUnchangedFiles();
         testV5InterruptedCommitRecoversFromDurableJournal();
         testV5SelfUpdateReplacesLegacyJarInSameTransaction();
         testV5CoordinatorDownloadsBeforeStartupAndBecomesIdempotent();
@@ -72,9 +73,11 @@ public final class AllTests {
         testPublisherCloudBundleExportsServerList();
         testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
         testPreviousPublisherOutputDirectorySelectsNewestRelease();
+        testPreviousUpgradeZipProvidesFullBaselineWithoutOldPayloads();
         testMinecraftEarlyProgressFailsClosedOutsideNeoForge();
         testMinecraftEarlyProgressUsesAsciiSafeVisibleLabels();
         testHiddenCommitNoticeDurationIsBounded();
+        testHiddenCommitDurationEstimateUsesFileCountAndBytes();
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
         testNeoForgeMetadataAndUniversalBootstrap();
@@ -176,6 +179,26 @@ public final class AllTests {
         } finally {
             restoreProperty("modsync.handoffNoticeSeconds", previous);
         }
+    }
+
+    private void testHiddenCommitDurationEstimateUsesFileCountAndBytes() {
+        PortablePreLaunchEntrypoint.CommitDurationEstimate unknown =
+                PortablePreLaunchEntrypoint.estimateHiddenCommitDuration(0, 0L);
+        PortablePreLaunchEntrypoint.CommitDurationEstimate small =
+                PortablePreLaunchEntrypoint.estimateHiddenCommitDuration(100, 10L * 1024L * 1024L);
+        PortablePreLaunchEntrypoint.CommitDurationEstimate large =
+                PortablePreLaunchEntrypoint.estimateHiddenCommitDuration(7500, 700L * 1024L * 1024L);
+        check(unknown.minimumSeconds() == 5 && unknown.maximumSeconds() == 30,
+                "未知工作量必须给出保守而非虚假的精确耗时");
+        check(small.minimumSeconds() >= 3 && small.maximumSeconds() >= small.minimumSeconds(),
+                "小型提交的预计耗时范围必须有效");
+        check(large.minimumSeconds() > small.minimumSeconds()
+                        && large.maximumSeconds() > small.maximumSeconds()
+                        && large.localizedChinese().contains("约")
+                        && large.localizedEnglish().contains("about")
+                        && large.asciiRange().matches("[0-9ms -]+"),
+                "大量文件与更大字节量必须得到更长且可在 Minecraft 早期窗口显示的预计耗时");
+        pass("hidden commit estimate scales with file count and byte workload");
     }
 
     private void testMcsyncBrandingKeepsLegacyTechnicalIdentity() {
@@ -1178,6 +1201,64 @@ public final class AllTests {
         }
     }
 
+    private void testV5NewReleaseDoesNotRewriteUnchangedFiles() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-no-rewrite-");
+        try {
+            Path unchanged = root.resolve("config/unchanged.txt");
+            Files.createDirectories(unchanged.getParent());
+            byte[] stable = "stable-local-content".getBytes(StandardCharsets.UTF_8);
+            Files.write(unchanged, stable);
+            FileTime before = Files.getLastModifiedTime(unchanged);
+
+            ReleaseManifestV5 first = transactionManifest(
+                    20, "no-rewrite-20", List.of(fileJson("config/unchanged.txt", stable)), "[]");
+            ReleaseTransactionEngine engine = new ReleaseTransactionEngine(root, 2);
+            AtomicInteger firstFetches = new AtomicInteger();
+            ReleaseTransactionEngine.Result firstResult = engine.apply(
+                    first, Hashing.sha256(first.serialize()), entry -> {
+                        firstFetches.incrementAndGet();
+                        return stable;
+                    });
+            check(firstResult.installed() == 0 && firstFetches.get() == 0
+                            && Files.getLastModifiedTime(unchanged).equals(before),
+                    "首个新序号遇到哈希一致的文件也不得下载或重写");
+            @SuppressWarnings("unchecked") Map<String, Object> firstReceipt = (Map<String, Object>) StrictJson.parse(
+                    Files.readString(firstResult.receipt(), StandardCharsets.UTF_8));
+            check(new BigDecimal("1").equals(firstReceipt.get("verifiedFileCount"))
+                            && BigDecimal.ZERO.equals(firstReceipt.get("writtenFileCount")),
+                    "事务回执必须区分完整验证集合与实际写入集合");
+
+            Thread.sleep(25L);
+            byte[] changed = "changed-content".getBytes(StandardCharsets.UTF_8);
+            Path changedPath = root.resolve("config/changed.txt");
+            Files.writeString(changedPath, "old-content", StandardCharsets.UTF_8);
+            FileTime unchangedBeforeSecond = Files.getLastModifiedTime(unchanged);
+            ReleaseManifestV5 second = transactionManifest(
+                    21,
+                    "no-rewrite-21",
+                    List.of(fileJson("config/unchanged.txt", stable), fileJson("config/changed.txt", changed)),
+                    "[]");
+            AtomicInteger secondFetches = new AtomicInteger();
+            ReleaseTransactionEngine.Result secondResult = engine.apply(
+                    second, Hashing.sha256(second.serialize()), entry -> {
+                        secondFetches.incrementAndGet();
+                        return changed;
+                    });
+            check(secondResult.installed() == 1 && secondFetches.get() == 1
+                            && Files.getLastModifiedTime(unchanged).equals(unchangedBeforeSecond)
+                            && Arrays.equals(Files.readAllBytes(changedPath), changed),
+                    "新发布只能暂存、备份和替换哈希变化的文件，不能重写完整清单");
+            @SuppressWarnings("unchecked") Map<String, Object> secondReceipt = (Map<String, Object>) StrictJson.parse(
+                    Files.readString(secondResult.receipt(), StandardCharsets.UTF_8));
+            check(new BigDecimal("2").equals(secondReceipt.get("verifiedFileCount"))
+                            && BigDecimal.ONE.equals(secondReceipt.get("writtenFileCount")),
+                    "事务回执应准确报告一项实际变化，而不是把完整清单都算成替换");
+            pass("v5 new releases reuse unchanged local bytes without rewriting them");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
     private static ReleaseManifestV5 transactionManifest(
             long sequence,
             String releaseId,
@@ -1605,6 +1686,37 @@ public final class AllTests {
                             && selected.releaseId().equals("previous-newest"),
                     "上一版完整发布输出目录必须自动选择最高发布序号，而不是依赖人工选择 mods-v5.json");
             pass("previous publisher output directory selects its newest immutable release");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPreviousUpgradeZipProvidesFullBaselineWithoutOldPayloads() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-previous-upgrade-zip-");
+        try {
+            ReleaseManifestV5 manifest = releaseManifest(20260819020202000L, "previous-zip-baseline");
+            Path archive = root.resolve("previous-upgrade.zip");
+            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+                zip.putNextEntry(new ZipEntry("MCSync/release/manifest-v5.json"));
+                zip.write(manifest.serialize());
+                zip.closeEntry();
+                zip.putNextEntry(new ZipEntry("UPLOAD-PLAN.json"));
+                zip.write("{\"schema\":1}".getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+            ReleaseManifestV5 selected = PublisherOutputBaseline.read(archive);
+            check(selected.releaseSequence() == manifest.releaseSequence()
+                            && selected.files().equals(manifest.files()),
+                    "升级包不需要旧载荷，但必须能用完整 v5 索引重建上一版终态");
+
+            Path invalid = root.resolve("delta-only.zip");
+            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(invalid))) {
+                zip.putNextEntry(new ZipEntry("UPLOAD-PLAN.json"));
+                zip.write("{\"schema\":1}".getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+            expectIoFailure(() -> PublisherOutputBaseline.read(invalid));
+            pass("previous upgrade ZIP carries a full baseline without duplicating old payload files");
         } finally {
             deleteTree(root);
         }

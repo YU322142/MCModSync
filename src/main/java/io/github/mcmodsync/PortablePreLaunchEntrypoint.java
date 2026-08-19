@@ -68,7 +68,7 @@ final class PortablePreLaunchEntrypoint {
                     loaderName + " portable read-only verification finished: " + result.status());
 
             if (result.status() == SyncProbeResult.Status.CHANGES_REQUIRED) {
-                showHiddenCommitNotice(notifier);
+                showHiddenCommitNotice(notifier, result);
                 boolean helperStarted = PortableUpdateHelper.schedule(
                         config, message -> log(language, message), loaderName);
                 System.err.println("[MCSync] RESTART_REQUIRED");
@@ -152,20 +152,34 @@ final class PortablePreLaunchEntrypoint {
         return environment.mobile();
     }
 
-    private static void showHiddenCommitNotice(UserNotifier notifier) {
+    private static void showHiddenCommitNotice(UserNotifier notifier, SyncProbeResult result) {
         int seconds = hiddenCommitNoticeSeconds();
+        CommitDurationEstimate estimate = estimateHiddenCommitDuration(
+                result.estimatedCommitFiles(), result.estimatedCommitBytes());
+        String workload = language.text(
+                "预计提交 " + result.estimatedCommitFiles() + " 个文件（"
+                        + humanBytes(result.estimatedCommitBytes()) + "），通常耗时 "
+                        + estimate.localizedChinese() + "；大量小文件或较慢磁盘可能更久。",
+                "Estimated commit: " + result.estimatedCommitFiles() + " files ("
+                        + humanBytes(result.estimatedCommitBytes()) + "), usually "
+                        + estimate.localizedEnglish()
+                        + "; many small files or a slower disk may take longer.");
         String detail = language.text(
-                "下载和哈希校验已完成。Minecraft 即将退出；请不要立刻再次启动，等待隐藏助手完成原子提交。",
-                "Download and hash verification completed. Minecraft will exit; do not relaunch until the hidden helper finishes its atomic commit.");
+                "下载和哈希校验已完成。" + workload
+                        + " Minecraft 即将退出；请不要立刻再次启动，等待隐藏助手完成原子提交。",
+                "Download and hash verification completed. " + workload
+                        + " Minecraft will exit; do not relaunch until the hidden helper finishes its atomic commit.");
         notifier.phaseChanged(detail);
         MinecraftEarlyProgress.handoffToHiddenCommitHelper();
         for (int remaining = seconds; remaining > 0; remaining--) {
             String countdown = language.text(
-                    "更新已校验，" + remaining + " 秒后退出；隐藏提交完成前请勿再次启动",
+                    "更新已校验，" + remaining + " 秒后退出；预计提交耗时 "
+                            + estimate.localizedChinese() + "，完成前请勿再次启动",
                     "Update verified; exiting in " + remaining
-                            + "s. Do not relaunch until the hidden commit finishes");
+                            + "s. Estimated commit " + estimate.localizedEnglish()
+                            + "; do not relaunch until it finishes");
             MinecraftWindowStatus.update(countdown);
-            MinecraftEarlyProgress.hiddenCommitCountdown(remaining);
+            MinecraftEarlyProgress.hiddenCommitCountdown(remaining, estimate.asciiRange());
             log(language, countdown);
             if (Boolean.getBoolean("modsync.disableHandoffNoticeDelay")) continue;
             try {
@@ -180,6 +194,67 @@ final class PortablePreLaunchEntrypoint {
     static int hiddenCommitNoticeSeconds() {
         int configured = Integer.getInteger("modsync.handoffNoticeSeconds", 3);
         return Math.max(1, Math.min(configured, 10));
+    }
+
+    static CommitDurationEstimate estimateHiddenCommitDuration(int files, long bytes) {
+        int safeFiles = Math.max(files, 0);
+        long safeBytes = Math.max(bytes, 0L);
+        if (safeFiles == 0 && safeBytes == 0L) return new CommitDurationEstimate(5, 30);
+        long minimum = 2L + ceilDiv(safeFiles, 600L) + ceilDiv(safeBytes, 512L * 1024L * 1024L);
+        long maximum = 8L + ceilDiv(safeFiles, 150L) + ceilDiv(safeBytes, 64L * 1024L * 1024L);
+        int roundedMinimum = roundDuration(Math.max(3L, minimum));
+        int roundedMaximum = roundDuration(Math.max(maximum, roundedMinimum + 5L));
+        return new CommitDurationEstimate(roundedMinimum, Math.min(roundedMaximum, 1800));
+    }
+
+    private static long ceilDiv(long value, long divisor) {
+        if (value <= 0L) return 0L;
+        return 1L + (value - 1L) / divisor;
+    }
+
+    private static int roundDuration(long seconds) {
+        long quantum = seconds <= 60L ? 5L : seconds <= 300L ? 10L : 30L;
+        long rounded = ceilDiv(seconds, quantum) * quantum;
+        return (int) Math.min(rounded, 1800L);
+    }
+
+    private static String humanBytes(long bytes) {
+        long safe = Math.max(bytes, 0L);
+        if (safe < 1024L) return safe + " B";
+        if (safe < 1024L * 1024L) return String.format(java.util.Locale.ROOT, "%.1f KiB", safe / 1024.0);
+        if (safe < 1024L * 1024L * 1024L) {
+            return String.format(java.util.Locale.ROOT, "%.1f MiB", safe / (1024.0 * 1024.0));
+        }
+        return String.format(java.util.Locale.ROOT, "%.2f GiB", safe / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    record CommitDurationEstimate(int minimumSeconds, int maximumSeconds) {
+        CommitDurationEstimate {
+            minimumSeconds = Math.max(minimumSeconds, 1);
+            maximumSeconds = Math.max(maximumSeconds, minimumSeconds);
+        }
+
+        String localizedChinese() {
+            return "约 " + localizedSeconds(minimumSeconds, true) + "–"
+                    + localizedSeconds(maximumSeconds, true);
+        }
+
+        String localizedEnglish() {
+            return "about " + localizedSeconds(minimumSeconds, false) + "-"
+                    + localizedSeconds(maximumSeconds, false);
+        }
+
+        String asciiRange() {
+            return localizedSeconds(minimumSeconds, false) + "-" + localizedSeconds(maximumSeconds, false);
+        }
+
+        private static String localizedSeconds(int seconds, boolean chinese) {
+            if (seconds < 60) return seconds + (chinese ? " 秒" : "s");
+            int minutes = seconds / 60;
+            int remainder = seconds % 60;
+            if (remainder == 0) return minutes + (chinese ? " 分钟" : "m");
+            return minutes + (chinese ? " 分 " : "m ") + remainder + (chinese ? " 秒" : "s");
+        }
     }
 
     private static void exitProcess(int code) {

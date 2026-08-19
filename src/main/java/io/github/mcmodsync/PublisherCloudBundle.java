@@ -183,6 +183,7 @@ final class PublisherCloudBundle {
                         + "4. Configure clients with `manifest=" + stableUrl + "`.\n\n"
                         + (serverListPath.isBlank() ? ""
                                 : "5. Upload `" + serverListPath + "` and its sibling `servers.dat`.\n\n")
+                        + "Each release contains a complete manifest but only new or changed hosted payloads. Keep all historical immutable release directories because later manifests may reference them.\n"
                         + "Do not overwrite immutable release files. Rollback uses a new, larger releaseSequence.\n",
                 StandardCharsets.UTF_8);
     }
