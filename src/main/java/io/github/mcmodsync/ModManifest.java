@@ -102,7 +102,9 @@ final class ModManifest {
             String lowerFileName = fileName.toLowerCase(Locale.ROOT);
             boolean legacySyncToolName = excluded.contains("mcmodsync")
                     && (lowerFileName.equals("mcmodsync.jar")
-                            || (lowerFileName.startsWith("mcmodsync-") && lowerFileName.endsWith(".jar")));
+                            || (lowerFileName.startsWith("mcmodsync-") && lowerFileName.endsWith(".jar"))
+                            || lowerFileName.equals("mcsync.jar")
+                            || (lowerFileName.startsWith("mcsync-") && lowerFileName.endsWith(".jar")));
             if (excluded.contains(modId) || legacySyncToolName) {
                 continue;
             }

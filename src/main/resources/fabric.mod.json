@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
   "id": "mcmodsync",
-  "version": "1.9.6",
-  "name": "MCModSync",
+  "version": "2.0.0",
+  "name": "MCSync",
   "description": "启动前同步必须/推荐 Mod、资源包和服务器列表；Pre-launch synchronization with MD5/SHA256 verification for Fabric and NeoForge.",
-  "authors": ["MCModSync Contributors"],
+  "authors": ["MCSync Contributors"],
   "environment": "client",
   "entrypoints": {
     "preLaunch": [

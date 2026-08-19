@@ -11,15 +11,25 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 final class ParallelDownloadRunner {
-    private static final int MAX_THREADS = 8;
-    private static final int TASK_RETRY_ATTEMPTS = 3;
-    private static final long TASK_RETRY_DELAY_MILLIS = 400L;
+    static final int DEFAULT_THREADS = 128;
+    static final int MAX_THREADS = 128;
+    private static final String THREAD_PROPERTY = "mcsync.downloadThreads";
 
     private ParallelDownloadRunner() {
     }
 
     static int threadCount(int taskCount) {
-        return Math.max(1, Math.min(MAX_THREADS, taskCount));
+        return Math.max(1, Math.min(configuredThreads(), taskCount));
+    }
+
+    static int configuredThreads() {
+        String configured = System.getProperty(THREAD_PROPERTY, "").strip();
+        if (configured.isEmpty()) return DEFAULT_THREADS;
+        try {
+            return Math.max(1, Math.min(MAX_THREADS, Integer.parseInt(configured)));
+        } catch (NumberFormatException ignored) {
+            return DEFAULT_THREADS;
+        }
     }
 
     static void run(int taskCount, IndexedTask task) throws IOException, InterruptedException {
@@ -29,7 +39,7 @@ final class ParallelDownloadRunner {
         ExecutorService executor = Executors.newFixedThreadPool(
                 threadCount(taskCount),
                 runnable -> {
-                    Thread thread = new Thread(runnable, "MCModSync-download");
+                    Thread thread = new Thread(runnable, "MCSync-download");
                     thread.setDaemon(true);
                     return thread;
                 });
@@ -40,7 +50,7 @@ final class ParallelDownloadRunner {
             for (int index = 0; index < taskCount; index++) {
                 int taskIndex = index;
                 futures.add(completion.submit(() -> {
-                    runWithRetries(task, taskIndex);
+                    task.run(taskIndex);
                     return null;
                 }));
             }
@@ -76,33 +86,6 @@ final class ParallelDownloadRunner {
                 throw interrupted;
             }
         }
-    }
-
-    private static void runWithRetries(IndexedTask task, int taskIndex) throws Exception {
-        Exception lastFailure = null;
-        for (int attempt = 1; attempt <= TASK_RETRY_ATTEMPTS; attempt++) {
-            try {
-                task.run(taskIndex);
-                return;
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw interrupted;
-            } catch (Exception failure) {
-                lastFailure = failure;
-                if (attempt == TASK_RETRY_ATTEMPTS) {
-                    break;
-                }
-                try {
-                    Thread.sleep(TASK_RETRY_DELAY_MILLIS * attempt);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw interrupted;
-                }
-            }
-        }
-        throw lastFailure == null
-                ? new IOException("并行下载任务失败")
-                : lastFailure;
     }
 
     @FunctionalInterface

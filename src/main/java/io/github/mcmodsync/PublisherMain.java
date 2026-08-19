@@ -11,6 +11,7 @@ import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
 import javax.swing.UIManager;
@@ -36,9 +37,6 @@ import java.util.Optional;
 
 public final class PublisherMain {
     private static final DisplayLanguage LANGUAGE = DisplayLanguage.detect(null);
-    static final int PUBLISHER_WINDOW_WIDTH = 1_020;
-    static final int PUBLISHER_WINDOW_HEIGHT = 460;
-    static final boolean LOAD_PREVIOUS_CATALOG_BY_DEFAULT = true;
 
     private PublisherMain() {
     }
@@ -70,7 +68,7 @@ public final class PublisherMain {
             return 0;
         }
         if (arguments.length == 1 && arguments[0].equals("--version")) {
-            System.out.println("MCModSync " + BuildInfo.VERSION);
+            System.out.println(BuildInfo.PRODUCT_NAME + " " + BuildInfo.VERSION);
             return 0;
         }
         if (arguments.length >= 1 && arguments[0].equals("--upgrade-v2")) {
@@ -94,6 +92,35 @@ public final class PublisherMain {
                 System.err.println(text(
                         "永久升级入口生成失败: ",
                         "Permanent upgrade gateway generation failed: ") + exception.getMessage());
+                return 1;
+            }
+        }
+        if (arguments.length >= 1 && arguments[0].equals("--publish-v5")) {
+            if (arguments.length != 4) {
+                printUsage();
+                return 2;
+            }
+            try {
+                PublisherProjectV5.Publication publication = PublisherProjectV5.publish(
+                        Path.of(arguments[1]), Path.of(arguments[2]), Path.of(arguments[3]));
+                System.out.println("MCSync v5 release generated: " + publication.manifestPath());
+                return 0;
+            } catch (Exception failure) {
+                System.err.println("MCSync v5 release generation failed: " + failure.getMessage());
+                return 1;
+            }
+        }
+        if (arguments.length >= 1 && arguments[0].equals("--v5-template")) {
+            if (arguments.length != 2) {
+                printUsage();
+                return 2;
+            }
+            try {
+                PublisherProjectV5.writeTemplate(Path.of(arguments[1]));
+                System.out.println("MCSync v5 publisher project template generated: " + arguments[1]);
+                return 0;
+            } catch (Exception failure) {
+                System.err.println("Template generation failed: " + failure.getMessage());
                 return 1;
             }
         }
@@ -193,7 +220,7 @@ public final class PublisherMain {
                 .filter(entry -> entry.modId().equals("mcmodsync"))
                 .count();
         if (syncTools != 1) {
-            throw new IOException("发布目录必须恰好包含一个当前 MCModSync JAR（Mod ID: mcmodsync）");
+            throw new IOException("发布目录必须恰好包含一个当前 MCSync JAR（兼容 Mod ID: mcmodsync）");
         }
         return new PublicationScan(scanned, managedConfig, bootstrapEntry, configurationTemplate);
     }
@@ -237,10 +264,12 @@ public final class PublisherMain {
         } catch (Exception ignored) {
         }
 
-        JFrame frame = new JFrame(text("MCModSync 清单发布工具", "MCModSync Catalog Publisher"));
+        JFrame frame = new JFrame(text("MCSync 2.0 发布工作台", "MCSync 2.0 Publisher Workspace"));
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setSize(PUBLISHER_WINDOW_WIDTH, PUBLISHER_WINDOW_HEIGHT);
+        frame.setSize(1180, 760);
         frame.setLocationRelativeTo(null);
+
+        JPanel legacyPanel = new JPanel(new BorderLayout());
 
         JPanel form = new JPanel(new GridBagLayout());
         form.setBorder(BorderFactory.createEmptyBorder(16, 16, 8, 16));
@@ -252,7 +281,6 @@ public final class PublisherMain {
         JButton browseButton = new JButton(text("选择 mods 目录", "Choose mods directory"));
         JCheckBox loadPreviousCatalog = new JCheckBox(text(
                 "扫描后选择上次清单", "Choose previous catalog after scanning"));
-        loadPreviousCatalog.setSelected(LOAD_PREVIOUS_CATALOG_BY_DEFAULT);
         loadPreviousCatalog.setToolTipText(text(
                 "保留上次的分类、平台、名称和中英文描述，并更新当前 JAR 的哈希与版本",
                 "Keep previous types, platforms, names and descriptions while refreshing current JAR hashes and versions"));
@@ -300,10 +328,10 @@ public final class PublisherMain {
         constraints.weightx = 1;
         form.add(actions, constraints);
 
-        frame.add(form, BorderLayout.NORTH);
+        legacyPanel.add(form, BorderLayout.NORTH);
         JScrollPane scroll = new JScrollPane(log);
         scroll.setBorder(BorderFactory.createTitledBorder(text("结果", "Results")));
-        frame.add(scroll, BorderLayout.CENTER);
+        legacyPanel.add(scroll, BorderLayout.CENTER);
 
         browseButton.addActionListener(event -> {
             JFileChooser chooser = new JFileChooser();
@@ -361,10 +389,7 @@ public final class PublisherMain {
                                 + publication.configurationTemplate() + "\n");
                         ModManifest scanned = publication.scanned();
                         if (choosePreviousCatalog) {
-                            Optional<Path> automaticallyMatched = automaticallyMatchedPreviousCatalog(modsDirectory);
-                            Optional<Path> previousPath = automaticallyMatched.isPresent()
-                                    ? automaticallyMatched
-                                    : choosePreviousCatalog(frame, modsDirectory);
+                            Optional<Path> previousPath = choosePreviousCatalog(frame, modsDirectory);
                             if (previousPath.isEmpty()) {
                                 log.append(text(
                                         "已取消选择上次清单。\n",
@@ -374,12 +399,10 @@ public final class PublisherMain {
                             ModManifest previous = readPreviousCatalog(previousPath.get());
                             scanned = mergeCatalog(scanned, previous);
                             log.append(text(
-                                    automaticallyMatched.isPresent()
-                                            ? "已自动匹配并合并 mods 目录中的上次清单："
-                                            : "已加载并合并上次清单：",
-                                    automaticallyMatched.isPresent()
-                                            ? "Automatically matched and merged the previous catalog in the mods directory: "
-                                            : "Loaded and merged previous catalog: ") + previousPath.get() + "\n");
+                                    "已加载并合并上次清单：",
+                                    "Loaded and merged previous catalog: ") + previousPath.get() + "\n");
+                        } else {
+                            scanned = mergeExistingCatalog(scanned, output);
                         }
                         long missingChinese = scanned.entries().stream()
                                 .filter(entry -> entry.descriptionZh().isBlank())
@@ -403,8 +426,8 @@ public final class PublisherMain {
                                 "1.6.x/1.7 永久升级入口：",
                                 "Permanent 1.6.x/1.7 upgrade gateway: ") + upgradeOutput + "\n");
                         String upgradeNotice = text(
-                                "\n\nmods.txt 只包含 MCModSync 与配置引导 JAR。旧版升级后会统一读取 mods-v4.txt，并重新同步完整 Mod 集。",
-                                "\n\nmods.txt contains only MCModSync and the configuration bootstrap JAR. Upgraded clients use mods-v4.txt and synchronize the complete mod set again.");
+                                "\n\nmods.txt 只包含 MCSync 与兼容配置引导 JAR。旧版升级后会切换到结构化发布清单。",
+                                "\n\nmods.txt contains only MCSync and the compatibility bootstrap JAR. Upgraded clients switch to the structured release manifest.");
                         int count = completed.entries().size();
                         log.append(text("完成，共 ", "Completed: ") + count
                                 + text(" 个 Mod。\n清单：", " mod(s).\nCatalog: ") + output + "\n");
@@ -561,16 +584,22 @@ public final class PublisherMain {
             }.execute();
         });
 
+        JTabbedPane publisherTabs = new JTabbedPane();
+        publisherTabs.addTab(text("2.0 OTA 发布", "2.0 OTA publisher"), V5PublisherWorkspace.create(frame));
+        publisherTabs.addTab(text("1.9.x 兼容工具", "1.9.x compatibility tools"), legacyPanel);
+        frame.add(publisherTabs, BorderLayout.CENTER);
         frame.setVisible(true);
     }
 
-    static Optional<Path> automaticallyMatchedPreviousCatalog(Path modsDirectory) {
-        if (modsDirectory == null) {
-            return Optional.empty();
+    private static ModManifest mergeExistingCatalog(ModManifest scanned, Path output) {
+        if (!Files.isRegularFile(output)) {
+            return scanned;
         }
-        Path candidate = modsDirectory.toAbsolutePath().normalize()
-                .resolve(ManagedClientConfig.MANIFEST_FILE_NAME);
-        return Files.isRegularFile(candidate) ? Optional.of(candidate) : Optional.empty();
+        try {
+            return mergeCatalog(scanned, readPreviousCatalog(output));
+        } catch (IOException | IllegalArgumentException exception) {
+            return scanned;
+        }
     }
 
     private static Optional<Path> choosePreviousCatalog(JFrame owner, Path modsDirectory) {
@@ -579,9 +608,8 @@ public final class PublisherMain {
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         chooser.setAcceptAllFileFilterUsed(false);
         chooser.setFileFilter(new FileNameExtensionFilter(text(
-                "MCModSync 清单 (*.txt)", "MCModSync catalog (*.txt)"), "txt"));
+                "MCSync 清单 (*.txt)", "MCSync catalog (*.txt)"), "txt"));
         chooser.setCurrentDirectory(modsDirectory.toFile());
-        chooser.setSelectedFile(modsDirectory.resolve(ManagedClientConfig.MANIFEST_FILE_NAME).toFile());
         if (chooser.showOpenDialog(owner) != JFileChooser.APPROVE_OPTION) {
             return Optional.empty();
         }
@@ -636,27 +664,30 @@ public final class PublisherMain {
                     old.descriptionZh().isBlank() ? current.descriptionZh() : old.descriptionZh(),
                     old.descriptionEn().isBlank() ? current.descriptionEn() : old.descriptionEn());
         }).toList();
-        // A continued catalog inherits the hand-maintained metadata, but it is
-        // still a new publication batch. Keep the freshly scanned timestamp
-        // instead of reusing the previous catalog-version.
-        return ModManifest.fromEntries(scanned.catalogVersion(), merged);
+        return ModManifest.fromEntries(previous.catalogVersion(), merged);
     }
 
     private static void printUsage() {
         System.out.println(text("用法：", "Usage:"));
         System.out.println(text("  双击 JAR：打开图形界面", "  Double-click the JAR to open the GUI"));
         System.out.println(text(
-                "  java -jar MCModSync.jar <mods目录> [mods-v4.txt输出路径]",
-                "  java -jar MCModSync.jar <mods-directory> [mods-v4.txt-output]"));
+                "  java -jar MCSync.jar <mods目录> [mods-v4.txt输出路径]",
+                "  java -jar MCSync.jar <mods-directory> [mods-v4.txt-output]"));
         System.out.println(text(
-                "  java -jar MCModSync.jar --resourcepack <资源包.zip> [resourcepacks.txt输出路径]",
-                "  java -jar MCModSync.jar --resourcepack <resource-pack.zip> [resourcepacks.txt-output]"));
+                "  java -jar MCSync.jar --resourcepack <资源包.zip> [resourcepacks.txt输出路径]",
+                "  java -jar MCSync.jar --resourcepack <resource-pack.zip> [resourcepacks.txt-output]"));
         System.out.println(text(
-                "  java -jar MCModSync.jar --serverlist <servers.dat> [serverlist.txt输出路径]",
-                "  java -jar MCModSync.jar --serverlist <servers.dat> [serverlist.txt-output]"));
+                "  java -jar MCSync.jar --serverlist <servers.dat> [serverlist.txt输出路径]",
+                "  java -jar MCSync.jar --serverlist <servers.dat> [serverlist.txt-output]"));
         System.out.println(text(
-                "  java -jar MCModSync.jar --upgrade-v2 <mods目录> [mods.txt输出路径]",
-                "  java -jar MCModSync.jar --upgrade-v2 <mods-directory> [mods.txt-output]"));
+                "  java -jar MCSync.jar --upgrade-v2 <mods目录> [mods.txt输出路径]",
+                "  java -jar MCSync.jar --upgrade-v2 <mods-directory> [mods.txt-output]"));
+        System.out.println(text(
+                "  java -jar MCSync.jar --v5-template <项目JSON输出路径>",
+                "  java -jar MCSync.jar --v5-template <publisher-project-json-output>"));
+        System.out.println(text(
+                "  java -jar MCSync.jar --publish-v5 <游戏根目录> <项目JSON> <空输出目录>",
+                "  java -jar MCSync.jar --publish-v5 <game-root> <project-json> <empty-output-directory>"));
         System.out.println(text(
                 "  语言：-Dmodsync.language=zh_cn 或 -Dmodsync.language=en_us",
                 "  Language: -Dmodsync.language=zh_cn or -Dmodsync.language=en_us"));

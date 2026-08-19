@@ -2,6 +2,7 @@ package io.github.mcmodsync;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -16,6 +17,22 @@ final class ModSyncCoordinator {
 
     static SyncProbeResult probe(ModSyncConfig config, Consumer<String> logger, SyncObserver observer)
             throws IOException, InterruptedException {
+        Optional<V5ReleaseSync.Loaded> v5 = V5ReleaseSync.load(config, logger);
+        if (v5.isPresent()) {
+            boolean changed = false;
+            for (BakaXLLayout.Target target : BakaXLLayout.syncTargets(config.gameDirectory())) {
+                ModSyncConfig targetConfig = config.forGameDirectory(target.gameDirectory());
+                changed |= V5ReleaseSync.probe(targetConfig, v5.get(), logger, observer).status()
+                        == SyncProbeResult.Status.CHANGES_REQUIRED;
+                if (config.syncServerList()) {
+                    changed |= new ServerListSyncEngine(targetConfig, logger).probeWithoutChanges().status()
+                            == SyncProbeResult.Status.CHANGES_REQUIRED;
+                }
+            }
+            return new SyncProbeResult(changed
+                    ? SyncProbeResult.Status.CHANGES_REQUIRED
+                    : SyncProbeResult.Status.UP_TO_DATE);
+        }
         DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         boolean skippedOffline = false;
         List<BakaXLLayout.Target> targets = BakaXLLayout.syncTargets(config.gameDirectory());
@@ -76,6 +93,31 @@ final class ModSyncCoordinator {
             ModSyncConfig config,
             Consumer<String> logger,
             SyncObserver observer) throws IOException, InterruptedException {
+        Optional<V5ReleaseSync.Loaded> v5 = V5ReleaseSync.load(config, logger);
+        if (v5.isPresent()) {
+            int installed = 0;
+            int removed = 0;
+            boolean changed = false;
+            for (BakaXLLayout.Target target : BakaXLLayout.syncTargets(config.gameDirectory())) {
+                ModSyncConfig targetConfig = config.forGameDirectory(target.gameDirectory());
+                SyncResult result = V5ReleaseSync.synchronize(
+                        targetConfig, v5.get(), logger, observer);
+                installed += result.downloaded();
+                removed += result.quarantined();
+                changed |= result.status() == SyncResult.Status.UPDATED;
+                if (config.syncServerList()) {
+                    SyncResult serverList = new ServerListSyncEngine(targetConfig, logger, observer).synchronize();
+                    installed += serverList.downloaded();
+                    removed += serverList.quarantined();
+                    changed |= serverList.status() == SyncResult.Status.UPDATED;
+                }
+            }
+            if (changed) {
+                observer.afterUpdate(installed, removed, 0);
+                return new SyncResult(SyncResult.Status.UPDATED, installed, removed, 0);
+            }
+            return new SyncResult(SyncResult.Status.UNCHANGED, 0, 0, 0);
+        }
         DisplayLanguage language = DisplayLanguage.detect(config.gameDirectory());
         int downloaded = 0;
         int quarantined = 0;

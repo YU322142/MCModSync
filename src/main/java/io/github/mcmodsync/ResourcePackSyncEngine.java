@@ -178,11 +178,13 @@ final class ResourcePackSyncEngine {
                                 true));
                         downloadedInParallel = true;
                     } catch (IOException parallelFailure) {
-                        log("资源包并行下载出现错误，仅重试失败的资源包；成功文件保留并回退单线程: "
+                        log("资源包并行下载失败，将清理暂存内容并回退单线程下载: "
                                         + parallelFailure.getMessage(),
-                                "Parallel resource-pack download had an error; keeping successful files and retrying "
-                                        + "only failed resource packs with one thread: " + parallelFailure.getMessage());
-                        observer.phaseChanged("资源包并行下载出现错误，正在仅重试失败的资源包……");
+                                "Parallel resource-pack download failed; clearing staging data and retrying with "
+                                        + "one thread: " + parallelFailure.getMessage());
+                        observer.phaseChanged("资源包并行下载未成功，正在自动回退单线程重新下载……");
+                        deleteTreeBestEffort(parallelStaging);
+                        downloads.forEach(plan -> plan.staged(null));
                     }
                 }
 
@@ -192,9 +194,6 @@ final class ResourcePackSyncEngine {
                     DownloadProgressTracker tracker = new DownloadProgressTracker(
                             observer, downloads.size(), totalExpectedBytes);
                     for (int index = 0; index < downloads.size(); index++) {
-                        if (downloads.get(index).staged() != null) {
-                            continue;
-                        }
                         downloadAndValidatePack(
                                 downloads.get(index),
                                 serialStaging,
@@ -325,23 +324,17 @@ final class ResourcePackSyncEngine {
         log(prefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName(),
                 englishPrefix + " [" + fileIndex + "/" + fileCount + "]: " + plan.entry().fileName());
         Path staged = stagingDirectory.resolve(plan.entry().fileName() + ".part");
-        Files.deleteIfExists(staged);
-        try {
-            download(plan.entry(), staged, fileIndex, tracker);
-            if (!parallel) {
-                observer.phaseChanged("正在校验资源包 MD5：" + "[" + fileIndex + "/" + fileCount + "] "
-                        + plan.entry().fileName());
-            }
-            String actual = Hashing.md5(staged);
-            if (!actual.equals(plan.entry().md5())) {
-                throw new IOException("下载资源包 MD5 不符: " + plan.entry().fileName()
-                        + "，期望 " + plan.entry().md5() + "，实际 " + actual);
-            }
-            plan.staged(staged);
-        } catch (IOException | InterruptedException exception) {
-            Files.deleteIfExists(staged);
-            throw exception;
+        download(plan.entry(), staged, fileIndex, tracker);
+        if (!parallel) {
+            observer.phaseChanged("正在校验资源包 MD5：[" + fileIndex + "/" + fileCount + "] "
+                    + plan.entry().fileName());
         }
+        String actual = Hashing.md5(staged);
+        if (!actual.equals(plan.entry().md5())) {
+            throw new IOException("下载资源包 MD5 不符: " + plan.entry().fileName()
+                    + "，期望 " + plan.entry().md5() + "，实际 " + actual);
+        }
+        plan.staged(staged);
     }
 
     private void applyTransaction(

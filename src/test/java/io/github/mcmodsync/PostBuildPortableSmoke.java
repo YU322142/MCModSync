@@ -38,11 +38,11 @@ public final class PostBuildPortableSmoke {
             }
             byte[] updater = Files.readAllBytes(jar);
             String manifest = ModManifest.MAGIC + "\n"
-                    + Hashing.md5(updater) + "\tmcmodsync\tMCModSync-" + BuildInfo.VERSION + ".jar\n"
+                    + Hashing.md5(updater) + "\tmcmodsync\tMCSync-" + BuildInfo.VERSION + ".jar\n"
                     + Hashing.md5(wanted) + "\t-\twanted-progress.jar\n";
             server.createContext("/base/mods.txt", exchange -> respond(
                     exchange, manifest.getBytes(StandardCharsets.UTF_8)));
-            server.createContext("/base/MCModSync-" + BuildInfo.VERSION + ".jar",
+            server.createContext("/base/MCSync-" + BuildInfo.VERSION + ".jar",
                     exchange -> respond(exchange, updater));
             server.createContext("/base/wanted-progress.jar", exchange -> respond(exchange, wanted));
             server.start();
@@ -86,7 +86,7 @@ public final class PostBuildPortableSmoke {
             if (child.exitValue() != 0) {
                 throw new AssertionError("Portable preLaunch child exit=" + child.exitValue() + "\n" + childOutput);
             }
-            if (!childOutput.contains("[MCModSync] RESTART_REQUIRED")) {
+            if (!childOutput.contains("RESTART_REQUIRED")) {
                 throw new AssertionError("Portable preLaunch did not take the graceful-exit path\n" + childOutput);
             }
             if (!childOutput.contains("更新辅助进程已确认可用")
@@ -99,14 +99,14 @@ public final class PostBuildPortableSmoke {
             if (!Arrays.equals(Files.readAllBytes(installed), wanted)) {
                 throw new AssertionError("Helper-installed bytes differ from server bytes");
             }
-            Path updatedUpdater = mods.resolve("MCModSync-" + BuildInfo.VERSION + ".jar");
+            Path updatedUpdater = mods.resolve("MCSync-" + BuildInfo.VERSION + ".jar");
             waitFor(() -> Files.isRegularFile(updatedUpdater), Duration.ofSeconds(20),
                     "helper did not install its own new filename");
             if (Files.exists(oldUpdater)) {
                 throw new AssertionError("Old updater filename was not replaced");
             }
             if (!Arrays.equals(Files.readAllBytes(updatedUpdater), updater)) {
-                throw new AssertionError("Self-updated MCModSync bytes differ from published JAR");
+                throw new AssertionError("Self-updated MCSync bytes differ from published JAR");
             }
 
             Path helperRuntime = root.resolve(".modsync/helper-runtime-v2");
@@ -172,7 +172,7 @@ public final class PostBuildPortableSmoke {
             Path jar,
             Path temporaryRoot) throws Exception {
         Path probeDirectory = Files.createDirectories(temporaryRoot.resolve("path;with;semicolons"));
-        Path probeJar = probeDirectory.resolve("MCModSync executable probe.jar");
+        Path probeJar = probeDirectory.resolve("MCSync executable probe.jar");
         Files.copy(jar, probeJar);
         ProcessBuilder builder = new ProcessBuilder(
                 java.toString(), "-jar", probeJar.getFileName().toString(), "--version");
@@ -183,7 +183,7 @@ public final class PostBuildPortableSmoke {
             throw new AssertionError("Executable-JAR semicolon-path probe timed out");
         }
         String output = new String(probe.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        if (probe.exitValue() != 0 || !output.contains("MCModSync")) {
+        if (probe.exitValue() != 0 || !output.contains("MCSync")) {
             throw new AssertionError("Executable-JAR semicolon-path probe failed\n" + output);
         }
     }

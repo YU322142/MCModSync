@@ -10,7 +10,11 @@ import java.nio.file.Path;
 @Mod(value = "mcmodsync", dist = Dist.CLIENT)
 public final class NeoForgeModEntrypoint {
     public NeoForgeModEntrypoint() {
-        PortablePreLaunchEntrypoint.run("NeoForge", NeoForgeModEntrypoint::locateGameDirectory);
+        System.setProperty("modsync.inGameWindow", "true");
+        System.setProperty("modsync.disableDialogs", "true");
+        Path gameDirectory = locateGameDirectory();
+        PortablePreLaunchEntrypoint.run("NeoForge", () -> gameDirectory);
+        RecommendedSelectionScreen.start(gameDirectory);
     }
 
     static Path locateGameDirectory() {

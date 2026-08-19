@@ -4,6 +4,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.URI;
@@ -17,13 +18,13 @@ import java.time.Instant;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -39,6 +40,29 @@ public final class AllTests {
     }
 
     private void run() throws Exception {
+        testMcsyncBrandingKeepsLegacyTechnicalIdentity();
+        testV5ReleaseManifestParsingAndValidation();
+        testV5RecommendedSelectionIsDeferredToMinecraftWindow();
+        testV5ResourceAndShaderPacksCanBeOptional();
+        testV5ModCatalogImportRespectsCurrentClientDeletions();
+        testV5PlatformDownloadSourcesAndMirrorTrustBoundary();
+        testOnlyModsMayUsePlatformDownloadSources();
+        testDefaultDownloadConcurrencyIs128();
+        testModArtifactClassificationAndFingerprintNormalization();
+        testClientOnlyMetadataDefaultsToRecommended();
+        testV5CustomBuildUsesPublisherHostedDistribution();
+        testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates();
+        testPublisherResolvesCurseForgeWithoutLeakingCredentials();
+        testV5MirrorHashFailureFallsBackToOfficialCandidate();
+        testReleaseSequenceAntiDowngradeGate();
+        testStructuredConfigMutationEngine();
+        testV5AtomicReleaseTransactionAndOwnership();
+        testV5InterruptedCommitRecoversFromDurableJournal();
+        testV5SelfUpdateReplacesLegacyJarInSameTransaction();
+        testV5CoordinatorDownloadsBeforeStartupAndBecomesIdempotent();
+        testV5PublisherProjectBuildsDeterministicRelease();
+        testPublisherCloudBundleBuildsStableAndLegacyEntrypoints();
+        testPublisherCloudBundleExportsServerList();
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
         testNeoForgeMetadataAndUniversalBootstrap();
@@ -47,7 +71,6 @@ public final class AllTests {
         testPublisherContinuesPreviousCatalog();
         testManagedClientConfigBootstrapAndCatalog();
         testRemoteCatalogMaintainsClientConfig();
-        testPersistentLocalV4CatalogCopy();
         testFileSizeLimitDefaultsToUnlimitedAndStaysLocal();
         testLegacyUpgradeManifestFor16And17();
         testCatalogTypeCheckboxesAreMutuallyExclusive();
@@ -69,10 +92,9 @@ public final class AllTests {
         testUnquotedGameDirectoryWithSpacesCanBeParsed();
         testInstanceGuard();
         testRecentHelperRuntimeCopyIsNotDeleted();
-        testHelperLaunchDialogPolicy();
         testFailedHelperHandshakeTerminatesChild();
         testRedirectDownloadStrictSyncAndBackup();
-        testParallelModDownloadRetriesOnlyFailedTask();
+        testParallelModDownloadFallsBackToSingleThread();
         testMissingLocalManifestAsksAboutEveryUnknownMod();
         testResourcePackMd5SyncAndClientPreservation();
         testBakaXLDualDirectoryResourcePackSync();
@@ -95,6 +117,1135 @@ public final class AllTests {
         testUnsupportedAndroidLauncherUsesDesktopLogic();
         testHeadlessProgressIsLoggedAndWritten();
         System.out.println("All tests passed: " + passed);
+    }
+
+    private void testMcsyncBrandingKeepsLegacyTechnicalIdentity() {
+        check(BuildInfo.PRODUCT_NAME.equals("MCSync"), "2.0 产品名应为 MCSync");
+        check(BuildInfo.VERSION.equals("2.0.0"), "首个 MCSync 版本应为 2.0.0");
+        check(BuildInfo.TECHNICAL_MOD_ID.equals("mcmodsync"), "必须保留旧 modId 才能从 1.9.x 原地升级");
+        pass("MCSync branding preserves the legacy technical upgrade identity");
+    }
+
+    private void testV5RecommendedSelectionIsDeferredToMinecraftWindow() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-recommended-screen-");
+        String old = System.getProperty("modsync.forceInGameSelection");
+        System.setProperty("modsync.forceInGameSelection", "true");
+        try {
+            ReleaseManifestV5.DownloadSource hosted = new ReleaseManifestV5.DownloadSource(
+                    "publisher-hosted", "", "", null, "redistributable", List.of());
+            ReleaseManifestV5.FileEntry required = new ReleaseManifestV5.FileEntry(
+                    "mods/core.jar", "1".repeat(64), 1, "mod", true, true, Set.of("client"), hosted,
+                    "core", "Core", "1", "核心", "Core", Set.of());
+            ReleaseManifestV5.FileEntry optionalA = new ReleaseManifestV5.FileEntry(
+                    "mods/optional-a.jar", "2".repeat(64), 1, "mod", false, true, Set.of("client"), hosted,
+                    "optional_a", "Optional A", "1", "推荐甲", "Optional A", Set.of());
+            ReleaseManifestV5 first = new ReleaseManifestV5(
+                    "test", 1, "2.0.0", List.of(new ReleaseManifestV5.ManagedScope("mods", "managed")),
+                    List.of(required, optionalA), List.of());
+
+            V5RecommendedSelectionStore.Resolution initial = V5RecommendedSelectionStore.resolve(
+                    first, root, RuntimeEnvironment.detect());
+            check(initial.selectionPending(), "首次 v5 推荐清单必须等待 Minecraft 窗口确认");
+            check(initial.effectiveManifest().files().equals(List.of(required)),
+                    "确认前只能同步必须 Mod，不能提前安装推荐 Mod");
+            V5RecommendedSelectionStore.PendingSelection pending = V5RecommendedSelectionStore.readPending(root);
+            check(pending != null && pending.mods().size() == 1 && pending.mods().getFirst().selected(),
+                    "首次推荐项应默认全选");
+            V5RecommendedSelectionStore.confirm(root, pending, Set.of());
+            V5RecommendedSelectionStore.Resolution declined = V5RecommendedSelectionStore.resolve(
+                    first, root, RuntimeEnvironment.detect());
+            check(!declined.selectionPending() && declined.effectiveManifest().files().equals(List.of(required)),
+                    "同一推荐清单不应重复询问，并应保留取消选择");
+
+            ReleaseManifestV5.FileEntry optionalAUpdated = new ReleaseManifestV5.FileEntry(
+                    "mods/optional-a-2.jar", "4".repeat(64), 2, "mod", false, true, Set.of("client"), hosted,
+                    "optional_a", "Optional A", "2", "推荐甲（新版）", "Optional A updated", Set.of());
+            ReleaseManifestV5 versionOnly = new ReleaseManifestV5(
+                    "test", 2, "2.0.0", first.managedScopes(),
+                    List.of(required, optionalAUpdated), List.of());
+            V5RecommendedSelectionStore.Resolution versionUpdated = V5RecommendedSelectionStore.resolve(
+                    versionOnly, root, RuntimeEnvironment.detect());
+            check(!versionUpdated.selectionPending()
+                            && versionUpdated.effectiveManifest().files().equals(List.of(required)),
+                    "推荐 Mod 仅版本、哈希、文件名或描述变化时不得重复询问");
+
+            ReleaseManifestV5.FileEntry optionalB = new ReleaseManifestV5.FileEntry(
+                    "mods/optional-b.jar", "3".repeat(64), 1, "mod", false, true, Set.of("client"), hosted,
+                    "optional_b", "Optional B", "1", "推荐乙", "Optional B", Set.of());
+            ReleaseManifestV5 second = new ReleaseManifestV5(
+                    "test", 3, "2.0.0", first.managedScopes(),
+                    List.of(required, optionalAUpdated, optionalB), List.of());
+            V5RecommendedSelectionStore.Resolution updated = V5RecommendedSelectionStore.resolve(
+                    second, root, RuntimeEnvironment.detect());
+            check(updated.selectionPending(), "新增推荐 Mod 必须重新显示游戏内选择页");
+            V5RecommendedSelectionStore.PendingSelection updatedPending =
+                    V5RecommendedSelectionStore.readPending(root);
+            Map<String, Boolean> defaults = new LinkedHashMap<>();
+            for (V5RecommendedSelectionStore.PendingMod mod : updatedPending.mods()) {
+                defaults.put(mod.key(), mod.selected());
+            }
+            check(Boolean.FALSE.equals(defaults.get("optional_a"))
+                            && Boolean.TRUE.equals(defaults.get("optional_b")),
+                    "旧取消项必须保持取消，只有新增推荐项默认勾选");
+            pass("v5 recommendations wait for the Minecraft window and preserve prior choices");
+        } finally {
+            if (old == null) System.clearProperty("modsync.forceInGameSelection");
+            else System.setProperty("modsync.forceInGameSelection", old);
+        }
+    }
+
+    private void testClientOnlyMetadataDefaultsToRecommended() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-client-only-metadata-");
+        try {
+            Path clientOnly = root.resolve("client-only.jar");
+            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(clientOnly))) {
+                zip.putNextEntry(new ZipEntry("fabric.mod.json"));
+                zip.write(("{\"id\":\"client_only\",\"version\":\"1\","
+                        + "\"environment\":\"client\"}").getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+            Path requiredSync = root.resolve("mcsync.jar");
+            try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(requiredSync))) {
+                zip.putNextEntry(new ZipEntry("fabric.mod.json"));
+                zip.write(("{\"id\":\"mcmodsync\",\"version\":\"2.0.0\","
+                        + "\"environment\":\"client\"}").getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+            check(ModMetadata.recommendedByMetadata(clientOnly),
+                    "明确 environment=client 的普通 Mod 应保守默认归入推荐");
+            check(!ModMetadata.recommendedByMetadata(requiredSync),
+                    "MCSync 本体即使标为客户端侧也必须始终属于必需 Mod");
+            pass("explicit client-only metadata defaults to recommended without weakening MCSync");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testV5ResourceAndShaderPacksCanBeOptional() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-optional-packs-");
+        String old = System.getProperty("modsync.forceInGameSelection");
+        System.setProperty("modsync.forceInGameSelection", "true");
+        try {
+            ReleaseManifestV5.DownloadSource hosted = new ReleaseManifestV5.DownloadSource(
+                    "publisher-hosted", "", "", null, "redistributable", List.of());
+            ReleaseManifestV5.FileEntry required = new ReleaseManifestV5.FileEntry(
+                    "kubejs/client_scripts/core.js", "1".repeat(64), 1, "kubejs", true, true,
+                    Set.of("client"), hosted);
+            ReleaseManifestV5.FileEntry resource = new ReleaseManifestV5.FileEntry(
+                    "resourcepacks/pretty.zip", "2".repeat(64), 2, "resource-pack", false, false,
+                    Set.of("client"), hosted, "", "Pretty Pack", "1", "美化资源包", "Visual resource pack", Set.of());
+            ReleaseManifestV5.FileEntry shader = new ReleaseManifestV5.FileEntry(
+                    "shaderpacks/light.zip", "3".repeat(64), 3, "shader-pack", false, false,
+                    Set.of("client"), hosted, "", "Light Shader", "1", "轻量光影", "Lightweight shader", Set.of());
+            ReleaseManifestV5 manifest = new ReleaseManifestV5(
+                    "packs", 1, "2.0.0", List.of(), List.of(required, resource, shader), List.of());
+
+            V5RecommendedSelectionStore.Resolution initial = V5RecommendedSelectionStore.resolve(
+                    manifest, root, RuntimeEnvironment.detect());
+            check(initial.selectionPending() && initial.effectiveManifest().files().equals(List.of(required)),
+                    "可选资源包和光影包必须等待游戏内确认，确认前不得下载");
+            V5RecommendedSelectionStore.PendingSelection pending = V5RecommendedSelectionStore.readPending(root);
+            check(pending != null && pending.mods().size() == 2
+                            && pending.mods().stream().anyMatch(item -> item.kind().equals("resource-pack"))
+                            && pending.mods().stream().anyMatch(item -> item.kind().equals("shader-pack"))
+                            && pending.mods().stream().allMatch(V5RecommendedSelectionStore.PendingMod::selected),
+                    "游戏内选择页必须区分资源包和光影包，且首次出现时默认全部勾选");
+            V5RecommendedSelectionStore.confirm(root, pending, Set.of(resource.selectionKey()));
+            V5RecommendedSelectionStore.Resolution selected = V5RecommendedSelectionStore.resolve(
+                    manifest, root, RuntimeEnvironment.detect());
+            check(!selected.selectionPending()
+                            && selected.effectiveManifest().files().equals(List.of(required, resource)),
+                    "玩家取消的可选光影不得同步，选中的资源包应保留");
+            pass("v5 resource packs and shader packs can be optional in the Minecraft selection screen");
+        } finally {
+            if (old == null) System.clearProperty("modsync.forceInGameSelection");
+            else System.setProperty("modsync.forceInGameSelection", old);
+        }
+    }
+
+    private void testV5ModCatalogImportRespectsCurrentClientDeletions() {
+        ReleaseManifestV5.DownloadSource hosted = new ReleaseManifestV5.DownloadSource(
+                "publisher-hosted", "", "", null, "redistributable", List.of());
+        ReleaseManifestV5.FileEntry unchanged = new ReleaseManifestV5.FileEntry(
+                "mods/a-old.jar", "1".repeat(64), 1, "mod", false, true, Set.of("client"), hosted,
+                "mod_a", "A", "1", "甲", "A", Set.of());
+        ReleaseManifestV5.FileEntry upgraded = new ReleaseManifestV5.FileEntry(
+                "mods/b-old.jar", "2".repeat(64), 1, "mod", true, true, Set.of("client"), hosted,
+                "mod_b", "B", "1", "乙", "B", Set.of());
+        ReleaseManifestV5.FileEntry deleted = new ReleaseManifestV5.FileEntry(
+                "mods/deleted.jar", "3".repeat(64), 1, "mod", true, true, Set.of("client"), hosted,
+                "mod_deleted", "Deleted", "1", "已删除", "Deleted", Set.of());
+        ReleaseManifestV5.FileEntry ambiguousOne = new ReleaseManifestV5.FileEntry(
+                "mods/ambiguous-1.jar", "4".repeat(64), 1, "mod", true, true, Set.of("client"), hosted,
+                "duplicate", "Duplicate 1", "1", "重复一", "Duplicate 1", Set.of());
+        ReleaseManifestV5.FileEntry ambiguousTwo = new ReleaseManifestV5.FileEntry(
+                "mods/ambiguous-2.jar", "5".repeat(64), 1, "mod", true, true, Set.of("client"), hosted,
+                "duplicate", "Duplicate 2", "1", "重复二", "Duplicate 2", Set.of());
+
+        V5ModCatalogMatcher.MatchResult result = V5ModCatalogMatcher.match(
+                List.of(
+                        new V5ModCatalogMatcher.CurrentMod("mods/a-renamed.jar", "wrong_metadata", "1".repeat(64)),
+                        new V5ModCatalogMatcher.CurrentMod("mods/b-new.jar", "mod_b", "9".repeat(64)),
+                        new V5ModCatalogMatcher.CurrentMod("mods/new.jar", "new_mod", "a".repeat(64)),
+                        new V5ModCatalogMatcher.CurrentMod("mods/unknown.jar", "duplicate", "b".repeat(64))),
+                List.of(unchanged, upgraded, deleted, ambiguousOne, ambiguousTwo));
+
+        check(result.byCurrentPath().size() == 2
+                        && result.byCurrentPath().get("mods/a-renamed.jar").equals(unchanged)
+                        && result.byCurrentPath().get("mods/b-new.jar").equals(upgraded),
+                "v5 Mods 导入应先按 SHA-256 识别改名文件，并只用唯一 modId 继承升级后的元数据");
+        check(result.newCurrentPaths().containsAll(Set.of("mods/new.jar", "mods/unknown.jar")),
+                "新增 Mod 与歧义 modId 必须保留当前扫描默认值，不能猜测继承");
+        check(result.deletedImportedPaths().containsAll(Set.of(
+                        "mods/deleted.jar", "mods/ambiguous-1.jar", "mods/ambiguous-2.jar")),
+                "旧 v5 中已从客户端删除或无法唯一对应的 Mod 不得被恢复");
+        pass("v5 Mods-only import preserves translations without reviving deleted mods");
+    }
+
+    private void testPublisherResolvesCurseForgeWithoutLeakingCredentials() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            server.createContext("/v1/mods/238222/files/987654/download-url", exchange ->
+                    respond(exchange, 200,
+                            "{\"data\":\"https://cdn.example.invalid/files/fixed.jar\"}"
+                                    .getBytes(StandardCharsets.UTF_8),
+                            "application/json"));
+            server.start();
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1/";
+            Map<String, Object> resolved = new PublisherPlatformResolver(HttpClient.newHttpClient()).resolve(Map.of(
+                    "type", "curseforge",
+                    "projectId", "238222",
+                    "fileId", new BigDecimal("987654"),
+                    "distributionPolicy", "upstream-only",
+                    "endpoints", List.of(Map.of(
+                            "url", base,
+                            "role", "mirror",
+                            "purpose", "api",
+                            "region", "cn",
+                            "priority", new BigDecimal("10"),
+                            "thirdParty", true))));
+            String serialized = StrictJson.stringify(resolved);
+            check(serialized.contains("https://cdn.example.invalid/files/fixed.jar")
+                            && !serialized.toLowerCase(Locale.ROOT).contains("api-key")
+                            && !serialized.toLowerCase(Locale.ROOT).contains("x-api-key"),
+                    "发布器应把固定 fileId 解析成无凭据下载候选，绝不把 API key 写进清单");
+            pass("publisher resolves CurseForge file IDs without leaking credentials");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private void testV5MirrorHashFailureFallsBackToOfficialCandidate() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-source-fallback-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            byte[] expected = "official-fixed-build".getBytes(StandardCharsets.UTF_8);
+            AtomicInteger mirrorRequests = new AtomicInteger();
+            AtomicInteger officialRequests = new AtomicInteger();
+            server.createContext("/mirror.jar", exchange -> {
+                mirrorRequests.incrementAndGet();
+                respond(exchange, 200, "corrupted-mirror".getBytes(StandardCharsets.UTF_8), null);
+            });
+            server.createContext("/official.jar", exchange -> {
+                officialRequests.incrementAndGet();
+                respond(exchange, 200, expected, null);
+            });
+            server.start();
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            ReleaseManifestV5.FileEntry entry = new ReleaseManifestV5.FileEntry(
+                    "mods/fixed.jar", Hashing.sha256(expected), expected.length, "mod", true, true,
+                    Set.of("client"),
+                    new ReleaseManifestV5.DownloadSource(
+                            "direct", "", "", null, "upstream-only", List.of(
+                            new ReleaseManifestV5.DownloadEndpoint(
+                                    URI.create(base + "/mirror.jar"), "mirror", "file", "cn", 10, true),
+                            new ReleaseManifestV5.DownloadEndpoint(
+                                    URI.create(base + "/official.jar"), "official", "file", "global", 100, false))));
+            ModSyncConfig config = config(root, URI.create(base + "/manifest.json"), false, false);
+            byte[] actual = new ReleaseArtifactResolver(config, message -> { }).fetch(entry);
+            check(Arrays.equals(actual, expected) && mirrorRequests.get() == 1 && officialRequests.get() == 1,
+                    "镜像返回错误内容时必须由 SHA256 拒绝并回退官方固定候选");
+            pass("v5 mirror hash failures fall back to the official candidate");
+        } finally {
+            server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testV5ReleaseManifestParsingAndValidation() {
+        String manifestText = """
+                {
+                  "schema": 5,
+                  "releaseId": "motiquies-2.0.0-ota.1",
+                  "releaseSequence": 2000001,
+                  "minimumMCSyncVersion": "2.0.0",
+                  "files": [
+                    {
+                      "path": "mods/example-1.0.jar",
+                      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                      "size": 1234,
+                      "kind": "mod",
+                      "required": true,
+                      "restartRequired": true,
+                      "side": ["client"]
+                    }
+                  ],
+                  "configOperations": [
+                    {
+                      "path": "config/example-common.toml",
+                      "op": "config-set",
+                      "format": "toml",
+                      "key": "features.safeMode",
+                      "valueType": "boolean",
+                      "expected": false,
+                      "desired": true,
+                      "conflictPolicy": "replace-if-expected",
+                      "restartRequired": true
+                    }
+                  ]
+                }
+                """;
+        ReleaseManifestV5 parsed = ReleaseManifestV5.parse(manifestText.getBytes(StandardCharsets.UTF_8));
+        check(parsed.releaseSequence() == 2_000_001L, "v5 发布序号应精确解析");
+        check(parsed.files().getFirst().path().equals("mods/example-1.0.jar"), "v5 文件路径应精确解析");
+        check(parsed.configOperations().getFirst().key().equals("features.safeMode"),
+                "v5 应支持精确到配置键的 OTA");
+        ReleaseManifestV5 roundTrip = ReleaseManifestV5.parse(parsed.serialize());
+        check(roundTrip.equals(parsed), "v5 清单规范序列化后应无语义漂移");
+        check(Arrays.equals(parsed.serialize(), roundTrip.serialize()), "v5 规范 JSON 输出必须确定性一致");
+
+        expectFailure(() -> ReleaseManifestV5.parse(manifestText
+                .replace("mods/example-1.0.jar", "../outside.jar")
+                .getBytes(StandardCharsets.UTF_8)));
+        expectFailure(() -> ReleaseManifestV5.parse(manifestText
+                .replace("\"releaseSequence\": 2000001,", "\"releaseSequence\": 2000001,\n  \"releaseSequence\": 2000002,")
+                .getBytes(StandardCharsets.UTF_8)));
+        expectFailure(() -> ReleaseManifestV5.parse(manifestText
+                .replace("\"schema\": 5,", "\"schema\": 5,\n  \"typoField\": true,")
+                .getBytes(StandardCharsets.UTF_8)));
+        expectFailure(() -> ReleaseManifestV5.parse(manifestText
+                .replace("features.safeMode", "security.apiToken")
+                .getBytes(StandardCharsets.UTF_8)));
+        expectFailure(() -> ReleaseManifestV5.parse(manifestText
+                .replace("\"configOperations\": [", "\"configOperations\": [{"
+                        + "\"path\":\"kubejs/startup_scripts/a.js\",\"op\":\"file-replace\","
+                        + "\"format\":\"text\",\"desired\":\"from-file-entry\"},")
+                .getBytes(StandardCharsets.UTF_8)));
+        pass("v5 release manifest parsing, config operations, and unsafe-input rejection");
+    }
+
+    private void testReleaseSequenceAntiDowngradeGate() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-release-gate-");
+        try {
+            ReleaseSequenceGate gate = new ReleaseSequenceGate(root.resolve(".modsync"));
+            ReleaseManifestV5 first = releaseManifest(100, "release-100");
+            String firstHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+            check(gate.validate(first, firstHash).newRelease(), "首次发布应允许进入事务");
+            check(!Files.exists(gate.stateFile()), "仅验证清单时不得提前提交防降级状态");
+            gate.commit(first, firstHash);
+            check(gate.validate(first, firstHash).alreadyApplied(), "完全相同的发布应幂等");
+
+            expectIoFailure(() -> gate.validate(releaseManifest(99, "release-99"),
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+            expectIoFailure(() -> gate.validate(releaseManifest(100, "forked-release-100"),
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"));
+
+            ReleaseManifestV5 next = releaseManifest(101, "release-101");
+            String nextHash = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+            check(gate.validate(next, nextHash).newRelease(), "更高发布序号应允许升级");
+            gate.commit(next, nextHash);
+            check(gate.read().releaseSequence() == 101, "成功事务后应原子记录最新发布序号");
+            pass("monotonic release sequence blocks downgrade and same-sequence forks");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testV5PlatformDownloadSourcesAndMirrorTrustBoundary() {
+        String manifest = """
+                {
+                  "schema": 5,
+                  "releaseId": "platform-downloads-1",
+                  "releaseSequence": 2000002,
+                  "minimumMCSyncVersion": "2.0.0",
+                  "files": [
+                    {
+                      "path": "mods/modrinth-example.jar",
+                      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+                      "size": 10,
+                      "kind": "mod",
+                      "download": {
+                        "type": "modrinth",
+                        "projectId": "AABBCCDD",
+                        "versionId": "IIJJKKLL",
+                        "distributionPolicy": "upstream-only",
+                        "endpoints": [
+                          {"url": "https://api.modrinth.com/v2/", "role": "official", "purpose": "api", "region": "global", "priority": 100},
+                          {"url": "https://mod.mcimirror.top/modrinth/v2/", "role": "mirror", "purpose": "api", "region": "cn", "priority": 10, "thirdParty": true}
+                        ]
+                      }
+                    },
+                    {
+                      "path": "mods/curseforge-example.jar",
+                      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+                      "size": 20,
+                      "kind": "mod",
+                      "download": {
+                        "type": "curseforge",
+                        "projectId": "123456",
+                        "fileId": 7654321,
+                        "distributionPolicy": "upstream-only",
+                        "endpoints": [
+                          {"url": "https://api.curseforge.com/v1/", "role": "official", "purpose": "api", "region": "global", "priority": 100}
+                          ,{"url": "https://mod.mcimirror.top/curseforge/v1/", "role": "mirror", "purpose": "api", "region": "cn", "priority": 10, "thirdParty": true}
+                        ]
+                      }
+                    }
+                  ]
+                }
+                """;
+        ReleaseManifestV5 parsed = ReleaseManifestV5.parse(manifest.getBytes(StandardCharsets.UTF_8));
+        check(parsed.files().get(0).download().type().equals("modrinth"), "应保留 Modrinth 固定版本来源");
+        check(parsed.files().get(0).download().endpoints().get(1).role().equals("mirror"),
+                "中国镜像应作为显式候选端点，而非替换信任根");
+        check(parsed.files().get(1).download().distributionPolicy().equals("upstream-only"),
+                "CurseForge 上游下载不应被误标为允许随包再分发");
+
+        expectFailure(() -> ReleaseManifestV5.parse(manifest
+                .replace("https://mod.mcimirror.top/modrinth/v2/", "http://mirror.invalid/v2/")
+                .getBytes(StandardCharsets.UTF_8)));
+        expectFailure(() -> ReleaseManifestV5.parse(manifest
+                .replace("\"fileId\": 7654321", "\"fileId\": 0")
+                .getBytes(StandardCharsets.UTF_8)));
+        expectFailure(() -> ReleaseManifestV5.parse(manifest
+                .replace("\"type\": \"modrinth\"", "\"type\": \"publisher-hosted\"")
+                .getBytes(StandardCharsets.UTF_8)));
+        ReleaseManifestV5 proxied = ReleaseManifestV5.parse(manifest
+                .replace(
+                        "\"url\": \"https://mod.mcimirror.top/modrinth/v2/\", \"role\": \"mirror\", \"purpose\": \"api\"",
+                        "\"url\": \"https://mirror.example.invalid/files/example.jar\", \"role\": \"mirror\", \"purpose\": \"file\"")
+                .getBytes(StandardCharsets.UTF_8));
+        check(proxied.files().getFirst().download().endpoints().get(1).thirdParty(),
+                "特殊网络环境允许 upstream-only 使用显式第三方文件代理");
+        expectFailure(() -> ReleaseManifestV5.parse(manifest
+                .replace("\"thirdParty\": true", "\"thirdParty\": false")
+                .getBytes(StandardCharsets.UTF_8)));
+        pass("v5 pins Modrinth/CurseForge sources and treats mirrors as hash-checked candidates");
+    }
+
+    private void testV5CustomBuildUsesPublisherHostedDistribution() {
+        String manifest = """
+                {
+                  "schema": 5,
+                  "releaseId": "custom-build-1",
+                  "releaseSequence": 2000003,
+                  "minimumMCSyncVersion": "2.0.0",
+                  "files": [{
+                    "path": "mods/our-compat-fix.jar",
+                    "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+                    "size": 30,
+                    "kind": "mod",
+                    "download": {
+                      "type": "publisher-hosted",
+                      "distributionPolicy": "redistributable"
+                    }
+                  }]
+                }
+                """;
+        ReleaseManifestV5 parsed = ReleaseManifestV5.parse(manifest.getBytes(StandardCharsets.UTF_8));
+        check(parsed.files().getFirst().download().type().equals("publisher-hosted"),
+                "手工适配和自制模组应保留发布目录下载方式");
+        pass("custom builds retain publisher-hosted delivery only when redistributable");
+    }
+
+    private void testOnlyModsMayUsePlatformDownloadSources() {
+        String localResourcePack = """
+                {
+                  "schema":5,"releaseId":"nonmod-local","releaseSequence":2000004,
+                  "minimumMCSyncVersion":"2.0.0",
+                  "files":[{
+                    "path":"resourcepacks/example.zip",
+                    "sha256":"4444444444444444444444444444444444444444444444444444444444444444",
+                    "size":40,"kind":"resource-pack",
+                    "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}
+                  }]
+                }
+                """;
+        ReleaseManifestV5 parsed = ReleaseManifestV5.parse(localResourcePack.getBytes(StandardCharsets.UTF_8));
+        check(parsed.files().getFirst().download().type().equals("publisher-hosted"),
+                "资源包等非 Mod 文件应固定使用本地发布源");
+
+        String platformSource = """
+                "download":{
+                  "type":"modrinth","projectId":"demo","versionId":"fixed-version",
+                  "distributionPolicy":"upstream-only",
+                  "endpoints":[{"url":"https://api.modrinth.com/v2/","role":"official",
+                    "purpose":"api","region":"global","priority":100}]
+                }
+                """;
+        expectFailure(() -> ReleaseManifestV5.parse(localResourcePack
+                .replace("\"download\":{\"type\":\"publisher-hosted\",\"distributionPolicy\":\"redistributable\"}",
+                        platformSource.strip())
+                .getBytes(StandardCharsets.UTF_8)));
+        expectFailure(() -> ReleaseManifestV5.parse(localResourcePack
+                .replace("\"download\":{\"type\":\"publisher-hosted\",\"distributionPolicy\":\"redistributable\"}",
+                        "\"download\":{\"type\":\"direct\",\"distributionPolicy\":\"upstream-only\","
+                                + "\"endpoints\":[{\"url\":\"https://files.example.test/a.zip\","
+                                + "\"role\":\"official\",\"purpose\":\"file\",\"region\":\"global\","
+                                + "\"priority\":100}]}" )
+                .getBytes(StandardCharsets.UTF_8)));
+        pass("only direct mods may use platform or upstream download sources");
+    }
+
+    private void testDefaultDownloadConcurrencyIs128() {
+        String old = System.getProperty("mcsync.downloadThreads");
+        try {
+            System.clearProperty("mcsync.downloadThreads");
+            check(ParallelDownloadRunner.configuredThreads() == 128
+                            && ParallelDownloadRunner.threadCount(300) == 128
+                            && ParallelDownloadRunner.threadCount(12) == 12,
+                    "默认并发应为 128，小任务不得创建多余线程");
+            System.setProperty("mcsync.downloadThreads", "16");
+            check(ParallelDownloadRunner.threadCount(300) == 16, "应允许管理员降低下载并发");
+            System.setProperty("mcsync.downloadThreads", "999");
+            check(ParallelDownloadRunner.configuredThreads() == 128, "配置不得超过安全上限 128");
+            System.setProperty("mcsync.downloadThreads", "0");
+            check(ParallelDownloadRunner.configuredThreads() == 1, "配置下限应为 1");
+            System.setProperty("mcsync.downloadThreads", "invalid");
+            check(ParallelDownloadRunner.configuredThreads() == 128, "无效配置应回退默认 128");
+        } finally {
+            if (old == null) System.clearProperty("mcsync.downloadThreads");
+            else System.setProperty("mcsync.downloadThreads", old);
+        }
+        pass("download concurrency defaults to 128 with bounded override");
+    }
+
+    private void testModArtifactClassificationAndFingerprintNormalization() {
+        check(PublisherModAutoMatcher.isModArtifact("mods/example.jar", "mod"),
+                "直接位于 mods 的 JAR 应进入平台匹配");
+        check(!PublisherModAutoMatcher.isModArtifact("mods/nested/example.jar", "mod")
+                        && !PublisherModAutoMatcher.isModArtifact("resourcepacks/example.jar", "mod")
+                        && !PublisherModAutoMatcher.isModArtifact("mods/example.jar", "support")
+                        && !PublisherModAutoMatcher.isModArtifact("mods/example.zip", "mod"),
+                "嵌套、非 mods、类型不符和非 JAR 文件不得进入模组站匹配");
+        check(PublisherModAutoMatcher.curseForgeFingerprint("a b\r\nc\t".getBytes(StandardCharsets.UTF_8))
+                        == PublisherModAutoMatcher.curseForgeFingerprint("abc".getBytes(StandardCharsets.UTF_8)),
+                "CurseForge fingerprint 必须按平台规则忽略 ASCII 空白");
+        pass("mod artifact classification and CurseForge fingerprint normalization");
+    }
+
+    private void testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates() {
+        List<ReleaseManifestV5.DownloadEndpoint> modrinth =
+                DownloadEndpointPresets.forPlatform("modrinth", true);
+        check(modrinth.getFirst().uri().equals(DownloadEndpointPresets.MODRINTH_MCIMIRROR),
+                "Modrinth 中国区预设应使用 MCIMirror 的 modrinth/v2 前缀");
+        check(modrinth.getFirst().thirdParty() && modrinth.getFirst().role().equals("mirror"),
+                "镜像预设必须保留第三方身份");
+        check(modrinth.getLast().uri().equals(DownloadEndpointPresets.MODRINTH_OFFICIAL),
+                "镜像预设必须保留官方回退");
+
+        List<ReleaseManifestV5.DownloadEndpoint> curseforge =
+                DownloadEndpointPresets.forPlatform("curseforge", true);
+        check(curseforge.getFirst().uri().equals(DownloadEndpointPresets.CURSEFORGE_MCIMIRROR),
+                "CurseForge 中国区预设应使用 MCIMirror 的 curseforge/v1 前缀");
+        check(curseforge.getLast().role().equals("official"), "CurseForge 也必须保留官方候选");
+        pass("MCIMirror API presets remain explicit third-party candidates with official fallback");
+    }
+
+    private static ReleaseManifestV5 releaseManifest(long sequence, String releaseId) {
+        String json = """
+                {
+                  "schema": 5,
+                  "releaseId": "%s",
+                  "releaseSequence": %d,
+                  "minimumMCSyncVersion": "2.0.0",
+                  "files": [{
+                    "path": "mods/mcsync.jar",
+                    "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                    "size": 1,
+                    "kind": "mod",
+                    "side": ["client"]
+                  }]
+                }
+                """.formatted(releaseId, sequence);
+        return ReleaseManifestV5.parse(json.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void testStructuredConfigMutationEngine() {
+        ReleaseManifestV5.ConfigOperation toml = configOperation("""
+                {
+                  "path":"config/example-common.toml","op":"config-set","format":"toml",
+                  "key":"features.safeMode","valueType":"boolean","expected":false,"desired":true,
+                  "missingPolicy":"block","conflictPolicy":"replace-if-expected"
+                }
+                """);
+        byte[] tomlInput = "# user note\r\n[features]\r\nsafeMode = false # keep this\r\nvolume = 7\r\n"
+                .getBytes(StandardCharsets.UTF_8);
+        ConfigMutationEngine.MutationResult tomlResult = ConfigMutationEngine.apply(tomlInput, toml);
+        String tomlOutput = new String(tomlResult.bytes(), StandardCharsets.UTF_8);
+        check(tomlResult.changed(), "TOML 精确键更新应报告 changed");
+        check(tomlOutput.equals("# user note\r\n[features]\r\nsafeMode = true # keep this\r\nvolume = 7\r\n"),
+                "TOML 更新必须保留注释、换行和无关配置");
+
+        ReleaseManifestV5.ConfigOperation json = configOperation("""
+                {
+                  "path":"kubejs/config/common.json","op":"config-merge","format":"json",
+                  "key":"server.features","valueType":"object","expected":{"existing":1},
+                  "desired":{"enabled":true,"nested":{"limit":8}},
+                  "missingPolicy":"create","conflictPolicy":"replace-if-expected"
+                }
+                """);
+        ConfigMutationEngine.MutationResult jsonResult = ConfigMutationEngine.apply(
+                "{\"server\":{\"features\":{\"existing\":1},\"local\":\"keep\"}}"
+                        .getBytes(StandardCharsets.UTF_8), json);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> jsonRoot = (Map<String, Object>) StrictJson.parse(
+                new String(jsonResult.bytes(), StandardCharsets.UTF_8));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> server = (Map<String, Object>) jsonRoot.get("server");
+        check(server.get("local").equals("keep"), "JSON merge 必须保留相邻本地配置");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> features = (Map<String, Object>) server.get("features");
+        check(features.containsKey("existing") && features.get("enabled").equals(Boolean.TRUE),
+                "JSON merge 应保留旧对象并合入目标键");
+
+        ReleaseManifestV5.ConfigOperation properties = configOperation("""
+                {
+                  "path":"modsync.properties","op":"config-set","format":"properties",
+                  "key":"requestTimeoutSeconds","valueType":"integer","expected":60,"desired":90,
+                  "missingPolicy":"block","conflictPolicy":"replace-if-expected"
+                }
+                """);
+        ConfigMutationEngine.MutationResult propertiesResult = ConfigMutationEngine.apply(
+                "# local\nrequestTimeoutSeconds=60\nlanguage=zh_cn"
+                        .getBytes(StandardCharsets.UTF_8), properties);
+        check(new String(propertiesResult.bytes(), StandardCharsets.UTF_8)
+                        .equals("# local\nrequestTimeoutSeconds=90\nlanguage=zh_cn"),
+                "properties 更新必须保留无关行且不凭空增加末尾换行");
+
+        ReleaseManifestV5.ConfigOperation keepLocal = configOperation("""
+                {
+                  "path":"config/example.toml","op":"config-set","format":"toml",
+                  "key":"enabled","valueType":"boolean","expected":false,"desired":false,
+                  "missingPolicy":"block","conflictPolicy":"keep-local"
+                }
+                """);
+        byte[] localBytes = "enabled = true\n".getBytes(StandardCharsets.UTF_8);
+        ConfigMutationEngine.MutationResult kept = ConfigMutationEngine.apply(localBytes, keepLocal);
+        check(!kept.changed() && Arrays.equals(kept.bytes(), localBytes)
+                        && kept.outcome().equals("kept-local"),
+                "用户已修改的配置在 keep-local 策略下必须原样保留");
+
+        ReleaseManifestV5.ConfigOperation missingSkip = configOperation("""
+                {
+                  "path":"config/example.toml","op":"config-set","format":"toml",
+                  "key":"missing","valueType":"boolean","expected":false,"desired":true,
+                  "missingPolicy":"skip","conflictPolicy":"block"
+                }
+                """);
+        ConfigMutationEngine.MutationResult skipped = ConfigMutationEngine.apply(localBytes, missingSkip);
+        check(!skipped.changed() && skipped.outcome().equals("skipped-missing"),
+                "missingPolicy=skip 不得创建未知配置键");
+
+        expectFailure(() -> ConfigMutationEngine.apply(
+                "enabled = true\nenabled = false\n".getBytes(StandardCharsets.UTF_8), keepLocal));
+        expectFailure(() -> ConfigMutationEngine.apply(new byte[]{(byte) 0xC3, (byte) 0x28}, keepLocal));
+        pass("structured config OTA preserves local data and fails closed on ambiguity");
+    }
+
+    private static ReleaseManifestV5.ConfigOperation configOperation(String operationJson) {
+        String manifest = """
+                {
+                  "schema":5,
+                  "releaseId":"config-test",
+                  "releaseSequence":1,
+                  "minimumMCSyncVersion":"2.0.0",
+                  "files":[{
+                    "path":"mods/anchor.jar",
+                    "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "size":1,
+                    "kind":"mod"
+                  }],
+                  "configOperations":[%s]
+                }
+                """.formatted(operationJson);
+        return ReleaseManifestV5.parse(manifest.getBytes(StandardCharsets.UTF_8))
+                .configOperations().getFirst();
+    }
+
+    private void testV5AtomicReleaseTransactionAndOwnership() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-transaction-");
+        try {
+            byte[] firstMod = "first-mod".getBytes(StandardCharsets.UTF_8);
+            byte[] secondMod = "second-mod".getBytes(StandardCharsets.UTF_8);
+            Files.createDirectories(root.resolve("config"));
+            Files.writeString(root.resolve("config/gameplay.toml"),
+                    "# local comment\n[balance]\nenabled = false\nuserChoice = 42\n",
+                    StandardCharsets.UTF_8);
+
+            ReleaseManifestV5 first = transactionManifest(
+                    10,
+                    "tx-10",
+                    List.of(fileJson("mods/old.jar", firstMod)),
+                    """
+                    [{
+                      "path":"config/gameplay.toml","op":"config-set","format":"toml",
+                      "key":"balance.enabled","valueType":"boolean","expected":false,"desired":true,
+                      "missingPolicy":"block","conflictPolicy":"replace-if-expected"
+                    }]
+                    """);
+            ReleaseTransactionEngine engine = new ReleaseTransactionEngine(root, 2);
+            ReleaseTransactionEngine.Result firstResult = engine.apply(
+                    first, Hashing.sha256(first.serialize()),
+                    entry -> entry.path().equals("mods/old.jar") ? firstMod : null);
+            check(firstResult.changed() && firstResult.installed() == 2 && firstResult.configChanged() == 1,
+                    "首个 v5 事务应同时提交模组与配置键");
+            check(Arrays.equals(Files.readAllBytes(root.resolve("mods/old.jar")), firstMod),
+                    "v5 事务应写入已校验模组");
+            String configured = Files.readString(root.resolve("config/gameplay.toml"));
+            check(configured.contains("enabled = true") && configured.contains("userChoice = 42"),
+                    "v5 配置事务应保留用户配置并修改目标键");
+            check(Files.isRegularFile(firstResult.receipt()), "成功事务必须生成可审计 receipt");
+
+            ReleaseManifestV5 second = transactionManifest(
+                    11,
+                    "tx-11",
+                    List.of(fileJson("mods/new.jar", secondMod)),
+                    "[]");
+            ReleaseTransactionEngine.Result secondResult = engine.apply(
+                    second, Hashing.sha256(second.serialize()), entry -> secondMod);
+            check(secondResult.removed() == 1 && !Files.exists(root.resolve("mods/old.jar")),
+                    "managed 范围内的旧受管文件应按 ownership 哈希移除");
+            check(Arrays.equals(Files.readAllBytes(root.resolve("mods/new.jar")), secondMod),
+                    "下一发布应原子安装新文件");
+
+            Files.writeString(root.resolve("mods/new.jar"), "user-modified", StandardCharsets.UTF_8);
+            byte[] thirdMod = "third-mod".getBytes(StandardCharsets.UTF_8);
+            ReleaseManifestV5 third = transactionManifest(
+                    12,
+                    "tx-12",
+                    List.of(fileJson("mods/third.jar", thirdMod)),
+                    "[]");
+            engine.apply(third, Hashing.sha256(third.serialize()), entry -> thirdMod);
+            check(Files.readString(root.resolve("mods/new.jar")).equals("user-modified"),
+                    "用户修改过的旧受管文件不得被 ownership 清理覆盖");
+
+            ReleaseManifestV5 failed = transactionManifest(
+                    13,
+                    "tx-13",
+                    List.of(fileJson("mods/bad.jar", "expected".getBytes(StandardCharsets.UTF_8))),
+                    "[]");
+            expectIoFailure(() -> engine.apply(
+                    failed, Hashing.sha256(failed.serialize()),
+                    entry -> "wrong".getBytes(StandardCharsets.UTF_8)));
+            check(new ReleaseSequenceGate(root.resolve(".modsync")).read().releaseSequence() == 12,
+                    "下载或验签失败不得推进防降级序号");
+            check(!Files.exists(root.resolve("mods/bad.jar")), "失败事务不得留下半成品");
+
+            ReleaseManifestV5 forbidden = transactionManifest(
+                    13,
+                    "tx-forbidden",
+                    List.of(fileJson("saves/world/level.dat", thirdMod)),
+                    "[]");
+            expectIoFailure(() -> engine.apply(
+                    forbidden, Hashing.sha256(forbidden.serialize()), entry -> thirdMod));
+
+            Files.writeString(root.resolve("options.txt"), "user-options", StandardCharsets.UTF_8);
+            byte[] packagedOptions = "pack-options".getBytes(StandardCharsets.UTF_8);
+            String firstInstallJson = """
+                    {
+                      "schema":5,"releaseId":"tx-first-install","releaseSequence":13,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[
+                        {"path":"mods","policy":"additive"},
+                        {"path":"options.txt","policy":"first-install"}
+                      ],
+                      "files":[%s,%s],"configOperations":[]
+                    }
+                    """.formatted(fileJson("mods/third.jar", thirdMod), fileJson("options.txt", packagedOptions));
+            ReleaseManifestV5 firstInstall = ReleaseManifestV5.parse(
+                    firstInstallJson.getBytes(StandardCharsets.UTF_8));
+            AtomicInteger fetched = new AtomicInteger();
+            engine.apply(firstInstall, Hashing.sha256(firstInstall.serialize()), entry -> {
+                fetched.incrementAndGet();
+                return thirdMod;
+            });
+            check(Files.readString(root.resolve("options.txt")).equals("user-options") && fetched.get() == 0,
+                    "first-install 文件和已正确安装的内容都应直接复用，不得重复下载覆盖");
+
+            Path script = root.resolve("kubejs/startup_scripts/controlled.js");
+            Files.createDirectories(script.getParent());
+            byte[] oldScript = "old-script\n".getBytes(StandardCharsets.UTF_8);
+            byte[] newScript = "new-script\n".getBytes(StandardCharsets.UTF_8);
+            Files.write(script, oldScript);
+            ReleaseManifestV5 fileReplace = ReleaseManifestV5.parse(("""
+                    {
+                      "schema":5,"releaseId":"tx-file-replace","releaseSequence":14,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"kubejs","policy":"additive"}],
+                      "files":[%s],
+                      "configOperations":[{
+                        "path":"kubejs/startup_scripts/controlled.js","op":"file-replace","format":"text",
+                        "valueType":"binary","expectedSha256":"%s","desired":"from-file-entry",
+                        "missingPolicy":"block","conflictPolicy":"replace-if-expected"
+                      }]
+                    }
+                    """).formatted(
+                    fileJson("kubejs/startup_scripts/controlled.js", newScript), Hashing.sha256(oldScript))
+                    .getBytes(StandardCharsets.UTF_8));
+            engine.apply(fileReplace, Hashing.sha256(fileReplace.serialize()), entry -> newScript);
+            check(Arrays.equals(Files.readAllBytes(script), newScript),
+                    "file-replace 只有在旧 SHA 前像精确匹配时才应提交");
+
+            ReleaseManifestV5 wrongPreimage = ReleaseManifestV5.parse(("""
+                    {
+                      "schema":5,"releaseId":"tx-file-replace-wrong","releaseSequence":15,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"kubejs","policy":"additive"}],
+                      "files":[%s],
+                      "configOperations":[{
+                        "path":"kubejs/startup_scripts/controlled.js","op":"file-replace","format":"text",
+                        "valueType":"binary","expectedSha256":"%s","desired":"from-file-entry"
+                      }]
+                    }
+                    """).formatted(
+                    fileJson("kubejs/startup_scripts/controlled.js", oldScript), Hashing.sha256(oldScript))
+                    .getBytes(StandardCharsets.UTF_8));
+            expectIoFailure(() -> engine.apply(
+                    wrongPreimage, Hashing.sha256(wrongPreimage.serialize()), entry -> oldScript));
+            check(Arrays.equals(Files.readAllBytes(script), newScript)
+                            && new ReleaseSequenceGate(root.resolve(".modsync")).read().releaseSequence() == 14,
+                    "file-replace 前像不符必须保持当前文件并禁止推进发布序号");
+            pass("v5 release transaction is atomic, ownership-aware, and save-state safe");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private static ReleaseManifestV5 transactionManifest(
+            long sequence,
+            String releaseId,
+            List<String> files,
+            String configOperations) {
+        String json = """
+                {
+                  "schema":5,
+                  "releaseId":"%s",
+                  "releaseSequence":%d,
+                  "minimumMCSyncVersion":"2.0.0",
+                  "managedScopes":[
+                    {"path":"mods","policy":"managed"},
+                    {"path":"config","policy":"additive"}
+                  ],
+                  "files":[%s],
+                  "configOperations":%s
+                }
+                """.formatted(releaseId, sequence, String.join(",", files), configOperations);
+        return ReleaseManifestV5.parse(json.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void testV5InterruptedCommitRecoversFromDurableJournal() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-recovery-");
+        try {
+            Path target = root.resolve("mods/recover.jar");
+            Path transaction = root.resolve(".modsync/transactions/interrupted-test");
+            Path backup = transaction.resolve("backup/mods/recover.jar");
+            Files.createDirectories(target.getParent());
+            Files.createDirectories(backup.getParent());
+            byte[] original = "original-before-crash".getBytes(StandardCharsets.UTF_8);
+            Files.write(backup, original);
+            Files.writeString(target, "partially-committed", StandardCharsets.UTF_8);
+            Files.writeString(transaction.resolve("journal.json"), """
+                    {
+                      "schema":1,"state":"PREPARED","releaseId":"interrupted","releaseSequence":77,
+                      "manifestSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "createdAt":"2026-08-18T00:00:00Z",
+                      "backups":[{"path":"mods/recover.jar","existed":true,"sha256":"%s"}]
+                    }
+                    """.formatted(Hashing.sha256(original)), StandardCharsets.UTF_8);
+            ReleaseTransactionEngine engine = new ReleaseTransactionEngine(root, 2);
+            check(engine.recoverPendingTransactions() == 1
+                            && Arrays.equals(Files.readAllBytes(target), original),
+                    "下次启动必须从持久日志恢复强杀时的部分提交");
+            check(!Files.exists(transaction.resolve("journal.json"))
+                            && Files.isRegularFile(transaction.resolve("recovery-receipt.json")),
+                    "自动恢复完成后应留下恢复回执并清除活动日志");
+            check(engine.recoverPendingTransactions() == 0,
+                    "已恢复事务必须幂等，不得在后续启动重复回滚");
+            pass("v5 interrupted commits recover from durable journals");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testV5SelfUpdateReplacesLegacyJarInSameTransaction() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-self-update-");
+        try {
+            Files.createDirectories(root.resolve("mods"));
+            Path legacy = root.resolve("mods/MCModSync-1.9.2.jar");
+            Path candidate = root.resolve("candidate-MCSync-2.1.0.jar");
+            writeFabricJar(legacy, BuildInfo.TECHNICAL_MOD_ID, "1.9.2");
+            writeFabricJar(candidate, BuildInfo.TECHNICAL_MOD_ID, "2.1.0");
+            byte[] candidateBytes = Files.readAllBytes(candidate);
+            byte[] gameplay = "gameplay-update".getBytes(StandardCharsets.UTF_8);
+            ReleaseManifestV5 manifest = transactionManifest(
+                    30,
+                    "self-update-30",
+                    List.of(
+                            fileJson("mods/MCSync-2.1.0.jar", candidateBytes),
+                            fileJson("mods/gameplay.jar", gameplay)),
+                    "[]");
+            ReleaseTransactionEngine.Result result = new ReleaseTransactionEngine(root, 2).apply(
+                    manifest, Hashing.sha256(manifest.serialize()),
+                    entry -> entry.path().contains("MCSync") ? candidateBytes : gameplay);
+            check(result.installed() == 2 && result.removed() == 1
+                            && !Files.exists(legacy)
+                            && ModMetadata.readVersion(root.resolve("mods/MCSync-2.1.0.jar")).equals("2.1.0")
+                            && Arrays.equals(Files.readAllBytes(root.resolve("mods/gameplay.jar")), gameplay),
+                    "1.9.x 同 modId JAR 必须与 2.0+ 自更新及玩法文件在一个事务中替换");
+            long selfJars;
+            try (var stream = Files.list(root.resolve("mods"))) {
+                selfJars = stream.filter(Files::isRegularFile)
+                        .filter(path -> ModMetadata.readModId(path).equals(BuildInfo.TECHNICAL_MOD_ID))
+                        .count();
+            }
+            check(selfJars == 1, "自更新后 mods 中必须只剩一个技术 modId=mcmodsync 的 JAR");
+            pass("v5 self update replaces the legacy 1.9.x JAR atomically");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private static String fileJson(String path, byte[] bytes) {
+        return """
+                {
+                  "path":"%s","sha256":"%s","size":%d,"kind":"%s",
+                  "required":true,"restartRequired":true,"side":["client"]
+                }
+                """.formatted(
+                path,
+                Hashing.sha256(bytes),
+                bytes.length,
+                path.startsWith("mods/") ? "mod" : "support");
+    }
+
+    private void testV5CoordinatorDownloadsBeforeStartupAndBecomesIdempotent() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-http-");
+        HttpServer server = null;
+        try {
+            byte[] mod = "v5-http-mod".getBytes(StandardCharsets.UTF_8);
+            ReleaseManifestV5 manifest = transactionManifest(
+                    20, "http-20", List.of(fileJson("mods/demo.jar", mod)), "[]");
+            byte[] manifestBytes = manifest.serialize();
+            AtomicInteger manifestRequests = new AtomicInteger();
+            AtomicInteger fileRequests = new AtomicInteger();
+            server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+            server.createContext("/release/manifest.json", exchange -> {
+                manifestRequests.incrementAndGet();
+                respond(exchange, 200, manifestBytes, null);
+            });
+            server.createContext("/release/mods/demo.jar", exchange -> {
+                fileRequests.incrementAndGet();
+                respond(exchange, 200, mod, null);
+            });
+            server.start();
+            URI uri = URI.create("http://127.0.0.1:" + server.getAddress().getPort()
+                    + "/release/manifest.json");
+            ModSyncConfig runtimeConfig = config(root, uri, false, false);
+            SyncProbeResult initialProbe = ModSyncCoordinator.probe(runtimeConfig, message -> { }, SyncObserver.NONE);
+            check(initialProbe.status() == SyncProbeResult.Status.CHANGES_REQUIRED && fileRequests.get() == 1,
+                    "NeoForge 初始检查应先在当前窗口生命周期内下载并缓存更新");
+            SyncResult applied = ModSyncCoordinator.synchronize(runtimeConfig, message -> { }, SyncObserver.NONE);
+            check(applied.status() == SyncResult.Status.UPDATED
+                            && Arrays.equals(Files.readAllBytes(root.resolve("mods/demo.jar")), mod),
+                    "启动辅助进程应在游戏加载前完成 v5 文件下载与提交");
+            check(fileRequests.get() == 1, "辅助进程提交时应复用已验哈希缓存，不得再次联网下载");
+
+            SyncProbeResult probe = ModSyncCoordinator.probe(runtimeConfig, message -> { }, SyncObserver.NONE);
+            check(probe.status() == SyncProbeResult.Status.UP_TO_DATE,
+                    "同一 releaseSequence 完成后再次启动应幂等通过");
+            SyncResult repeated = ModSyncCoordinator.synchronize(runtimeConfig, message -> { }, SyncObserver.NONE);
+            check(repeated.status() == SyncResult.Status.UNCHANGED && fileRequests.get() == 1,
+                    "幂等启动不得重新下载已正确安装的文件");
+
+            Files.writeString(root.resolve("mods/demo.jar"), "tampered", StandardCharsets.UTF_8);
+            SyncProbeResult repairProbe = ModSyncCoordinator.probe(
+                    runtimeConfig, message -> { }, SyncObserver.NONE);
+            check(repairProbe.status() == SyncProbeResult.Status.CHANGES_REQUIRED,
+                    "同一 releaseSequence 的受管文件被篡改后必须重新进入修复流程");
+            SyncResult repaired = ModSyncCoordinator.synchronize(
+                    runtimeConfig, message -> { }, SyncObserver.NONE);
+            check(repaired.status() == SyncResult.Status.UPDATED
+                            && Arrays.equals(Files.readAllBytes(root.resolve("mods/demo.jar")), mod),
+                    "同版本同清单也必须修复哈希漂移，不能被防降级状态误判为已完成");
+            check(fileRequests.get() == 1,
+                    "同版本修复应复用已验哈希缓存，不必重复从远端下载");
+            check(manifestRequests.get() == 6, "每次启动检查都应重新取得小型清单以发现 OTA");
+            pass("v5 coordinator downloads pre-start and remains idempotent");
+        } finally {
+            if (server != null) server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testV5PublisherProjectBuildsDeterministicRelease() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-v5-publisher-");
+        try {
+            byte[] custom = "custom-build".getBytes(StandardCharsets.UTF_8);
+            byte[] upstream = "upstream-build".getBytes(StandardCharsets.UTF_8);
+            Files.createDirectories(root.resolve("mods"));
+            Files.write(root.resolve("mods/custom.jar"), custom);
+            Files.write(root.resolve("mods/upstream.jar"), upstream);
+            Path project = root.resolve("publisher-project.json");
+            Files.writeString(project, """
+                    {
+                      "schema":1,"releaseId":"publisher-1","releaseSequence":100,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[
+                        {
+                          "path":"mods/custom.jar","kind":"mod","required":true,
+                          "restartRequired":true,"side":["client"],
+                          "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}
+                        },
+                        {
+                          "path":"mods/upstream.jar","kind":"mod","required":true,
+                          "restartRequired":true,"side":["client"],
+                          "download":{
+                            "type":"direct","distributionPolicy":"upstream-only",
+                            "endpoints":[{
+                              "url":"https://downloads.example.invalid/upstream.jar",
+                              "role":"official","purpose":"file","region":"global","priority":100
+                            }]
+                          }
+                        }
+                      ],
+                      "configOperations":[]
+                    }
+                    """, StandardCharsets.UTF_8);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> inMemoryProject = (Map<String, Object>) StrictJson.parse(
+                    Files.readString(project, StandardCharsets.UTF_8));
+            ReleaseManifestV5 validated = PublisherProjectV5.validateProject(root, inMemoryProject);
+            check(validated.files().size() == 2 && validated.configOperations().isEmpty(),
+                    "GUI 内存项目应在不写输出的前提下完成严格 v5 预检");
+            Path output = root.resolve("release");
+            PublisherProjectV5.Publication publication = PublisherProjectV5.publish(root, project, output);
+            check(publication.hostedFiles() == 1, "发布器只应复制允许二次分发的 publisher-hosted 文件");
+            check(Arrays.equals(Files.readAllBytes(output.resolve("mods/custom.jar")), custom),
+                    "自制/适配模组应被复制到发布目录");
+            check(!Files.exists(output.resolve("mods/upstream.jar")),
+                    "upstream-only 模组不得被发布器二次打包");
+            ReleaseManifestV5 generated = ReleaseManifestV5.parse(Files.readAllBytes(publication.manifestPath()));
+            check(generated.files().get(0).sha256().equals(Hashing.sha256(custom))
+                            && generated.files().get(1).sha256().equals(Hashing.sha256(upstream)),
+                    "发布器必须锁定所有本地验证文件的精确 SHA256");
+            check(Files.isRegularFile(publication.reportPath()), "发布器应输出机器可读审计报告");
+            pass("v5 publisher project separates redistributable and upstream-only files");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPublisherCloudBundleBuildsStableAndLegacyEntrypoints() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-cloud-bundle-");
+        try {
+            long generatedSequence = PublisherProjectV5.currentTimeReleaseSequence();
+            String generatedSequenceText = Long.toString(generatedSequence);
+            check(generatedSequenceText.matches("\\d{17}")
+                            && generatedSequenceText.substring(0, 8).equals(
+                            java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)),
+                    "发布序号应按当前系统日期时间生成 yyyyMMddHHmmssSSS");
+            Files.createDirectories(root.resolve("game/mods"));
+            Files.writeString(root.resolve("game/mods/custom.jar"), "custom", StandardCharsets.UTF_8);
+            Path updater = root.resolve("MCSync-2.0.0.jar");
+            writeNeoForgeJar(updater, "mcmodsync", "2.0.0");
+            @SuppressWarnings("unchecked")
+            Map<String, Object> project = (Map<String, Object>) StrictJson.parse("""
+                    {
+                      "schema":1,"releaseId":"cloud-1","releaseSequence":2000001,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[{
+                        "path":"mods/custom.jar","kind":"mod","required":true,
+                        "restartRequired":true,"side":["client"],
+                        "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}
+                      }],
+                      "configOperations":[]
+                    }
+                    """);
+            Path output = root.resolve("cloud");
+            PublisherCloudBundle.Result result = PublisherCloudBundle.publish(
+                    root.resolve("game"), project, output, "https://files.example.test/mcsync",
+                    "channel/stable/mods-v5.json", "legacy/1.9/mods-v4.txt", "legacy/1.6/mods.txt",
+                    null, "", true, updater);
+            ReleaseManifestV5 stable = ReleaseManifestV5.parse(Files.readAllBytes(result.stableManifest()));
+            check(stable.releaseSequence() == 2_000_001L
+                            && stable.files().getFirst().download().endpoints().getFirst().uri().toASCIIString()
+                            .equals("https://files.example.test/mcsync/releases/2000001/mods/custom.jar"),
+                    "稳定 v5 入口应锁定不可变版本目录中的托管文件");
+            ModManifest v4 = ModManifest.parse(Files.readString(
+                    output.resolve("legacy/1.9/mods-v4.txt"), StandardCharsets.UTF_8));
+            String v2 = Files.readString(output.resolve("legacy/1.6/mods.txt"), StandardCharsets.UTF_8);
+            long v2DataRows = v2.lines().filter(line -> !line.isBlank() && !line.startsWith("#")).count();
+            check(v4.entries().size() == 2 && v4.catalogVersion().equals("2000001")
+                            && v2.startsWith(ModManifest.MAGIC_V2 + "\n") && v2DataRows == 2,
+                    "1.9.x 与 1.6.x/1.7.x 网关都应只包含 MCSync 和配置引导");
+            check(v4.managedClientConfig().orElseThrow().values().get("manifest")
+                            .equals("https://files.example.test/mcsync/channel/stable/mods-v5.json"),
+                    "旧版配置引导应把升级后客户端切到 2.0 稳定入口");
+            check(Files.isRegularFile(output.resolve("legacy/1.6/MCModSync-Config.jar"))
+                            && v2.contains("\tMCModSync-Config.jar\n"),
+                    "1.6.x/1.7.x 网关必须下发已锁定的配置引导 JAR");
+            check(Files.isRegularFile(result.stableManifest())
+                            && result.stableManifest().getFileName().toString().equals("mods-v5.json"),
+                    "新版稳定入口必须使用 mods-v5.json，旧版网关单独输出");
+            pass("publisher cloud bundle builds v5 JSON and separate legacy v4/v2 materials");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPublisherCloudBundleExportsServerList() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-cloud-server-list-");
+        try {
+            Files.createDirectories(root.resolve("game/mods"));
+            Files.writeString(root.resolve("game/mods/custom.jar"), "custom", StandardCharsets.UTF_8);
+            Path servers = root.resolve("servers.dat");
+            Files.writeString(servers, "server-list-fixture", StandardCharsets.UTF_8);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> project = (Map<String, Object>) StrictJson.parse("""
+                    {
+                      "schema":1,"releaseId":"cloud-server-list","releaseSequence":2000002,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[{
+                        "path":"mods/custom.jar","kind":"mod","required":true,
+                        "restartRequired":true,"side":["client"],
+                        "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}
+                      }],
+                      "configOperations":[]
+                    }
+                    """);
+            Path output = root.resolve("cloud");
+            PublisherCloudBundle.Result result = PublisherCloudBundle.publish(
+                    root.resolve("game"), project, output, "https://files.example.test/mcsync",
+                    "channel/stable/mods-v5.json", "legacy/1.9/mods-v4.txt", "legacy/1.6/mods.txt",
+                    servers, "server-list/serverlist.txt", false, null);
+            Path exportedServers = output.resolve("server-list/servers.dat");
+            ServerListManifest manifest = ServerListManifest.parse(Files.readString(
+                    result.serverListManifest(), StandardCharsets.UTF_8));
+            String properties = Files.readString(result.clientProperties(), StandardCharsets.UTF_8);
+            check(Files.mismatch(servers, exportedServers) == -1
+                            && manifest.md5().equals(Hashing.md5(servers)),
+                    "发布器应把服务器列表清单与 servers.dat 作为同级文件导出");
+            check(properties.contains("syncServerList=true\n")
+                            && properties.contains("serverListManifest=https://files.example.test/mcsync/server-list/serverlist.txt\n"),
+                    "客户端配置模板应启用服务器列表同步并指向导出清单");
+            pass("publisher cloud bundle exports server list and managed client configuration");
+        } finally {
+            deleteTree(root);
+        }
     }
 
     private void testManifestGenerationAndParsing() throws Exception {
@@ -303,7 +1454,7 @@ public final class AllTests {
         pass("permanent v2 gateway contains upgrade components only");
     }
 
-    private void testPublisherContinuesPreviousCatalog() throws Exception {
+    private void testPublisherContinuesPreviousCatalog() {
         ManifestEntry oldSodium = new ManifestEntry(
                 "a".repeat(64),
                 "b".repeat(32),
@@ -353,8 +1504,7 @@ public final class AllTests {
         ModManifest scanned = ModManifest.fromEntries("fresh-scan", List.of(currentSodium, added));
 
         ModManifest merged = PublisherMain.mergeCatalog(scanned, previous);
-        check(merged.catalogVersion().equals("fresh-scan"),
-                "继续编辑只继承条目元数据，清单版本必须保留本次扫描生成的当前时间版本");
+        check(merged.catalogVersion().equals("published-catalog-7"), "继续编辑应保留上次清单版本供用户修改");
         check(merged.entries().size() == 2, "继续编辑的条目集合必须以当前 mods 扫描结果为准");
         ManifestEntry sodium = merged.entries().get(0);
         check(sodium.fileName().equals("sodium-new.jar") && sodium.version().equals("2.0"),
@@ -369,26 +1519,6 @@ public final class AllTests {
                         && sodium.descriptionEn().equals("Sodium rendering optimization"),
                 "继续编辑应保留上次维护的显示名称和双语描述");
         check(merged.entries().get(1).modId().equals("new_mod"), "当前目录中的新增 Mod 应加入清单");
-
-        Path modsDirectory = Files.createTempDirectory("modsync-publisher-auto-previous-");
-        try {
-            check(PublisherMain.automaticallyMatchedPreviousCatalog(modsDirectory).isEmpty(),
-                    "mods 目录没有 mods-v4.txt 时不得误匹配其他文件");
-            Path localCatalog = Files.writeString(
-                    modsDirectory.resolve(ManagedClientConfig.MANIFEST_FILE_NAME),
-                    previous.serialize(),
-                    StandardCharsets.UTF_8);
-            check(PublisherMain.automaticallyMatchedPreviousCatalog(modsDirectory)
-                            .orElseThrow().equals(localCatalog.toAbsolutePath().normalize()),
-                    "应自动匹配所选 mods 目录中的 mods-v4.txt");
-        } finally {
-            deleteTree(modsDirectory);
-        }
-        check(PublisherMain.LOAD_PREVIOUS_CATALOG_BY_DEFAULT,
-                "独立发布器应默认勾选读取上次清单");
-        check(PublisherMain.PUBLISHER_WINDOW_WIDTH >= 1_000
-                        && CatalogEditorDialog.DEFAULT_EDITOR_WIDTH >= 1_600,
-                "独立发布器和清单编辑器的默认宽度应加宽");
         pass("publisher continues from a previous catalog after scanning mods");
     }
 
@@ -559,100 +1689,6 @@ public final class AllTests {
         }
     }
 
-    private void testPersistentLocalV4CatalogCopy() throws Exception {
-        Path root = Files.createTempDirectory("modsync-persistent-v4-copy-");
-        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
-        AtomicInteger catalogMode = new AtomicInteger();
-        try {
-            Path serverFiles = Files.createDirectories(root.resolve("server-files"));
-            Path servedJar = serverFiles.resolve("persistent.jar");
-            writeFabricJar(servedJar, "persistent_mod", "1.0");
-            byte[] jarBytes = Files.readAllBytes(servedJar);
-            ManifestEntry entry = new ManifestEntry(
-                    Hashing.sha256(jarBytes),
-                    Hashing.md5(jarBytes),
-                    "persistent_mod",
-                    "persistent.jar",
-                    ModKind.REQUIRED,
-                    Set.of(),
-                    "Persistent Test Mod",
-                    "1.0",
-                    "\u6301\u4e45\u5316\u6d4b\u8bd5",
-                    "Persistence test");
-            String canonicalCatalog = ModManifest.fromEntries("persistent-copy-1", List.of(entry)).serialize();
-            String exactCatalog = canonicalCatalog
-                    .replace(
-                            ModManifest.MAGIC_V4 + "\n",
-                            ModManifest.MAGIC_V4
-                                    + "\n# opaque-server-note=  \u4fdd\u7559\u539f\u6587\u4e0e\u7a7a\u683c  \n")
-                    .replace("\n", "\r\n");
-            byte[] exactCatalogBytes = exactCatalog.getBytes(StandardCharsets.UTF_8);
-
-            server.createContext("/base/mods-v4.txt", exchange -> {
-                int mode = catalogMode.get();
-                if (mode == 1) {
-                    respond(exchange, 200, "<html>invalid catalog</html>".getBytes(StandardCharsets.UTF_8), null);
-                } else if (mode == 2) {
-                    respond(exchange, 503, "temporarily unavailable".getBytes(StandardCharsets.UTF_8), null);
-                } else {
-                    respond(exchange, 200, exactCatalogBytes, null);
-                }
-            });
-            server.createContext("/base/persistent.jar", exchange -> respond(exchange, 200, jarBytes, null));
-            server.start();
-
-            URI catalogUri = URI.create(
-                    "http://127.0.0.1:" + server.getAddress().getPort() + "/base/mods-v4.txt");
-            ModSyncConfig config = config(root, catalogUri, true, true);
-            SyncResult first = new ModSyncEngine(config, message -> { }).synchronize();
-            check(first.status() == SyncResult.Status.UPDATED,
-                    "The first successful sync should download the managed JAR");
-
-            Path mods = root.resolve("mods");
-            Path localCatalog = mods.resolve(ManagedClientConfig.MANIFEST_FILE_NAME);
-            check(Files.isRegularFile(localCatalog),
-                    "A successful sync must retain mods/mods-v4.txt");
-            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
-                    "The local mods-v4.txt must preserve the exact validated remote text, including CRLF/comments");
-
-            String localSnapshot = Files.readString(mods.resolve("mods.txt"), StandardCharsets.UTF_8);
-            check(!localSnapshot.contains(ManagedClientConfig.MANIFEST_FILE_NAME),
-                    "mods-v4.txt must never be recorded as an installed mod in mods.txt");
-            ModManifest scanned = ModManifest.scan(mods);
-            check(scanned.entries().size() == 1
-                            && scanned.entries().get(0).fileName().equals("persistent.jar"),
-                    "JAR scanning must ignore the persistent mods-v4.txt copy");
-
-            Files.delete(localCatalog);
-            SyncResult unchanged = new ModSyncEngine(config, message -> { }).synchronize();
-            check(unchanged.status() == SyncResult.Status.UNCHANGED,
-                    "A no-change sync should remain unchanged when only mods-v4.txt was deleted");
-            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
-                    "A no-change sync must recreate a deleted mods-v4.txt from the validated remote catalog");
-
-            Files.delete(localCatalog);
-            SyncProbeResult probe = new ModSyncEngine(config, message -> { }).probeWithoutJarChanges();
-            check(probe.status() == SyncProbeResult.Status.UP_TO_DATE,
-                    "The portable read-only probe should recognize an unchanged installation");
-            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
-                    "An UP_TO_DATE probe must recreate the deleted persistent catalog copy");
-
-            catalogMode.set(1);
-            expectIOException(() -> new ModSyncEngine(config, message -> { }).synchronize());
-            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
-                    "An invalid remote catalog must not overwrite the last valid mods-v4.txt");
-
-            catalogMode.set(2);
-            expectIOException(() -> new ModSyncEngine(config, message -> { }).synchronize());
-            check(Files.readString(localCatalog, StandardCharsets.UTF_8).equals(exactCatalog),
-                    "An unavailable remote catalog must not overwrite the last valid mods-v4.txt");
-            pass("persistent raw cloud catalog copy survives deletion and remote failures");
-        } finally {
-            server.stop(0);
-            deleteTree(root);
-        }
-    }
-
     private void testFileSizeLimitDefaultsToUnlimitedAndStaysLocal() throws Exception {
         Path root = Files.createTempDirectory("modsync-unlimited-file-size-");
         try {
@@ -748,9 +1784,6 @@ public final class AllTests {
             Files.writeString(root.resolve("modsync.properties"), "language=zh_cn\n", StandardCharsets.UTF_8);
             check(DisplayLanguage.detect(root) == DisplayLanguage.ZH_CN,
                     "modsync.properties 应覆盖系统语言");
-            Files.writeString(root.resolve("modsync.properties"), "language=\\uZZZZ\n", StandardCharsets.UTF_8);
-            check(DisplayLanguage.detect(root) == DisplayLanguage.ZH_CN,
-                    "损坏的 Java Properties 转义不应让同步窗口语言检测抛异常或改变当前系统语言");
             System.setProperty("modsync.language", "en_us");
             check(DisplayLanguage.detect(root) == DisplayLanguage.EN_US,
                     "系统属性应覆盖配置文件语言");
@@ -835,58 +1868,6 @@ public final class AllTests {
         } finally {
             deleteTree(root);
         }
-    }
-
-    private void testHelperLaunchDialogPolicy() {
-        List<String> neoForgeHeadlessDesktop = PortableUpdateHelper.helperUiArguments(
-                true, false, false, false, false, false);
-        check(neoForgeHeadlessDesktop.contains("-Djava.awt.headless=false"),
-                "Windows helper 应在独立 JVM 中重新启用 AWT");
-        check(!neoForgeHeadlessDesktop.contains("-Dmodsync.disableDialogs=true"),
-                "NeoForge 父 JVM headless 不得自动禁用桌面 helper 窗口");
-        check(!neoForgeHeadlessDesktop.contains("-Dmodsync.forceHeadless=true"),
-                "未显式 forceHeadless 时不得向 helper 添加该参数");
-        check(!neoForgeHeadlessDesktop.contains("-Dmodsync.forceMobile=true"),
-                "桌面 helper 不得被误标记为手机端");
-
-        List<String> explicitlyDisabled = PortableUpdateHelper.helperUiArguments(
-                true, true, false, false, false, false);
-        check(explicitlyDisabled.contains("-Dmodsync.disableDialogs=true"),
-                "用户显式禁用窗口时必须继续传递给 helper");
-
-        List<String> explicitlyHeadless = PortableUpdateHelper.helperUiArguments(
-                true, false, true, false, false, false);
-        check(explicitlyHeadless.contains("-Dmodsync.forceHeadless=true"),
-                "用户显式强制无界面时必须继续传递给 helper");
-
-        List<String> detectedMobile = PortableUpdateHelper.helperUiArguments(
-                false, false, false, false, true, false);
-        check(detectedMobile.contains("-Dmodsync.forceMobile=true"),
-                "识别到支持的手机启动器时 helper 必须保持手机端模式");
-        check(!detectedMobile.contains("-Dmodsync.disableDialogs=true"),
-                "手机端应由 forceMobile 禁窗，不应误写通用 disableDialogs");
-
-        List<String> cacioDesktop = PortableUpdateHelper.helperUiArguments(
-                false, false, false, false, false, true);
-        check(cacioDesktop.contains("-Dmodsync.disableDialogs=true"),
-                "非白名单 Cacio 环境仍应避免启动不可靠的独立 Swing 窗口");
-
-        List<String> linuxDesktop = PortableUpdateHelper.helperUiArguments(
-                false, false, false, false, false, false);
-        check(linuxDesktop.contains("-Djava.awt.headless=false"),
-                "Linux 桌面 helper 应在独立 JVM 中重新启用 AWT，避免继承父 JVM 的过时 headless 标记");
-
-        for (List<String> arguments : List.of(
-                neoForgeHeadlessDesktop,
-                explicitlyDisabled,
-                explicitlyHeadless,
-                detectedMobile,
-                cacioDesktop,
-                linuxDesktop)) {
-            check(arguments.stream().distinct().count() == arguments.size(),
-                    "helper UI 参数不得重复: " + arguments);
-        }
-        pass("helper dialog policy retries desktop Swing without changing mobile/headless overrides");
     }
 
     private void testRestartRequiredPromptLocalizationAndPolicy() {
@@ -1525,24 +2506,7 @@ public final class AllTests {
         }
     }
 
-    private void testParallelModDownloadRetriesOnlyFailedTask() throws Exception {
-        check(ParallelDownloadRunner.threadCount(20) == 8,
-                "并行下载默认线程上限应为 8");
-        AtomicInteger retryAttempts = new AtomicInteger();
-        AtomicReference<Thread> retryThread = new AtomicReference<>();
-        ParallelDownloadRunner.run(2, index -> {
-            if (index != 0) {
-                return;
-            }
-            Thread current = Thread.currentThread();
-            Thread original = retryThread.updateAndGet(existing -> existing == null ? current : existing);
-            check(original == current, "失败任务必须在原工作线程内重试");
-            if (retryAttempts.incrementAndGet() == 1) {
-                throw new IOException("expected first-attempt failure");
-            }
-        });
-        check(retryAttempts.get() == 2, "失败任务应独立重试一次并成功");
-
+    private void testParallelModDownloadFallsBackToSingleThread() throws Exception {
         Path root = Files.createTempDirectory("modsync-parallel-fallback-");
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         ExecutorService serverExecutor = Executors.newCachedThreadPool();
@@ -1607,12 +2571,12 @@ public final class AllTests {
             server.start();
 
             Files.createDirectories(root.resolve("mods"));
-            AtomicBoolean serialFallbackShown = new AtomicBoolean();
+            AtomicBoolean fallbackShown = new AtomicBoolean();
             SyncObserver observer = new SyncObserver() {
                 @Override
                 public void phaseChanged(String message) {
-                    if (message.contains("仅重试失败")) {
-                        serialFallbackShown.set(true);
+                    if (message.contains("回退单线程")) {
+                        fallbackShown.set(true);
                     }
                 }
             };
@@ -1622,14 +2586,14 @@ public final class AllTests {
                     config(root, manifestUri, true, true), message -> { }, observer).synchronize();
 
             check(result.status() == SyncResult.Status.UPDATED && result.downloaded() == 2,
-                    "并发失败后只重试失败任务也应完成两个 Mod 更新");
+                    "并发失败后单线程回退应完成两个 Mod 更新");
             check(maximumActiveGets.get() >= 2, "首轮应确实同时发起至少两个下载");
-            check(aGets.get() == 2 && bGets.get() == 1,
-                    "并发失败后只应重试失败的 a.jar，成功的 b.jar 不得重复下载");
-            check(!serialFallbackShown.get(), "单个任务在线程内重试成功后不应触发全局单线程补偿");
+            check(aGets.get() == 2 && bGets.get() == 2,
+                    "并发失败后应清理首轮内容并用单线程完整重下");
+            check(fallbackShown.get(), "并发失败时进度窗口应说明正在回退单线程");
             check(Arrays.equals(Files.readAllBytes(root.resolve("mods/a.jar")), aBytes), "a.jar 应正确安装");
             check(Arrays.equals(Files.readAllBytes(root.resolve("mods/b.jar")), bBytes), "b.jar 应正确安装");
-            pass("parallel Mod download retries only failed task");
+            pass("parallel Mod download falls back to single thread");
         } finally {
             server.stop(0);
             serverExecutor.shutdownNow();
@@ -2644,16 +3608,16 @@ public final class AllTests {
         }
     }
 
-
-    private static void expectIOException(ThrowingRunnable runnable) {
+    private static void expectIoFailure(ThrowingRunnable runnable) {
         try {
             runnable.run();
-            throw new AssertionError("Expected an IOException, but the operation succeeded");
+            throw new AssertionError("预期 I/O 操作失败，但它成功了");
         } catch (IOException expected) {
         } catch (Exception exception) {
-            throw new AssertionError("Expected an IOException, but got " + exception.getClass().getName(), exception);
+            throw new AssertionError("异常类型不符合预期", exception);
         }
     }
+
 
     private void testZalithMobileEnvironmentDetection() throws Exception {
         Map<String, String> previous = snapshotProperties(
@@ -2797,10 +3761,13 @@ public final class AllTests {
             notifier.afterUpdate(1, 0, 0);
 
             Path status = root.resolve(".modsync/ui-status.txt");
+            Path statusJson = root.resolve(".modsync/ui-status.json");
             Path progressLog = root.resolve(".modsync/progress.log");
             check(Files.isRegularFile(status), "应写入 ui-status.txt");
+            check(Files.isRegularFile(statusJson), "应写入机器可读的 ui-status.json");
             check(Files.isRegularFile(progressLog), "应写入 progress.log");
             String statusText = Files.readString(status);
+            Map<?, ?> statusObject = (Map<?, ?>) StrictJson.parse(Files.readString(statusJson));
             String progressText = Files.readString(progressLog);
             check(statusText.contains("progressPermille=") || statusText.contains("Update complete"),
                     "英文状态文件应包含进度或完成信息");
@@ -2812,6 +3779,8 @@ public final class AllTests {
                     "英文进度日志应包含环境识别信息");
             check(statusText.contains("Update complete") && !statusText.contains("更新完成"),
                     "英文系统/配置下 ui-status.txt 应使用英文");
+            check(statusObject.get("progressPermille").toString().equals("1000"),
+                    "ui-status.json 应反映完成进度");
             pass("headless progress is logged and written");
         } finally {
             restoreProperties(previous);

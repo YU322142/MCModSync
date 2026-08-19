@@ -1,9 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = [System.IO.Path]::GetFullPath($PSScriptRoot)
-$projectVersion = '1.9.6'
-$jarFileName = "MCModSync-$projectVersion.jar"
-$sourceZipFileName = "MCModSync-$projectVersion-source.zip"
+$projectVersion = '2.0.0'
+$jarFileName = "MCSync-$projectVersion.jar"
+$sourceZipFileName = "MCSync-$projectVersion-source.zip"
 $fabricMinecraftTargets = @('1.21.1', '1.21.11')
 $neoForgeMinecraftRange = '[1.21.1]'
 $neoForgeVersionRange = '[21.1.0,)'
@@ -75,15 +75,19 @@ $neoForgeStubRoot = Join-Path $mainClasses 'net\neoforged'
 if (Test-Path -LiteralPath $neoForgeStubRoot) {
     Remove-Item -LiteralPath $neoForgeStubRoot -Recurse -Force
 }
+$minecraftStubRoot = Join-Path $mainClasses 'net\minecraft'
+if (Test-Path -LiteralPath $minecraftStubRoot) {
+    Remove-Item -LiteralPath $minecraftStubRoot -Recurse -Force
+}
 
 Write-Output '[4/8] Building Fabric/NeoForge/executable/agent JAR...'
-& jar --create --file $jarPath --manifest (Join-Path $projectRoot 'manifest.mf') `
+& jar --create --file $jarPath --date 2000-01-01T00:00:00Z --manifest (Join-Path $projectRoot 'manifest.mf') `
     -C $mainClasses . `
     -C (Join-Path $projectRoot 'src\main\resources') .
 if ($LASTEXITCODE -ne 0) {
     throw "jar failed with exit code $LASTEXITCODE"
 }
-$loaderApiLeak = & jar tf $jarPath | Select-String -Pattern '^net/(fabricmc|neoforged)/'
+$loaderApiLeak = & jar tf $jarPath | Select-String -Pattern '^net/(fabricmc|neoforged|minecraft)/'
 if ($loaderApiLeak) {
     throw "Refusing to ship Fabric/NeoForge Loader API classes inside MCModSync jar: $loaderApiLeak"
 }
@@ -209,7 +213,7 @@ try {
     $neoArchive.Dispose()
 }
 $reportedVersion = (& java -jar $jarPath --version | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne "MCModSync $projectVersion") {
+if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne "MCSync $projectVersion") {
     throw "Packaged CLI reported an unexpected version: $reportedVersion"
 }
 Write-Output 'Packaged Fabric/NeoForge metadata and CLI version passed.'
@@ -284,11 +288,10 @@ if ($fatalText -match 'Dummy main reached') {
 Write-Output 'Fatal startup-block normal-exit test passed.'
 
 Write-Output '[8/8] Copying deliverables...'
-$workspaceRoot = [System.IO.Directory]::GetParent([System.IO.Directory]::GetParent($projectRoot).FullName).FullName
-$outputsDirectory = Join-Path $workspaceRoot 'outputs'
+$outputsDirectory = Join-Path $projectRoot 'out'
 New-Item -ItemType Directory -Path $outputsDirectory -Force | Out-Null
 $jarOutputName = $jarFileName
-Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.jar' -ErrorAction SilentlyContinue |
+Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCSync-*.jar' -ErrorAction SilentlyContinue |
     Where-Object Name -ne $jarOutputName |
     ForEach-Object {
         try {
@@ -298,8 +301,8 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.jar' -Er
         }
     }
 Copy-Item -LiteralPath $jarPath -Destination (Join-Path $outputsDirectory $jarOutputName) -Force
-$readmeDestinationName = 'MCModSync-README-zh-CN.md'
-Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*.md' -ErrorAction SilentlyContinue |
+$readmeDestinationName = 'MCSync-README-zh-CN.md'
+Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCSync-*.md' -ErrorAction SilentlyContinue |
     Where-Object Name -ne $readmeDestinationName |
     ForEach-Object {
         try {
@@ -312,7 +315,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-P
 Copy-Item -LiteralPath (Join-Path $projectRoot 'modsync.properties.example') -Destination (Join-Path $outputsDirectory 'modsync.properties.example') -Force
 
 $sourceZip = Join-Path $outputsDirectory $sourceZipFileName
-Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*-source.zip' -ErrorAction SilentlyContinue |
+Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCSync-*-source.zip' -ErrorAction SilentlyContinue |
     Where-Object FullName -ne $sourceZip |
     ForEach-Object {
         try {
@@ -324,15 +327,58 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCModSync-*-source.z
 if (Test-Path -LiteralPath $sourceZip) {
     Remove-Item -LiteralPath $sourceZip -Force
 }
-Compress-Archive -Path @(
-    (Join-Path $projectRoot 'src'),
-    (Join-Path $projectRoot 'build.ps1'),
-    (Join-Path $projectRoot 'manifest.mf'),
-    (Join-Path $projectRoot 'README.md'),
-    (Join-Path $projectRoot 'modsync.properties.example'),
-    (Join-Path $projectRoot 'LICENSE'),
-    (Join-Path $projectRoot 'docs')
-) -DestinationPath $sourceZip -CompressionLevel Optimal
+$sourceRoots = @(
+    'src',
+    'build.ps1',
+    'manifest.mf',
+    'README.md',
+    'modsync.properties.example',
+    'LICENSE',
+    'docs'
+)
+$sourceEntries = foreach ($relativeRoot in $sourceRoots) {
+    $absoluteRoot = Join-Path $projectRoot $relativeRoot
+    if (Test-Path -LiteralPath $absoluteRoot -PathType Container) {
+        Get-ChildItem -LiteralPath $absoluteRoot -Recurse -File | ForEach-Object {
+            [pscustomobject]@{
+                Source = $_.FullName
+                Entry = $_.FullName.Substring($projectRoot.Length + 1).Replace('\\', '/')
+            }
+        }
+    } else {
+        [pscustomobject]@{ Source = $absoluteRoot; Entry = $relativeRoot.Replace('\\', '/') }
+    }
+}
+$sourceEntries = @($sourceEntries | Sort-Object Entry)
+$sourceStream = [System.IO.File]::Open($sourceZip, [System.IO.FileMode]::CreateNew)
+try {
+    $sourceArchive = [System.IO.Compression.ZipArchive]::new(
+        $sourceStream,
+        [System.IO.Compression.ZipArchiveMode]::Create,
+        $false,
+        [System.Text.Encoding]::UTF8)
+    try {
+        $fixedTimestamp = [System.DateTimeOffset]::new(2000, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+        foreach ($sourceEntry in $sourceEntries) {
+            $entry = $sourceArchive.CreateEntry(
+                $sourceEntry.Entry,
+                [System.IO.Compression.CompressionLevel]::Optimal)
+            $entry.LastWriteTime = $fixedTimestamp
+            $input = [System.IO.File]::OpenRead($sourceEntry.Source)
+            $output = $entry.Open()
+            try {
+                $input.CopyTo($output)
+            } finally {
+                $output.Dispose()
+                $input.Dispose()
+            }
+        }
+    } finally {
+        $sourceArchive.Dispose()
+    }
+} finally {
+    $sourceStream.Dispose()
+}
 
 Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $outputsDirectory $jarOutputName) |
     Select-Object Algorithm, Hash, Path

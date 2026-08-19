@@ -74,7 +74,7 @@ public final class PortableUpdateHelper {
                 System.exit(0);
             }
         } catch (Throwable failure) {
-            System.err.println("[MCModSync Helper] UPDATE_FAILED");
+            System.err.println("[MCSync Helper] UPDATE_FAILED");
             failure.printStackTrace(System.err);
             UserNotifier.showFatalError(failure);
             System.exit(1);
@@ -114,14 +114,25 @@ public final class PortableUpdateHelper {
         if (!languageOverride.isBlank()) {
             command.add("-Dmodsync.language=" + languageOverride);
         }
+        if (System.getProperty("os.name", "").toLowerCase().contains("windows")) {
+            command.add("-Djava.awt.headless=false");
+        }
+        if (Boolean.getBoolean("modsync.disableDialogs")) {
+            command.add("-Dmodsync.disableDialogs=true");
+        }
+        if (Boolean.getBoolean("modsync.forceHeadless")) {
+            command.add("-Dmodsync.forceHeadless=true");
+        }
+        if (Boolean.getBoolean("modsync.forceMobile")) {
+            command.add("-Dmodsync.forceMobile=true");
+        }
         RuntimeEnvironment parentEnvironment = RuntimeEnvironment.detect();
-        command.addAll(helperUiArguments(
-                System.getProperty("os.name", "").toLowerCase().contains("windows"),
-                Boolean.getBoolean("modsync.disableDialogs"),
-                Boolean.getBoolean("modsync.forceHeadless"),
-                Boolean.getBoolean("modsync.forceMobile"),
-                parentEnvironment.mobile(),
-                parentEnvironment.cacioAwt()));
+        if (parentEnvironment.mobile() && !Boolean.getBoolean("modsync.forceMobile")) {
+            command.add("-Dmodsync.forceMobile=true");
+        }
+        if (!parentEnvironment.dialogsUsable() && !Boolean.getBoolean("modsync.disableDialogs")) {
+            command.add("-Dmodsync.disableDialogs=true");
+        }
         // -jar avoids the Windows class-path parser entirely. In particular,
         // spaces, non-ASCII characters and ';' in an instance path can no
         // longer split or corrupt the helper class path.
@@ -140,7 +151,7 @@ public final class PortableUpdateHelper {
         builder.redirectError(ProcessBuilder.Redirect.appendTo(logPath.toFile()));
         Process process;
         // Keep a live read handle until the child acknowledges that its main
-        // class loaded. This also prevents an older MCModSync process from
+        // class loaded. This also prevents an older MCSync process from
         // deleting the new runtime copy during the launch window on Windows.
         try (JarFile pinned = openVerifiedHelperArchive(helperJar)) {
             process = builder.start();
@@ -158,40 +169,6 @@ public final class PortableUpdateHelper {
         return true;
     }
 
-    static List<String> helperUiArguments(
-            boolean windows,
-            boolean disableDialogs,
-            boolean forceHeadless,
-            boolean forceMobile,
-            boolean parentMobile,
-            boolean parentCacioAwt) {
-        List<String> arguments = new ArrayList<>();
-        boolean desktopDialogProbe = !disableDialogs
-                && !forceHeadless
-                && !forceMobile
-                && !parentMobile
-                && !parentCacioAwt;
-        if (windows || desktopDialogProbe) {
-            // NeoForge/Prism may mark the loader JVM headless while the
-            // independent helper can still create normal Swing windows. On
-            // Linux this also overrides JAVA_TOOL_OPTIONS/_JAVA_OPTIONS when
-            // the launcher injected a stale -Djava.awt.headless=true flag.
-            arguments.add("-Djava.awt.headless=false");
-        }
-        if (disableDialogs || (parentCacioAwt && !parentMobile)) {
-            arguments.add("-Dmodsync.disableDialogs=true");
-        }
-        if (forceHeadless) {
-            arguments.add("-Dmodsync.forceHeadless=true");
-        }
-        if (forceMobile || parentMobile) {
-            arguments.add("-Dmodsync.forceMobile=true");
-        }
-        // Do not propagate a generic parent dialogsUsable/headless result.
-        // The helper is a fresh JVM and must probe its own graphics environment.
-        return List.copyOf(arguments);
-    }
-
     private static Path prepareHelperRuntimeCopy(
             Path selfJar,
             Path stateDirectory,
@@ -203,7 +180,7 @@ public final class PortableUpdateHelper {
         cleanupOldHelperCopies(helperDirectory, logger);
 
         Path helperJar = helperDirectory.resolve(
-                "MCModSync-helper-" + ProcessHandle.current().pid() + "-" + System.nanoTime() + ".jar");
+                "MCSync-helper-" + ProcessHandle.current().pid() + "-" + System.nanoTime() + ".jar");
         Path partial = helperDirectory.resolve("." + helperJar.getFileName() + ".part");
         try {
             Files.copy(selfJar, partial);
@@ -460,7 +437,7 @@ public final class PortableUpdateHelper {
                 }
             }
         } catch (URISyntaxException exception) {
-            throw new IOException("MCModSync JAR 路径格式无效", exception);
+            throw new IOException("MCSync JAR 路径格式无效", exception);
         }
 
         // Some custom class loaders omit CodeSource. Fall back to either
@@ -510,9 +487,9 @@ public final class PortableUpdateHelper {
             } catch (ReflectiveOperationException ignored) {
                 // Report the original, more useful loader lookup failure below.
             }
-            throw new IOException("无法通过 Fabric/NeoForge Loader 定位 MCModSync JAR", exception);
+            throw new IOException("无法通过 Fabric/NeoForge Loader 定位 MCSync JAR", exception);
         }
-        throw new IOException("无法定位正在运行的 MCModSync JAR");
+        throw new IOException("无法定位正在运行的 MCSync JAR");
     }
 
     private static boolean isJar(Path path) {
@@ -543,7 +520,7 @@ public final class PortableUpdateHelper {
     }
 
     private static void log(String message) {
-        System.out.println("[MCModSync Helper " + TIME.format(LocalDateTime.now()) + "] " + message);
+        System.out.println("[MCSync Helper " + TIME.format(LocalDateTime.now()) + "] " + message);
     }
 
     private static void log(String chinese, String english) {
