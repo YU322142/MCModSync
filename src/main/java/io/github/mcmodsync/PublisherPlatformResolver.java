@@ -47,7 +47,8 @@ final class PublisherPlatformResolver {
         if (!"curseforge".equals(source.get("type"))) return source;
         String projectId = text(source.get("projectId"), "CurseForge projectId");
         long fileId = integer(source.get("fileId"), "CurseForge fileId");
-        List<Map<String, Object>> endpoints = endpointMaps(source.get("endpoints"));
+        List<Map<String, Object>> endpoints = withMirrorFallback(
+                endpointMaps(source.get("endpoints")), "curseforge");
         boolean alreadyResolved = endpoints.stream().anyMatch(endpoint -> "file".equals(endpoint.get("purpose")));
         if (alreadyResolved) {
             if (!strictHashRequested(expectedSha256, expectedSize)) return source;
@@ -89,6 +90,7 @@ final class PublisherPlatformResolver {
             } catch (IOException failure) {
                 last = failure;
             }
+            if (resolved.stream().anyMatch(endpointValue -> "file".equals(endpointValue.get("purpose")))) break;
         }
         if (resolved.stream().noneMatch(endpoint -> "file".equals(endpoint.get("purpose")))) {
             throw new IOException("无法把 CurseForge 固定 fileId 解析为下载地址", last);
@@ -127,7 +129,8 @@ final class PublisherPlatformResolver {
         if ((!hasSha256 && !hasSha512) || expectedSize < 0) {
             throw new IOException("解析 Modrinth 固定文件需要当前 JAR 的 SHA-256 或 SHA-512 和大小");
         }
-        List<Map<String, Object>> endpoints = endpointMaps(source.get("endpoints"));
+        List<Map<String, Object>> endpoints = withMirrorFallback(
+                endpointMaps(source.get("endpoints")), "modrinth");
         boolean alreadyResolved = endpoints.stream().anyMatch(endpoint -> "file".equals(endpoint.get("purpose")));
         if (alreadyResolved) return source;
         ArrayList<Map<String, Object>> resolved = new ArrayList<>(endpoints);
@@ -175,6 +178,7 @@ final class PublisherPlatformResolver {
                     last = failure;
                 }
             }
+            if (resolved.stream().anyMatch(value -> "file".equals(value.get("purpose")))) break;
         }
         if (resolved.stream().noneMatch(endpoint -> "file".equals(endpoint.get("purpose")))) {
             throw new IOException("无法把 Modrinth 固定 versionId 解析为当前哈希文件", last);
@@ -278,6 +282,33 @@ final class PublisherPlatformResolver {
             result.add(new LinkedHashMap<>((Map<String, Object>) map));
         }
         return result;
+    }
+
+    static List<Map<String, Object>> withMirrorFallback(
+            List<Map<String, Object>> endpoints, String platform) {
+        URI official = "curseforge".equals(platform)
+                ? DownloadEndpointPresets.CURSEFORGE_OFFICIAL : DownloadEndpointPresets.MODRINTH_OFFICIAL;
+        URI mirror = "curseforge".equals(platform)
+                ? DownloadEndpointPresets.CURSEFORGE_MCIMIRROR : DownloadEndpointPresets.MODRINTH_MCIMIRROR;
+        boolean hasOfficial = endpoints.stream().anyMatch(endpoint -> "api".equals(endpoint.get("purpose"))
+                && official.equals(safeUri(endpoint.get("url"))));
+        boolean hasMirror = endpoints.stream().anyMatch(endpoint -> "api".equals(endpoint.get("purpose"))
+                && mirror.equals(safeUri(endpoint.get("url"))));
+        if (!hasOfficial || hasMirror) return endpoints;
+        ArrayList<Map<String, Object>> augmented = new ArrayList<>(endpoints);
+        augmented.add(new LinkedHashMap<>(Map.of(
+                "url", mirror.toASCIIString(), "role", "mirror", "purpose", "api",
+                "region", "cn", "priority", 10, "thirdParty", true)));
+        return List.copyOf(augmented);
+    }
+
+    private static URI safeUri(Object value) {
+        if (!(value instanceof String text)) return null;
+        try {
+            return URI.create(text);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
     }
 
     private static String text(Object value, String field) throws IOException {

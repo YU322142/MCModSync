@@ -55,6 +55,7 @@ public final class AllTests {
         testV5CustomBuildUsesPublisherHostedDistribution();
         testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates();
         testPublisherResolvesCurseForgeWithoutLeakingCredentials();
+        testOfficialOnlyPlatformSourceGetsMirrorFallback();
         testCurseForgeStrictHashGateRejectsUnverifiableFile();
         testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
         testPublisherRepairsStaleModrinthVersionIdByCurrentHash();
@@ -414,6 +415,18 @@ public final class AllTests {
         } finally {
             server.stop(0);
         }
+    }
+
+    private void testOfficialOnlyPlatformSourceGetsMirrorFallback() {
+        List<Map<String, Object>> endpoints = PublisherPlatformResolver.withMirrorFallback(List.of(Map.of(
+                "url", DownloadEndpointPresets.CURSEFORGE_OFFICIAL.toASCIIString(),
+                "role", "official", "purpose", "api", "region", "global",
+                "priority", new BigDecimal("100"), "thirdParty", false)), "curseforge");
+        check(endpoints.stream().anyMatch(endpoint -> DownloadEndpointPresets.CURSEFORGE_MCIMIRROR
+                        .equals(URI.create(String.valueOf(endpoint.get("url")))))
+                        && endpoints.size() == 2,
+                "旧项目只有 CurseForge 官方 API 时，应补入可严格哈希复核的中国镜像元数据入口");
+        pass("official-only platform sources gain a strict mirror fallback");
     }
 
     private void testCurseForgeStrictHashGateRejectsUnverifiableFile() throws Exception {
