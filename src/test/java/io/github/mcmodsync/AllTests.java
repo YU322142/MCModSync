@@ -448,10 +448,8 @@ public final class AllTests {
         try {
             byte[] current = "current-mod-build".getBytes(StandardCharsets.UTF_8);
             String sha256 = Hashing.sha256(current);
-            server.createContext("/v2/version/old-version", exchange -> respond(exchange, 200,
-                    ("{\"project_id\":\"demo-project\",\"files\":[{\"url\":\"https://cdn.example.invalid/old.jar\"," +
-                            "\"size\":3,\"hashes\":{\"sha256\":\"" + "0".repeat(64) + "\"}}]}")
-                            .getBytes(StandardCharsets.UTF_8), "application/json"));
+            server.createContext("/v2/version/old-version", exchange -> respond(exchange, 404,
+                    "{\"error\":\"version_not_found\"}".getBytes(StandardCharsets.UTF_8), "application/json"));
             server.createContext("/v2/project/demo-project/version", exchange -> respond(exchange, 200,
                     ("[{\"id\":\"current-version\",\"project_id\":\"demo-project\",\"files\":[{" +
                             "\"url\":\"https://cdn.example.invalid/current.jar\",\"size\":" + current.length + "," +
@@ -469,8 +467,8 @@ public final class AllTests {
             check("current-version".equals(resolved.get("versionId"))
                             && serialized.contains("https://cdn.example.invalid/current.jar")
                             && !serialized.contains("https://cdn.example.invalid/old.jar"),
-                    "旧项目的 Modrinth versionId 与当前 JAR 不一致时，应按当前 SHA-256 找到并继承新版本坐标");
-            pass("publisher repairs stale Modrinth versionId using the current file hash");
+                    "旧项目的 Modrinth versionId 已失效时，应按当前 SHA-256 找到并继承新版本坐标");
+            pass("publisher repairs missing Modrinth versionId using the current file hash");
         } finally {
             server.stop(0);
         }

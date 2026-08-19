@@ -133,21 +133,24 @@ final class PublisherPlatformResolver {
             URI requestUri = apiBase.resolve("version/" + Rfc3986.encodePathSegment(versionId));
             try {
                 Map<String, Object> metadata = requestJsonObject(requestUri);
-                if (!projectId.equals(metadata.get("project_id"))) {
-                    throw new IOException("Modrinth version 不属于锁定 projectId");
+                if (projectId.equals(metadata.get("project_id")) && metadata.get("files") instanceof List<?> files) {
+                    appendMatchingModrinthFiles(files, endpoint, resolved, expectedSha256, expectedSize);
                 }
-                Object filesRaw = metadata.get("files");
-                if (!(filesRaw instanceof List<?> files)) throw new IOException("Modrinth metadata 缺少 files");
-                appendMatchingModrinthFiles(files, endpoint, resolved, expectedSha256, expectedSize);
-                // A saved publisher project can contain an older versionId after a mod
-                // upgrade. Re-resolve by the current file hash instead of failing the
-                // entire publication on the stale coordinate.
-                if (resolved.stream().noneMatch(value -> "file".equals(value.get("purpose")))) {
+            } catch (IOException failure) {
+                last = failure;
+            }
+            // A saved publisher project can contain a versionId that is stale, deleted,
+            // or no longer visible from the selected API endpoint. A 404 here must not
+            // suppress the hash repair: enumerate the locked project and resolve the
+            // current local JAR by its exact SHA-256 and size.
+            if (resolved.stream().noneMatch(value -> "file".equals(value.get("purpose")))) {
+                try {
                     Object versions = requestJson(apiBase.resolve("project/" +
                             Rfc3986.encodePathSegment(projectId) + "/version"));
                     if (versions instanceof List<?> versionList) {
                         for (Object version : versionList) {
                             if (!(version instanceof Map<?, ?> rawVersion)) continue;
+                            if (!projectId.equals(rawVersion.get("project_id"))) continue;
                             Object versionFiles = rawVersion.get("files");
                             if (versionFiles instanceof List<?> list) {
                                 int before = resolved.size();
@@ -160,9 +163,9 @@ final class PublisherPlatformResolver {
                             if (resolved.stream().anyMatch(value -> "file".equals(value.get("purpose")))) break;
                         }
                     }
+                } catch (IOException failure) {
+                    last = failure;
                 }
-            } catch (IOException failure) {
-                last = failure;
             }
         }
         if (resolved.stream().noneMatch(endpoint -> "file".equals(endpoint.get("purpose")))) {
