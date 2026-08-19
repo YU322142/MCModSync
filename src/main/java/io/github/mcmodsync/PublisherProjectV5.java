@@ -48,6 +48,7 @@ final class PublisherProjectV5 {
             Path reportPath,
             int hostedFiles,
             int reusedHostedFiles,
+            int reusedPlatformVerifications,
             Set<String> reusedHostedPaths) {
         Publication {
             reusedHostedPaths = Set.copyOf(reusedHostedPaths);
@@ -153,6 +154,7 @@ final class PublisherProjectV5 {
         ArrayList<Object> generatedFiles = new ArrayList<>();
         LinkedHashMap<String, Path> localFiles = new LinkedHashMap<>();
         LinkedHashSet<String> reusedHostedPaths = new LinkedHashSet<>();
+        int reusedPlatformVerifications = 0;
         PublisherPlatformResolver platformResolver = new PublisherPlatformResolver();
         int inspected = 0;
         reporter.update(PublisherProgress.Stage.HASH_AND_PLATFORM, 0, files.size(), "准备计算文件哈希");
@@ -177,19 +179,26 @@ final class PublisherProjectV5 {
             if (generated.get("download") instanceof Map<?, ?> download) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> typedDownload = (Map<String, Object>) download;
-                try {
-                    generated.put("download", platformResolver.resolve(
-                            typedDownload, sha256, sha512, localBytes.length));
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    throw new IOException("解析平台固定下载地址时被中断: " + relative, interrupted);
-                } catch (IOException failure) {
-                    if ("redistributable".equals(typedDownload.get("distributionPolicy"))) {
-                        generated.put("download", Map.of(
-                                "type", "publisher-hosted",
-                                "distributionPolicy", "redistributable"));
-                    } else {
-                        throw new IOException("无法解析平台来源: " + relative + "；" + failure.getMessage(), failure);
+                ReleaseManifestV5.FileEntry cached = PublisherPlatformVerificationCache.reusable(
+                        previousManifest, relative, sha256, localBytes.length, typedDownload);
+                if (cached != null) {
+                    generated.put("download", ReleaseManifestV5.downloadJson(cached.download()));
+                    reusedPlatformVerifications++;
+                } else {
+                    try {
+                        generated.put("download", platformResolver.resolve(
+                                typedDownload, sha256, sha512, localBytes.length));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IOException("解析平台固定下载地址时被中断: " + relative, interrupted);
+                    } catch (IOException failure) {
+                        if ("redistributable".equals(typedDownload.get("distributionPolicy"))) {
+                            generated.put("download", Map.of(
+                                    "type", "publisher-hosted",
+                                    "distributionPolicy", "redistributable"));
+                        } else {
+                            throw new IOException("无法解析平台来源: " + relative + "；" + failure.getMessage(), failure);
+                        }
                     }
                 }
             }
@@ -254,6 +263,7 @@ final class PublisherProjectV5 {
         report.put("fileCount", manifest.files().size());
         report.put("publisherHostedFileCount", hosted);
         report.put("reusedPublisherHostedFileCount", reusedHostedPaths.size());
+        report.put("reusedPlatformVerificationCount", reusedPlatformVerifications);
         report.put("reusedPublisherHostedPaths", reusedHostedPaths.stream().sorted().toList());
         report.put("downloadSourceTypes", manifest.files().stream()
                 .map(file -> file.download().type()).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)));
@@ -261,7 +271,7 @@ final class PublisherProjectV5 {
         Files.writeString(reportPath, StrictJson.stringify(report) + "\n", StandardCharsets.UTF_8);
         reporter.update(PublisherProgress.Stage.WRITE_MANIFEST, 1, 1, "manifest-v5.json");
         return new Publication(manifest, manifestPath, reportPath, hosted,
-                reusedHostedPaths.size(), reusedHostedPaths);
+                reusedHostedPaths.size(), reusedPlatformVerifications, reusedHostedPaths);
     }
 
     static void writeTemplate(Path output) throws IOException {

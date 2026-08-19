@@ -5,6 +5,7 @@
 ## 2.0.0
 
 - Added a real publisher progress bar covering hashing and platform verification, hosted-file copying, manifest writing, and cloud-bundle assembly; expensive file validation no longer blocks the GUI thread.
+- When a previous publication is selected, platform Mods now reuse verified download evidence by SHA-256, size, and pinned platform coordinates; unchanged files no longer repeat platform API lookup or full-Mod verification downloads.
 
 - CurseForge publication now converts ForgeCDN paths returned by the MCIMirror API into mirror file URLs and verifies every candidate by size and SHA-256. Simplified-Chinese systems prefer the mirror with official fallback; other locales use official endpoints only.
 - If CurseForge's dedicated `download-url` endpoint is temporarily unavailable, publication falls back to the full metadata for the same pinned `projectId/fileId`, then performs the normal full-file SHA-256 verification.

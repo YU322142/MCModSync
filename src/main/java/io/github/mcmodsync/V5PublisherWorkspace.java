@@ -1223,6 +1223,7 @@ final class V5PublisherWorkspace {
                     validation.append("发布完成：" + publication.manifestPath() + "\n"
                             + "托管文件：" + publication.hostedFiles() + "\n"
                             + "复用上一版：" + publication.reusedHostedFiles() + "\n"
+                            + "复用平台验证：" + publication.reusedPlatformVerifications() + "\n"
                             + "报告：" + publication.reportPath() + "\n"
                             + "增量上传指南：" + cloud.uploadGuideZh() + "\n"
                             + "机器上传计划：" + cloud.uploadPlan() + "\n"

@@ -59,6 +59,7 @@ public final class AllTests {
         testCurseForgePublisherKeepsMultipleResolvedCandidates();
         testCurseForgeFallsBackToFileMetadataDownloadUrl();
         testDownloadCandidateLocaleRouting();
+        testPublisherReusesPreviousPlatformVerificationByHash();
         testOfficialOnlyPlatformSourceGetsMirrorFallback();
         testCurseForgeStrictHashGateRejectsUnverifiableFile();
         testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
@@ -561,6 +562,33 @@ public final class AllTests {
                         && !ReleaseArtifactResolver.isSimplifiedChinese(Locale.forLanguageTag("zh-Hant-TW")),
                 "明确的 Hans/Hant 语言脚本必须正确区分镜像线路");
         pass("download candidates follow the machine display language");
+    }
+
+    private void testPublisherReusesPreviousPlatformVerificationByHash() {
+        String hash = "a".repeat(64);
+        ReleaseManifestV5.DownloadSource verifiedSource = new ReleaseManifestV5.DownloadSource(
+                "curseforge", "1308486", "", 7996778L, "upstream-only", List.of(
+                new ReleaseManifestV5.DownloadEndpoint(
+                        URI.create("https://edge.forgecdn.net/files/7996/778/epic.jar"),
+                        "official", "file", "global", 100, false)));
+        ReleaseManifestV5 previous = new ReleaseManifestV5(
+                "previous", 1, "2.0.0", List.of(), List.of(new ReleaseManifestV5.FileEntry(
+                "mods/old-name.jar", hash, 3456, "mod", false, true, Set.of("client"), verifiedSource)),
+                List.of());
+        Map<String, Object> unchanged = Map.of(
+                "type", "curseforge", "projectId", "1308486", "fileId", new BigDecimal("7996778"),
+                "distributionPolicy", "upstream-only");
+        check(PublisherPlatformVerificationCache.reusable(
+                        previous, "mods/new-name.jar", hash, 3456, unchanged) != null,
+                "相同 SHA-256、大小与固定平台坐标应跨文件名复用上一版验证证据");
+        check(PublisherPlatformVerificationCache.reusable(
+                        previous, "mods/new-name.jar", "b".repeat(64), 3456, unchanged) == null,
+                "本地 SHA-256 变化后必须重新下载并验证平台文件");
+        check(PublisherPlatformVerificationCache.reusable(previous, "mods/new-name.jar", hash, 3456, Map.of(
+                        "type", "curseforge", "projectId", "1308486", "fileId", new BigDecimal("7996779"),
+                        "distributionPolicy", "upstream-only")) == null,
+                "固定平台文件坐标变化后不得错误复用旧验证证据");
+        pass("publisher reuses unchanged platform verification evidence");
     }
 
     private void testCurseForgeFallsBackToFileMetadataDownloadUrl() throws Exception {
