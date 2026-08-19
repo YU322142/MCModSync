@@ -117,6 +117,18 @@ final class PublisherProjectV5 {
             Path outputDirectory,
             String projectName,
             ReleaseManifestV5 previousManifest) throws IOException {
+        return publish(gameRoot, source, outputDirectory, projectName, previousManifest, PublisherProgress.NONE);
+    }
+
+    static Publication publish(
+            Path gameRoot,
+            Map<String, Object> source,
+            Path outputDirectory,
+            String projectName,
+            ReleaseManifestV5 previousManifest,
+            PublisherProgress progress) throws IOException {
+        PublisherProgress reporter = progress == null ? PublisherProgress.NONE : progress;
+        reporter.update(PublisherProgress.Stage.PREPARE, 0, 1, "检查发布目录与项目结构");
         Path root = gameRoot.toAbsolutePath().normalize();
         Path output = outputDirectory.toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) throw new IOException("发布源游戏目录不存在: " + root);
@@ -142,6 +154,8 @@ final class PublisherProjectV5 {
         LinkedHashMap<String, Path> localFiles = new LinkedHashMap<>();
         LinkedHashSet<String> reusedHostedPaths = new LinkedHashSet<>();
         PublisherPlatformResolver platformResolver = new PublisherPlatformResolver();
+        int inspected = 0;
+        reporter.update(PublisherProgress.Stage.HASH_AND_PLATFORM, 0, files.size(), "准备计算文件哈希");
         for (Object raw : files) {
             Map<String, Object> file = object(raw, "files[]");
             requireKeys(file.keySet(), FILE_KEYS, "files[]");
@@ -192,6 +206,8 @@ final class PublisherProjectV5 {
             }
             generatedFiles.add(generated);
             localFiles.put(relative, local);
+            inspected++;
+            reporter.update(PublisherProgress.Stage.HASH_AND_PLATFORM, inspected, files.size(), relative);
         }
         manifestJson.put("files", generatedFiles);
         manifestJson.put("configOperations", source.getOrDefault("configOperations", List.of()));
@@ -204,6 +220,11 @@ final class PublisherProjectV5 {
         }
 
         int hosted = 0;
+        int hostedTotal = (int) manifest.files().stream()
+                .filter(file -> file.download().type().equals("publisher-hosted"))
+                .filter(file -> !reusedHostedPaths.contains(file.path()))
+                .count();
+        reporter.update(PublisherProgress.Stage.COPY_HOSTED, 0, hostedTotal, "准备复制本地托管文件");
         for (ReleaseManifestV5.FileEntry file : manifest.files()) {
             if (!file.download().type().equals("publisher-hosted")) continue;
             if (reusedHostedPaths.contains(file.path())) continue;
@@ -215,7 +236,9 @@ final class PublisherProjectV5 {
                 throw new IOException("发布复制后哈希不一致: " + file.path());
             }
             hosted++;
+            reporter.update(PublisherProgress.Stage.COPY_HOSTED, hosted, hostedTotal, file.path());
         }
+        reporter.update(PublisherProgress.Stage.WRITE_MANIFEST, 0, 1, "写入 manifest-v5.json 与发布报告");
         Path manifestPath = output.resolve("manifest-v5.json");
         Files.write(manifestPath, manifest.serialize());
         LinkedHashMap<String, Object> report = new LinkedHashMap<>();
@@ -236,6 +259,7 @@ final class PublisherProjectV5 {
                 .map(file -> file.download().type()).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)));
         Path reportPath = output.resolve("publication-report.json");
         Files.writeString(reportPath, StrictJson.stringify(report) + "\n", StandardCharsets.UTF_8);
+        reporter.update(PublisherProgress.Stage.WRITE_MANIFEST, 1, 1, "manifest-v5.json");
         return new Publication(manifest, manifestPath, reportPath, hosted,
                 reusedHostedPaths.size(), reusedHostedPaths);
     }

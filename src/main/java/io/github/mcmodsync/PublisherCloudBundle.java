@@ -57,6 +57,27 @@ final class PublisherCloudBundle {
             boolean legacyGateways,
             Path updaterJar,
             ReleaseManifestV5 previousManifest) throws IOException {
+        return publish(gameRoot, project, outputRoot, baseUrl, stablePath, legacyV4Path, legacyV2Path,
+                serverListSource, serverListManifestPath, legacyGateways, updaterJar, previousManifest,
+                PublisherProgress.NONE);
+    }
+
+    static Result publish(
+            Path gameRoot,
+            Map<String, Object> project,
+            Path outputRoot,
+            String baseUrl,
+            String stablePath,
+            String legacyV4Path,
+            String legacyV2Path,
+            Path serverListSource,
+            String serverListManifestPath,
+            boolean legacyGateways,
+            Path updaterJar,
+            ReleaseManifestV5 previousManifest,
+            PublisherProgress progress) throws IOException {
+        PublisherProgress reporter = progress == null ? PublisherProgress.NONE : progress;
+        reporter.update(PublisherProgress.Stage.PREPARE, 0, 1, "检查云端布局与发布参数");
         Path output = outputRoot.toAbsolutePath().normalize();
         ensureEmpty(output);
         String base = normalizeBase(baseUrl);
@@ -81,8 +102,9 @@ final class PublisherCloudBundle {
         Path releaseRoot = output.resolve("releases").resolve(Long.toString(sequence));
         PublisherProjectV5.Publication publication = PublisherProjectV5.publish(
                 gameRoot, remoteProject, releaseRoot, String.valueOf(project.get("releaseId")) + ".publisher.json",
-                previousManifest);
+                previousManifest, reporter);
 
+        reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 0, 5, "复制 2.0 稳定入口");
         Path stable = output.resolve(stableRelative.replace('/', java.io.File.separatorChar));
         Files.createDirectories(stable.getParent());
         Files.copy(publication.manifestPath(), stable, StandardCopyOption.REPLACE_EXISTING);
@@ -99,17 +121,22 @@ final class PublisherCloudBundle {
             serverListUrl = base + "/" + serverListRelative;
         }
         writeClientProperties(properties, stableUrl, serverListUrl);
+        reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 2, 5, "生成客户端引导配置");
         if (legacyGateways) {
             ManagedClientConfig managed = ManagedClientConfig.fromPropertiesFile(properties);
             buildLegacyDirectory(output.resolve(parent(v4Relative)), updaterJar, managed, true, sequence);
             buildLegacyDirectory(output.resolve(parent(v2Relative)), updaterJar, managed, false, sequence);
         }
+        reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 3, 5, "生成旧版升级材料");
         writeGuide(output.resolve("REMOTE-DEPLOYMENT.md"), sequence, stableRelative, stableUrl,
                 serverListRelative, legacyGateways);
+        reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 4, 5, "生成增量上传计划");
         PublisherReleaseDelta.Plan delta = PublisherReleaseDelta.plan(
                 previousManifest, publication.manifest(), publication.reusedHostedPaths());
         PublisherReleaseDelta.Paths deltaPaths = PublisherReleaseDelta.write(
                 output, delta, previousManifest, publication.manifest(), stableRelative, serverListRelative);
+        reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 5, 5, "云端发布目录整理完成");
+        reporter.update(PublisherProgress.Stage.COMPLETE, 1, 1, "发布完成");
         return new Result(publication, stable, properties, serverListManifest,
                 deltaPaths.json(), deltaPaths.zh(), deltaPaths.en());
     }

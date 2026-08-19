@@ -84,10 +84,8 @@ final class PublisherPlatformResolver {
                 .sorted(Comparator.comparingInt(value -> ((Number) value.getOrDefault("priority", 100)).intValue()))
                 .toList()) {
             URI apiBase = URI.create(text(endpoint.get("url"), "CurseForge API endpoint"));
-            URI requestUri = apiBase.resolve("mods/" + Rfc3986.encodePathSegment(projectId)
-                    + "/files/" + fileId + "/download-url");
             try {
-                URI upstreamFile = requestDownloadUrl(requestUri);
+                URI upstreamFile = requestCurseForgeFileUrl(apiBase, projectId, fileId);
                 ArrayList<ResolvedCandidate> candidates = new ArrayList<>();
                 URI regionalFile = mirrorCurseForgeDownloadUrl(apiBase, upstreamFile);
                 candidates.add(new ResolvedCandidate(regionalFile, endpoint));
@@ -120,6 +118,37 @@ final class PublisherPlatformResolver {
         }
         source.put("endpoints", resolved);
         return source;
+    }
+
+    private URI requestCurseForgeFileUrl(URI apiBase, String projectId, long fileId)
+            throws IOException, InterruptedException {
+        String lockedPath = "mods/" + Rfc3986.encodePathSegment(projectId)
+                + "/files/" + fileId;
+        IOException directFailure;
+        try {
+            return requestDownloadUrl(apiBase.resolve(lockedPath + "/download-url"));
+        } catch (IOException failure) {
+            directFailure = failure;
+        }
+        try {
+            Map<String, Object> envelope = requestJsonObject(apiBase.resolve(lockedPath));
+            if (!(envelope.get("data") instanceof Map<?, ?> rawData)) {
+                throw new IOException("CurseForge 文件元数据缺少 data 对象");
+            }
+            @SuppressWarnings("unchecked") Map<String, Object> data = (Map<String, Object>) rawData;
+            long returnedFileId = integer(data.get("id"), "CurseForge metadata file id");
+            Object projectValue = data.containsKey("modId") ? data.get("modId") : data.get("projectId");
+            long returnedProjectId = integer(projectValue, "CurseForge metadata project id");
+            if (returnedFileId != fileId || returnedProjectId != Long.parseLong(projectId)) {
+                throw new IOException("CurseForge 文件元数据与锁定的 projectId/fileId 不一致");
+            }
+            URI file = URI.create(text(data.get("downloadUrl"), "CurseForge metadata downloadUrl"));
+            requireSecureDownloadUri(file);
+            return file;
+        } catch (IOException metadataFailure) {
+            metadataFailure.addSuppressed(directFailure);
+            throw new IOException("CurseForge 下载地址接口与文件元数据接口均无法解析", metadataFailure);
+        }
     }
 
     private static void addDistinctEndpoint(List<Map<String, Object>> endpoints, Map<String, Object> candidate) {
@@ -270,11 +299,15 @@ final class PublisherPlatformResolver {
             throw new IOException("CurseForge API 缺少 data 下载地址");
         }
         URI file = URI.create(value);
+        requireSecureDownloadUri(file);
+        return file;
+    }
+
+    private static void requireSecureDownloadUri(URI file) throws IOException {
         if (!"https".equalsIgnoreCase(file.getScheme()) || file.getHost() == null
                 || file.getUserInfo() != null || file.getFragment() != null) {
             throw new IOException("CurseForge API 返回了不安全的下载地址");
         }
-        return file;
     }
 
     private Map<String, Object> requestJsonObject(URI uri) throws IOException, InterruptedException {

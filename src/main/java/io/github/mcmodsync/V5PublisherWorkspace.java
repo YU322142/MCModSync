@@ -84,6 +84,8 @@ final class V5PublisherWorkspace {
     private final JTable scopeTable = new JTable(scopes);
     private final JTable configTable = new JTable(config);
     private final JProgressBar modMatchProgress = new JProgressBar(0, 100);
+    private final JProgressBar publishProgress = new JProgressBar(0, 100);
+    private final JLabel publishProgressDetail = new JLabel("尚未开始发布");
     private final JTextArea validation = new JTextArea();
     private final JLabel summary = new JLabel();
     private final PublisherModAutoMatcher modMatcher = new PublisherModAutoMatcher();
@@ -391,6 +393,12 @@ final class V5PublisherWorkspace {
         split.setResizeWeight(0.72);
         split.setBorder(null);
         panel.add(split, BorderLayout.CENTER);
+        publishProgress.setStringPainted(true);
+        publishProgress.setString("等待发布");
+        JPanel progressPanel = new JPanel(new BorderLayout(8, 3));
+        progressPanel.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+        progressPanel.add(publishProgressDetail, BorderLayout.NORTH);
+        progressPanel.add(publishProgress, BorderLayout.CENTER);
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton validate = new JButton("验证项目");
         JButton save = new JButton("保存项目 JSON…");
@@ -401,7 +409,10 @@ final class V5PublisherWorkspace {
         actions.add(validate);
         actions.add(save);
         actions.add(publish);
-        panel.add(actions, BorderLayout.SOUTH);
+        JPanel footer = new JPanel(new BorderLayout());
+        footer.add(progressPanel, BorderLayout.CENTER);
+        footer.add(actions, BorderLayout.SOUTH);
+        panel.add(footer, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -1045,6 +1056,10 @@ final class V5PublisherWorkspace {
     }
 
     private List<String> validateProject() {
+        return validateProject(true);
+    }
+
+    private List<String> validateProject(boolean deepFileValidation) {
         ArrayList<String> errors = new ArrayList<>();
         List<String> modConflicts = refreshModConflicts();
         for (String conflict : modConflicts) errors.add("Mod 冲突：" + conflict);
@@ -1123,7 +1138,7 @@ final class V5PublisherWorkspace {
         try {
             Map<String, Object> project = projectMap();
             StrictJson.parse(StrictJson.stringify(project));
-            if (rootPath != null) PublisherProjectV5.validateProject(rootPath, project);
+            if (deepFileValidation && rootPath != null) PublisherProjectV5.validateProject(rootPath, project);
         } catch (Exception failure) {
             errors.add("项目结构无效：" + failure.getMessage());
         }
@@ -1148,9 +1163,11 @@ final class V5PublisherWorkspace {
             releaseSequence.setValue(PublisherProjectV5.nextReleaseSequence(
                     ((Number) releaseSequence.getValue()).longValue()));
         }
-        showValidation();
-        List<String> errors = validateProject();
+        List<String> errors = validateProject(false);
         if (!errors.isEmpty()) {
+            StringBuilder text = new StringBuilder("BLOCKED：发现 " + errors.size() + " 个问题\n\n");
+            for (String error : errors) text.append(" - ").append(error).append('\n');
+            validation.setText(text.toString());
             JOptionPane.showMessageDialog(owner, "请先修复验证问题。", "发布被阻止", JOptionPane.WARNING_MESSAGE);
             return;
         }
@@ -1172,8 +1189,11 @@ final class V5PublisherWorkspace {
             return;
         }
         button.setEnabled(false);
+        publishProgress.setValue(0);
+        publishProgress.setString("准备发布 0%");
+        publishProgressDetail.setText("检查发布参数…");
         validation.append("\n开始计算哈希、解析平台来源并生成发布目录…\n");
-        new SwingWorker<PublisherCloudBundle.Result, Void>() {
+        new SwingWorker<PublisherCloudBundle.Result, PublisherProgress.Update>() {
             @Override
             protected PublisherCloudBundle.Result doInBackground() throws Exception {
                 Path updater = generateLegacyGateways.isSelected() ? locateUpdaterJar(rootPath) : null;
@@ -1183,7 +1203,12 @@ final class V5PublisherWorkspace {
                         legacyV4Path.getText(), legacyV2Path.getText(),
                         syncServerList.isSelected() ? Path.of(serverListSource.getText()).toAbsolutePath().normalize() : null,
                         syncServerList.isSelected() ? serverListManifestPath.getText() : "",
-                        generateLegacyGateways.isSelected(), updater, previous);
+                        generateLegacyGateways.isSelected(), updater, previous, this::publish);
+            }
+
+            @Override
+            protected void process(List<PublisherProgress.Update> updates) {
+                if (!updates.isEmpty()) applyPublishProgress(updates.getLast());
             }
 
             @Override
@@ -1191,6 +1216,9 @@ final class V5PublisherWorkspace {
                 button.setEnabled(true);
                 try {
                     PublisherCloudBundle.Result cloud = get();
+                    publishProgress.setValue(100);
+                    publishProgress.setString("发布完成 100%");
+                    publishProgressDetail.setText("发布目录、清单与增量上传指南均已生成");
                     PublisherProjectV5.Publication publication = cloud.publication();
                     validation.append("发布完成：" + publication.manifestPath() + "\n"
                             + "托管文件：" + publication.hostedFiles() + "\n"
@@ -1204,11 +1232,37 @@ final class V5PublisherWorkspace {
                             "发布完成", JOptionPane.INFORMATION_MESSAGE);
                 } catch (Exception failure) {
                     Throwable actual = cause(failure);
+                    publishProgress.setString("发布失败");
+                    publishProgressDetail.setText(actual.getMessage());
                     validation.append("发布失败：" + actual.getMessage() + "\n");
                     showError(actual.getMessage());
                 }
             }
         }.execute();
+    }
+
+    private void applyPublishProgress(PublisherProgress.Update update) {
+        int start;
+        int span;
+        String label;
+        switch (update.stage()) {
+            case PREPARE -> { start = 0; span = 3; label = "准备"; }
+            case HASH_AND_PLATFORM -> { start = 3; span = 72; label = "哈希与平台核验"; }
+            case COPY_HOSTED -> { start = 75; span = 15; label = "复制托管文件"; }
+            case WRITE_MANIFEST -> { start = 90; span = 4; label = "生成清单"; }
+            case BUILD_CLOUD_BUNDLE -> { start = 94; span = 5; label = "整理云端发布包"; }
+            case COMPLETE -> { start = 100; span = 0; label = "完成"; }
+            default -> throw new IllegalStateException("unknown publisher stage: " + update.stage());
+        }
+        int percent = update.total() == 0 ? start + span
+                : start + (int) Math.floor((double) update.completed() * span / update.total());
+        percent = Math.max(0, Math.min(100, percent));
+        publishProgress.setValue(percent);
+        String counts = update.total() > 1 ? " " + update.completed() + "/" + update.total() : "";
+        publishProgress.setString(label + counts + " · " + percent + "%");
+        String detail = update.detail().isBlank() ? label : update.detail();
+        publishProgressDetail.setText(detail.length() <= 150 ? detail : "…" + detail.substring(detail.length() - 149));
+        publishProgressDetail.setToolTipText(detail);
     }
 
     private void saveProject() {

@@ -57,6 +57,7 @@ public final class AllTests {
         testPublisherResolvesCurseForgeWithoutLeakingCredentials();
         testCurseForgeMirrorRewritesForgeCdnDownloadUrl();
         testCurseForgePublisherKeepsMultipleResolvedCandidates();
+        testCurseForgeFallsBackToFileMetadataDownloadUrl();
         testDownloadCandidateLocaleRouting();
         testOfficialOnlyPlatformSourceGetsMirrorFallback();
         testCurseForgeStrictHashGateRejectsUnverifiableFile();
@@ -560,6 +561,31 @@ public final class AllTests {
                         && !ReleaseArtifactResolver.isSimplifiedChinese(Locale.forLanguageTag("zh-Hant-TW")),
                 "明确的 Hans/Hant 语言脚本必须正确区分镜像线路");
         pass("download candidates follow the machine display language");
+    }
+
+    private void testCurseForgeFallsBackToFileMetadataDownloadUrl() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            server.createContext("/v1/mods/1308486/files/7996778/download-url", exchange -> respond(
+                    exchange, 502, "bad gateway".getBytes(StandardCharsets.UTF_8), "text/plain"));
+            server.createContext("/v1/mods/1308486/files/7996778", exchange -> respond(
+                    exchange, 200, ("{\"data\":{\"id\":7996778,\"modId\":1308486," +
+                            "\"fileName\":\"Epic Villages 1.3.0 (1.21+).jar\"," +
+                            "\"downloadUrl\":\"https://cdn.example.invalid/files/7996/778/epic.jar\"}}")
+                            .getBytes(StandardCharsets.UTF_8), "application/json"));
+            server.start();
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v1/";
+            Map<String, Object> resolved = new PublisherPlatformResolver(HttpClient.newHttpClient()).resolve(Map.of(
+                    "type", "curseforge", "projectId", "1308486", "fileId", new BigDecimal("7996778"),
+                    "distributionPolicy", "upstream-only", "endpoints", List.of(Map.of(
+                            "url", base, "role", "official", "purpose", "api", "region", "global",
+                            "priority", new BigDecimal("100"), "thirdParty", false))));
+            check(StrictJson.stringify(resolved).contains("cdn.example.invalid/files/7996/778/epic.jar"),
+                    "download-url 接口故障时应使用同一锁定文件元数据中的 downloadUrl");
+            pass("CurseForge download URL falls back to locked file metadata");
+        } finally {
+            server.stop(0);
+        }
     }
 
     private void testCurseForgeStrictHashGateRejectsUnverifiableFile() throws Exception {
@@ -1543,7 +1569,9 @@ public final class AllTests {
             check(validated.files().size() == 2 && validated.configOperations().isEmpty(),
                     "GUI 内存项目应在不写输出的前提下完成严格 v5 预检");
             Path output = root.resolve("release");
-            PublisherProjectV5.Publication publication = PublisherProjectV5.publish(root, project, output);
+            List<PublisherProgress.Update> progress = new ArrayList<>();
+            PublisherProjectV5.Publication publication = PublisherProjectV5.publish(
+                    root, inMemoryProject, output, project.getFileName().toString(), null, progress::add);
             check(publication.hostedFiles() == 1, "发布器只应复制允许二次分发的 publisher-hosted 文件");
             check(Arrays.equals(Files.readAllBytes(output.resolve("mods/custom.jar")), custom),
                     "自制/适配模组应被复制到发布目录");
@@ -1554,6 +1582,13 @@ public final class AllTests {
                             && generated.files().get(1).sha256().equals(Hashing.sha256(upstream)),
                     "发布器必须锁定所有本地验证文件的精确 SHA256");
             check(Files.isRegularFile(publication.reportPath()), "发布器应输出机器可读审计报告");
+            check(progress.stream().anyMatch(update -> update.stage() == PublisherProgress.Stage.HASH_AND_PLATFORM
+                            && update.completed() == 2 && update.total() == 2)
+                            && progress.stream().anyMatch(update -> update.stage() == PublisherProgress.Stage.COPY_HOSTED
+                            && update.completed() == 1 && update.total() == 1)
+                            && progress.stream().anyMatch(update -> update.stage() == PublisherProgress.Stage.WRITE_MANIFEST
+                            && update.completed() == 1),
+                    "发布器应报告哈希/平台核验、托管复制和清单写入的真实进度");
             pass("v5 publisher project separates redistributable and upstream-only files");
         } finally {
             deleteTree(root);
