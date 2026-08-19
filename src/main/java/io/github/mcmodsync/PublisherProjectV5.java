@@ -155,6 +155,7 @@ final class PublisherProjectV5 {
         LinkedHashMap<String, Path> localFiles = new LinkedHashMap<>();
         LinkedHashSet<String> reusedHostedPaths = new LinkedHashSet<>();
         int reusedPlatformVerifications = 0;
+        PublisherPlatformVerificationStore verificationStore = PublisherPlatformVerificationStore.open(root);
         PublisherPlatformResolver platformResolver = new PublisherPlatformResolver();
         int inspected = 0;
         reporter.update(PublisherProgress.Stage.HASH_AND_PLATFORM, 0, files.size(), "准备计算文件哈希");
@@ -179,15 +180,24 @@ final class PublisherProjectV5 {
             if (generated.get("download") instanceof Map<?, ?> download) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> typedDownload = (Map<String, Object>) download;
-                ReleaseManifestV5.FileEntry cached = PublisherPlatformVerificationCache.reusable(
-                        previousManifest, relative, sha256, localBytes.length, typedDownload);
-                if (cached != null) {
-                    generated.put("download", ReleaseManifestV5.downloadJson(cached.download()));
+                Map<String, Object> stored = verificationStore.lookup(
+                        typedDownload, sha256, localBytes.length);
+                ReleaseManifestV5.FileEntry previousEvidence = stored == null
+                        ? PublisherPlatformVerificationCache.reusable(
+                                previousManifest, relative, sha256, localBytes.length, typedDownload)
+                        : null;
+                if (stored != null) {
+                    generated.put("download", stored);
+                    reusedPlatformVerifications++;
+                } else if (previousEvidence != null) {
+                    generated.put("download", ReleaseManifestV5.downloadJson(previousEvidence.download()));
                     reusedPlatformVerifications++;
                 } else {
                     try {
-                        generated.put("download", platformResolver.resolve(
-                                typedDownload, sha256, sha512, localBytes.length));
+                        Map<String, Object> resolved = platformResolver.resolve(
+                                typedDownload, sha256, sha512, localBytes.length);
+                        generated.put("download", resolved);
+                        verificationStore.put(typedDownload, sha256, localBytes.length, resolved);
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         throw new IOException("解析平台固定下载地址时被中断: " + relative, interrupted);

@@ -60,6 +60,7 @@ public final class AllTests {
         testCurseForgeFallsBackToFileMetadataDownloadUrl();
         testDownloadCandidateLocaleRouting();
         testPublisherReusesPreviousPlatformVerificationByHash();
+        testPublisherPersistsSuccessfulPlatformVerificationAcrossRetries();
         testOfficialOnlyPlatformSourceGetsMirrorFallback();
         testCurseForgeStrictHashGateRejectsUnverifiableFile();
         testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
@@ -589,6 +590,38 @@ public final class AllTests {
                         "distributionPolicy", "upstream-only")) == null,
                 "固定平台文件坐标变化后不得错误复用旧验证证据");
         pass("publisher reuses unchanged platform verification evidence");
+    }
+
+    private void testPublisherPersistsSuccessfulPlatformVerificationAcrossRetries() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-publisher-verification-store-");
+        try {
+            String hash = "c".repeat(64);
+            Map<String, Object> source = Map.of(
+                    "type", "curseforge", "projectId", "1308486", "fileId", new BigDecimal("7996778"),
+                    "distributionPolicy", "upstream-only");
+            Map<String, Object> resolved = Map.of(
+                    "type", "curseforge", "projectId", "1308486", "fileId", new BigDecimal("7996778"),
+                    "distributionPolicy", "upstream-only", "endpoints", List.of(Map.of(
+                            "url", "https://edge.forgecdn.net/files/7996/778/epic.jar",
+                            "role", "official", "purpose", "file", "region", "global",
+                            "priority", new BigDecimal("100"), "thirdParty", false)));
+            PublisherPlatformVerificationStore.open(root).put(source, hash, 3456, resolved);
+            Path cache = root.resolve(PublisherPlatformVerificationStore.RELATIVE_PATH);
+            check(Files.isRegularFile(cache) && Files.size(cache) > 0,
+                    "平台文件验证成功后应立即持久化小型证据缓存");
+            PublisherPlatformVerificationStore reopened = PublisherPlatformVerificationStore.open(root);
+            check(reopened.lookup(source, hash, 3456) != null,
+                    "整次发布稍后失败后，重新打开发布器仍应复用已成功的平台验证");
+            check(reopened.lookup(source, "d".repeat(64), 3456) == null
+                            && reopened.lookup(Map.of(
+                            "type", "curseforge", "projectId", "1308486",
+                            "fileId", new BigDecimal("7996779"),
+                            "distributionPolicy", "upstream-only"), hash, 3456) == null,
+                    "哈希或固定平台坐标变化必须使持久验证缓存失效");
+            pass("publisher persists successful platform verification across failed retries");
+        } finally {
+            deleteTree(root);
+        }
     }
 
     private void testCurseForgeFallsBackToFileMetadataDownloadUrl() throws Exception {
