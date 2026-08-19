@@ -78,6 +78,7 @@ public final class AllTests {
         testPublisherCloudBundleBuildsStableAndLegacyEntrypoints();
         testPublisherCloudBundleExportsServerList();
         testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
+        testPublisherCloudBundleFailureLeavesNoPartialOutput();
         testPreviousPublisherOutputDirectorySelectsNewestRelease();
         testPreviousUpgradeZipProvidesFullBaselineWithoutOldPayloads();
         testMinecraftEarlyProgressFailsClosedOutsideNeoForge();
@@ -1833,6 +1834,54 @@ public final class AllTests {
                             && en.contains("Atomically replace `channel/stable/mods-v5.json` last"),
                     "导出必须生成机器计划及内容等价的中英文上传替换指南");
             pass("publisher reuses previous immutable files and writes bilingual incremental upload guides");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPublisherCloudBundleFailureLeavesNoPartialOutput() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-cloud-transaction-");
+        try {
+            Files.createDirectories(root.resolve("game/mods"));
+            Files.writeString(root.resolve("game/mods/custom.jar"), "custom", StandardCharsets.UTF_8);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> project = (Map<String, Object>) StrictJson.parse("""
+                    {
+                      "schema":1,"releaseId":"cloud-transaction","releaseSequence":2000003,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[{
+                        "path":"mods/custom.jar","kind":"mod","required":true,
+                        "restartRequired":true,"side":["client"],
+                        "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}
+                      }],
+                      "configOperations":[]
+                    }
+                    """);
+            Path output = root.resolve("cloud");
+            boolean failed = false;
+            try {
+                PublisherCloudBundle.publish(
+                        root.resolve("game"), project, output, "https://files.example.test/mcsync",
+                        "channel/stable/mods-v5.json", "legacy/1.9/mods-v4.txt", "legacy/1.6/mods.txt",
+                        null, "", false, null, null,
+                        update -> {
+                            if (update.stage() == PublisherProgress.Stage.BUILD_CLOUD_BUNDLE
+                                    && update.completed() == 2) {
+                                throw new IllegalStateException("simulated publisher failure");
+                            }
+                        });
+            } catch (IllegalStateException expected) {
+                failed = expected.getMessage().contains("simulated publisher failure");
+            }
+            boolean stagingLeft;
+            try (var entries = Files.list(root)) {
+                stagingLeft = entries.anyMatch(path -> path.getFileName().toString()
+                        .startsWith(".cloud.mcsync-publish-"));
+            }
+            check(failed && !Files.exists(output) && !stagingLeft,
+                    "发布失败必须清理事务临时目录且不能污染最终输出目录");
+            pass("publisher cloud bundle failure leaves no partial output");
         } finally {
             deleteTree(root);
         }

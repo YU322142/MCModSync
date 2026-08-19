@@ -3,10 +3,12 @@ package io.github.mcmodsync;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.URI;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Comparator;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -79,7 +81,7 @@ final class PublisherCloudBundle {
         PublisherProgress reporter = progress == null ? PublisherProgress.NONE : progress;
         reporter.update(PublisherProgress.Stage.PREPARE, 0, 1, "检查云端布局与发布参数");
         Path output = outputRoot.toAbsolutePath().normalize();
-        ensureEmpty(output);
+        ensureEmptyTarget(output);
         String base = normalizeBase(baseUrl);
         String stableRelative = validatePath(stablePath, "mods-v5.json");
         String v4Relative = validatePath(legacyV4Path, "mods-v4.txt");
@@ -98,6 +100,41 @@ final class PublisherCloudBundle {
         if (previousManifest != null && previousManifest.releaseSequence() >= sequence) {
             throw new IOException("上一版 releaseSequence 必须小于当前发布序号");
         }
+
+        Path parent = output.getParent();
+        if (parent == null) throw new IOException("发布输出目录必须有父目录: " + output);
+        Files.createDirectories(parent);
+        Path staging = Files.createTempDirectory(parent, "." + output.getFileName() + ".mcsync-publish-");
+        boolean committed = false;
+        try {
+            Result staged = publishInto(gameRoot, project, staging, base, stableRelative, v4Relative, v2Relative,
+                    serverListSource, serverListRelative, syncServerList, legacyGateways, updaterJar,
+                    previousManifest, reporter, sequence);
+            commitStaging(staging, output);
+            committed = true;
+            reporter.update(PublisherProgress.Stage.COMPLETE, 1, 1, "发布完成");
+            return relocate(staged, staging, output);
+        } finally {
+            if (!committed) deleteStaging(staging);
+        }
+    }
+
+    private static Result publishInto(
+            Path gameRoot,
+            Map<String, Object> project,
+            Path output,
+            String base,
+            String stableRelative,
+            String v4Relative,
+            String v2Relative,
+            Path serverListSource,
+            String serverListRelative,
+            boolean syncServerList,
+            boolean legacyGateways,
+            Path updaterJar,
+            ReleaseManifestV5 previousManifest,
+            PublisherProgress reporter,
+            long sequence) throws IOException {
         Map<String, Object> remoteProject = withHostedEndpoints(project, base, sequence);
         Path releaseRoot = output.resolve("releases").resolve(Long.toString(sequence));
         PublisherProjectV5.Publication publication = PublisherProjectV5.publish(
@@ -136,9 +173,51 @@ final class PublisherCloudBundle {
         PublisherReleaseDelta.Paths deltaPaths = PublisherReleaseDelta.write(
                 output, delta, previousManifest, publication.manifest(), stableRelative, serverListRelative);
         reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 5, 5, "云端发布目录整理完成");
-        reporter.update(PublisherProgress.Stage.COMPLETE, 1, 1, "发布完成");
         return new Result(publication, stable, properties, serverListManifest,
                 deltaPaths.json(), deltaPaths.zh(), deltaPaths.en());
+    }
+
+    private static Result relocate(Result staged, Path staging, Path output) {
+        PublisherProjectV5.Publication publication = staged.publication();
+        PublisherProjectV5.Publication relocatedPublication = new PublisherProjectV5.Publication(
+                publication.manifest(),
+                relocate(publication.manifestPath(), staging, output),
+                relocate(publication.reportPath(), staging, output),
+                publication.hostedFiles(),
+                publication.reusedHostedFiles(),
+                publication.reusedPlatformVerifications(),
+                publication.reusedHostedPaths());
+        return new Result(
+                relocatedPublication,
+                relocate(staged.stableManifest(), staging, output),
+                relocate(staged.clientProperties(), staging, output),
+                relocate(staged.serverListManifest(), staging, output),
+                relocate(staged.uploadPlan(), staging, output),
+                relocate(staged.uploadGuideZh(), staging, output),
+                relocate(staged.uploadGuideEn(), staging, output));
+    }
+
+    private static Path relocate(Path path, Path staging, Path output) {
+        return path == null ? null : output.resolve(staging.relativize(path));
+    }
+
+    private static void commitStaging(Path staging, Path output) throws IOException {
+        ensureEmptyTarget(output);
+        if (Files.exists(output)) Files.delete(output);
+        try {
+            Files.move(staging, output, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(staging, output);
+        }
+    }
+
+    private static void deleteStaging(Path staging) throws IOException {
+        if (!Files.exists(staging)) return;
+        try (var paths = Files.walk(staging)) {
+            for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                Files.deleteIfExists(path);
+            }
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -215,11 +294,8 @@ final class PublisherCloudBundle {
                 StandardCharsets.UTF_8);
     }
 
-    private static void ensureEmpty(Path output) throws IOException {
-        if (!Files.exists(output)) {
-            Files.createDirectories(output);
-            return;
-        }
+    private static void ensureEmptyTarget(Path output) throws IOException {
+        if (!Files.exists(output)) return;
         if (!Files.isDirectory(output)) throw new IOException("发布输出不是目录: " + output);
         try (var entries = Files.list(output)) {
             if (entries.findAny().isPresent()) throw new IOException("发布输出目录必须为空: " + output);
