@@ -27,7 +27,15 @@ final class PublisherPlatformResolver {
     }
 
     Map<String, Object> resolve(Map<String, Object> raw) throws IOException, InterruptedException {
+        return resolve(raw, "", -1L);
+    }
+
+    Map<String, Object> resolve(Map<String, Object> raw, String expectedSha256, long expectedSize)
+            throws IOException, InterruptedException {
         LinkedHashMap<String, Object> source = new LinkedHashMap<>(raw);
+        if ("modrinth".equals(source.get("type"))) {
+            return resolveModrinth(source, expectedSha256, expectedSize);
+        }
         if (!"curseforge".equals(source.get("type"))) return source;
         String projectId = text(source.get("projectId"), "CurseForge projectId");
         long fileId = integer(source.get("fileId"), "CurseForge fileId");
@@ -61,6 +69,60 @@ final class PublisherPlatformResolver {
         return source;
     }
 
+    private Map<String, Object> resolveModrinth(
+            LinkedHashMap<String, Object> source, String expectedSha256, long expectedSize)
+            throws IOException, InterruptedException {
+        String projectId = text(source.get("projectId"), "Modrinth projectId");
+        String versionId = text(source.get("versionId"), "Modrinth versionId");
+        if (!expectedSha256.matches("[0-9a-fA-F]{64}") || expectedSize < 0) {
+            throw new IOException("解析 Modrinth 固定文件需要当前 JAR 的 SHA-256 和大小");
+        }
+        List<Map<String, Object>> endpoints = endpointMaps(source.get("endpoints"));
+        boolean alreadyResolved = endpoints.stream().anyMatch(endpoint -> "file".equals(endpoint.get("purpose")));
+        if (alreadyResolved) return source;
+        ArrayList<Map<String, Object>> resolved = new ArrayList<>(endpoints);
+        IOException last = null;
+        for (Map<String, Object> endpoint : endpoints.stream()
+                .filter(value -> "api".equals(value.get("purpose")))
+                .sorted(Comparator.comparingInt(value -> ((Number) value.getOrDefault("priority", 100)).intValue()))
+                .toList()) {
+            URI apiBase = URI.create(text(endpoint.get("url"), "Modrinth API endpoint"));
+            URI requestUri = apiBase.resolve("version/" + Rfc3986.encodePathSegment(versionId));
+            try {
+                Map<String, Object> metadata = requestJsonObject(requestUri);
+                if (!projectId.equals(metadata.get("project_id"))) {
+                    throw new IOException("Modrinth version 不属于锁定 projectId");
+                }
+                Object filesRaw = metadata.get("files");
+                if (!(filesRaw instanceof List<?> files)) throw new IOException("Modrinth metadata 缺少 files");
+                for (Object value : files) {
+                    if (!(value instanceof Map<?, ?> rawFile)) continue;
+                    @SuppressWarnings("unchecked") Map<String, Object> file = (Map<String, Object>) rawFile;
+                    if (!(file.get("url") instanceof String url)
+                            || !(file.get("size") instanceof Number size)
+                            || !(file.get("hashes") instanceof Map<?, ?> hashes)
+                            || !(hashes.get("sha256") instanceof String sha256)
+                            || size.longValue() != expectedSize
+                            || !sha256.equalsIgnoreCase(expectedSha256)) continue;
+                    URI fileUri = URI.create(url);
+                    if (!"https".equalsIgnoreCase(fileUri.getScheme()) || fileUri.getHost() == null
+                            || fileUri.getUserInfo() != null || fileUri.getFragment() != null) continue;
+                    LinkedHashMap<String, Object> fileEndpoint = new LinkedHashMap<>(endpoint);
+                    fileEndpoint.put("url", fileUri.toASCIIString());
+                    fileEndpoint.put("purpose", "file");
+                    resolved.add(fileEndpoint);
+                }
+            } catch (IOException failure) {
+                last = failure;
+            }
+        }
+        if (resolved.stream().noneMatch(endpoint -> "file".equals(endpoint.get("purpose")))) {
+            throw new IOException("无法把 Modrinth 固定 versionId 解析为当前哈希文件", last);
+        }
+        source.put("endpoints", resolved);
+        return source;
+    }
+
     private URI requestDownloadUrl(URI uri) throws IOException, InterruptedException {
         HttpRequest.Builder request = HttpRequest.newBuilder(uri)
                 .timeout(Duration.ofSeconds(30))
@@ -89,6 +151,21 @@ final class PublisherPlatformResolver {
             throw new IOException("CurseForge API 返回了不安全的下载地址");
         }
         return file;
+    }
+
+    private Map<String, Object> requestJsonObject(URI uri) throws IOException, InterruptedException {
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(30))
+                .header("Accept", "application/json")
+                .header("User-Agent", BuildInfo.USER_AGENT)
+                .GET().build(), HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IOException("Modrinth API HTTP " + response.statusCode());
+        }
+        Object parsed = StrictJson.parse(response.body());
+        if (!(parsed instanceof Map<?, ?> raw)) throw new IOException("Modrinth API 返回值不是对象");
+        @SuppressWarnings("unchecked") Map<String, Object> result = (Map<String, Object>) raw;
+        return result;
     }
 
     @SuppressWarnings("unchecked")

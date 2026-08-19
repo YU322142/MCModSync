@@ -12,10 +12,12 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.Semaphore;
 import java.util.function.Consumer;
 
 /** Resolves pinned v5 sources into hash-checked bytes; mirrors are transport candidates only. */
 final class ReleaseArtifactResolver implements ReleaseTransactionEngine.ArtifactProvider {
+    private static final Semaphore PLATFORM_METADATA_LIMIT = new Semaphore(8, true);
     private final ModSyncConfig config;
     private final HttpClient client;
     private final Consumer<String> logger;
@@ -128,7 +130,11 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
             case "direct" -> {
                 // Explicit file endpoints above are the complete candidate set.
             }
-            case "modrinth" -> result.addAll(resolveModrinth(source));
+            case "modrinth" -> {
+                // New v5 publications pin exact file endpoints at publication time. Metadata lookup is
+                // retained only as a compatibility fallback for older v5 manifests without file URLs.
+                if (result.isEmpty()) result.addAll(resolveModrinth(source));
+            }
             case "curseforge" -> {
                 if (result.isEmpty()) {
                     throw new IOException("CurseForge 文件必须由发布器解析成固定 file URL；客户端不携带 API key");
@@ -150,7 +156,10 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
         IOException last = null;
         for (ReleaseManifestV5.DownloadEndpoint endpoint : apiEndpoints) {
             URI metadataUri = endpoint.uri().resolve("version/" + Rfc3986.encodePathSegment(source.versionId()));
+            boolean acquired = false;
             try {
+                PLATFORM_METADATA_LIMIT.acquire();
+                acquired = true;
                 byte[] response = RequiredManifestFetcher.fetch(
                         client, metadataUri, config.requestTimeout(), 2 * 1024 * 1024L,
                         BuildInfo.USER_AGENT, "Modrinth pinned version metadata", logger);
@@ -172,6 +181,10 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
                 }
             } catch (IOException failure) {
                 last = failure;
+                logger.accept("Modrinth 固定版本解析失败，尝试下一 API: " + metadataUri
+                        + " — " + failure.getMessage());
+            } finally {
+                if (acquired) PLATFORM_METADATA_LIMIT.release();
             }
         }
         if (result.isEmpty()) throw new IOException("无法解析锁定的 Modrinth versionId", last);

@@ -59,6 +59,7 @@ final class V5PublisherWorkspace {
     private final JPanel root = new JPanel(new BorderLayout(8, 8));
     private final JTextField gameRoot = new JTextField();
     private final JTextField outputDirectory = new JTextField();
+    private final JTextField previousManifestPath = new JTextField();
     private final JTextField releaseId = new JTextField("motiquies-2.0.0-ota.1");
     private final JSpinner releaseSequence = new JSpinner(new SpinnerNumberModel(
             PublisherProjectV5.currentTimeReleaseSequence(), 1L, Long.MAX_VALUE, 1L));
@@ -134,6 +135,8 @@ final class V5PublisherWorkspace {
         c.weightx = 0;
         form.add(autoReleaseSequence, c);
         addFieldRow(form, c, 4, "最低 MCSync 版本：", minimumVersion);
+        addFilePathRow(form, c, 5, "上一版 mods-v5.json（可选）：", previousManifestPath,
+                "选择上一版", "选择用于增量复用的上一版 mods-v5.json");
 
         JTextArea note = new JTextArea(
                 "此工作台直接产生 schema-v5 发布。releaseSequence 只能增加，客户端会拒绝降级。\n"
@@ -425,6 +428,12 @@ final class V5PublisherWorkspace {
 
     private void addFilePathRow(
             JPanel form, GridBagConstraints c, int row, String label, JTextField field, String buttonText) {
+        addFilePathRow(form, c, row, label, field, buttonText, "选择测试客户端的 servers.dat");
+    }
+
+    private void addFilePathRow(
+            JPanel form, GridBagConstraints c, int row, String label, JTextField field, String buttonText,
+            String dialogTitle) {
         c.gridx = 0;
         c.gridy = row;
         c.weightx = 0;
@@ -436,7 +445,7 @@ final class V5PublisherWorkspace {
         c.gridx = 2;
         c.weightx = 0;
         form.add(button, c);
-        button.addActionListener(event -> chooseFile(field, "选择测试客户端的 servers.dat"));
+        button.addActionListener(event -> chooseFile(field, dialogTitle));
     }
 
     private static void addFieldRow(JPanel form, GridBagConstraints c, int row, String label, JTextField field) {
@@ -999,6 +1008,17 @@ final class V5PublisherWorkspace {
         }
         if (!releaseId.getText().matches("[A-Za-z0-9._-]{1,128}")) errors.add("releaseId 格式无效。");
         if (minimumVersion.getText().isBlank()) errors.add("最低 MCSync 版本不能为空。");
+        if (!previousManifestPath.getText().isBlank()) {
+            try {
+                ReleaseManifestV5 previous = readPreviousManifest();
+                long currentSequence = ((Number) releaseSequence.getValue()).longValue();
+                if (previous.releaseSequence() >= currentSequence) {
+                    errors.add("上一版 releaseSequence 必须小于当前发布序号。");
+                }
+            } catch (Exception failure) {
+                errors.add("上一版清单无效：" + failure.getMessage());
+            }
+        }
         try {
             URI base = URI.create(normalizedBaseUrl());
             if (!"https".equalsIgnoreCase(base.getScheme()) || base.getHost() == null) {
@@ -1108,12 +1128,14 @@ final class V5PublisherWorkspace {
             @Override
             protected PublisherCloudBundle.Result doInBackground() throws Exception {
                 Path updater = generateLegacyGateways.isSelected() ? locateUpdaterJar(rootPath) : null;
+                ReleaseManifestV5 previous = previousManifestPath.getText().isBlank()
+                        ? null : readPreviousManifest();
                 return PublisherCloudBundle.publish(
                         rootPath, project, output, normalizedBaseUrl(), stableManifestPath.getText(),
                         legacyV4Path.getText(), legacyV2Path.getText(),
                         syncServerList.isSelected() ? Path.of(serverListSource.getText()).toAbsolutePath().normalize() : null,
                         syncServerList.isSelected() ? serverListManifestPath.getText() : "",
-                        generateLegacyGateways.isSelected(), updater);
+                        generateLegacyGateways.isSelected(), updater, previous);
             }
 
             @Override
@@ -1124,7 +1146,10 @@ final class V5PublisherWorkspace {
                     PublisherProjectV5.Publication publication = cloud.publication();
                     validation.append("发布完成：" + publication.manifestPath() + "\n"
                             + "托管文件：" + publication.hostedFiles() + "\n"
+                            + "复用上一版：" + publication.reusedHostedFiles() + "\n"
                             + "报告：" + publication.reportPath() + "\n"
+                            + "增量上传指南：" + cloud.uploadGuideZh() + "\n"
+                            + "机器上传计划：" + cloud.uploadPlan() + "\n"
                             + "2.0 稳定入口：" + stableUrl() + "\n");
                     JOptionPane.showMessageDialog(owner,
                             "schema-v5 OTA 发布已生成。\n" + publication.manifestPath(),
@@ -1201,6 +1226,7 @@ final class V5PublisherWorkspace {
             @SuppressWarnings("unchecked") Map<String, Object> manifest = (Map<String, Object>) raw;
             Map<String, Object> project = continuationProject(manifest);
             loadProjectMap(project);
+            previousManifestPath.setText(selected.toString());
             autoReleaseSequence.setSelected(true);
             releaseSequence.setValue(PublisherProjectV5.currentTimeReleaseSequence());
             projectFile = null;
@@ -1237,6 +1263,18 @@ final class V5PublisherWorkspace {
         return name == null || directory == null ? null : Path.of(directory, name).toAbsolutePath().normalize();
     }
 
+    private ReleaseManifestV5 readPreviousManifest() throws IOException {
+        Path path = Path.of(previousManifestPath.getText()).toAbsolutePath().normalize();
+        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("上一版 mods-v5.json 不存在或不是普通文件: " + path);
+        }
+        try {
+            return ReleaseManifestV5.parse(Files.readAllBytes(path));
+        } catch (IllegalArgumentException failure) {
+            throw new IOException("无法解析上一版 mods-v5.json: " + failure.getMessage(), failure);
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> continuationProject(Map<String, Object> manifest) throws IOException {
         LinkedHashMap<String, Object> project = new LinkedHashMap<>();
@@ -1254,6 +1292,7 @@ final class V5PublisherWorkspace {
         remote.put("serverListManifestPath", cloudPath(serverListManifestPath.getText()));
         remote.put("gameRoot", gameRoot.getText().strip());
         remote.put("outputDirectory", outputDirectory.getText().strip());
+        remote.put("previousManifestPath", previousManifestPath.getText().strip());
         remote.put("autoReleaseSequence", true);
         remote.put("generateLegacyGateways", generateLegacyGateways.isSelected());
         project.put("remote", remote);
@@ -1485,6 +1524,7 @@ final class V5PublisherWorkspace {
                 "serverListManifestPath", serverListManifestPath.getText())));
         gameRoot.setText(String.valueOf(remote.getOrDefault("gameRoot", gameRoot.getText())));
         outputDirectory.setText(String.valueOf(remote.getOrDefault("outputDirectory", outputDirectory.getText())));
+        previousManifestPath.setText(String.valueOf(remote.getOrDefault("previousManifestPath", "")));
         autoReleaseSequence.setSelected(!Boolean.FALSE.equals(remote.get("autoReleaseSequence")));
         generateLegacyGateways.setSelected(!Boolean.FALSE.equals(remote.get("generateLegacyGateways")));
         scopes.rows.clear();

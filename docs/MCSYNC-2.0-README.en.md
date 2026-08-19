@@ -1,69 +1,154 @@
 # MCSync 2.0
 
-MCSync is a Java 21 pre-start OTA publisher and client updater for Minecraft modpacks.
+MCSync is a pre-start OTA tool for Minecraft modpacks. Before normal mod initialization, it checks the release manifest, downloads and verifies changes, and then updates the client as a transaction.
 
-Current release: **2.0.0**
+Current stable version: **2.0.0**
+
+Runtime: **Java 21**
 
 Current manifest: **mods-v5.json**
-Technical mod ID: **mcmodsync**
+Technical mod ID: **mcmodsync** (retained for compatibility with 1.9.x)
 
-The historical technical identity is intentionally preserved so installed 1.9.x clients can upgrade in place.
+[中文](../README.md) · [更新日志](../CHANGELOG.zh-CN.md) · [Changelog](../CHANGELOG.md) · [Documentation index](README.md) · [Publishing and operations](MCSYNC-2.0-OPERATIONS.md) · [Requirements and security boundaries](MCSYNC-2.0-REQUIREMENTS.md) · [Development structure](MCSYNC-2.0-DEVELOPMENT.md) · [Legacy upgrade guide](中文使用指南.md)
 
-## Managed content
+## What MCSync Manages
 
-MCSync can manage mods, resource packs, shader packs, KubeJS content, TACZ packs, maid model packs, selected configuration files, first-install options, and an optional server list.
+The following content may be included in a publishing project by default:
 
-It does not synchronize worlds, player data, map exploration, screenshots, logs, launcher accounts, Java settings, or secrets.
+- `mods/`
+- `resourcepacks/`
+- `shaderpacks/`
+- `kubejs/`
+- `tacz/`
+- `tlm_custom_pack/`
+- explicitly selected files or settings from `config/` and `defaultconfigs/`
+- `options.txt` for first-time installation
+- an optional `servers.dat`
 
-## Startup lifecycle
+MCSync does not synchronize save state and must not manage:
 
-1. Read local configuration.
-2. Fetch and validate the v5 manifest.
-3. Reject release-sequence downgrade or fork.
-4. Ask for newly introduced optional content.
-5. Download and verify changed files.
-6. Apply one backed-up transaction.
-7. Exit for restart when loaded content changed; otherwise continue Minecraft startup.
+- `saves/`, world chunks, player data, or SavedData
+- Xaero/JourneyMap exploration data
+- logs, crash reports, screenshots, or caches
+- launcher accounts, Java paths, memory settings, or login credentials
+- server secrets, tokens, whitelists, operator lists, or private addresses
 
-Loaded JARs cannot be safely replaced in the same JVM, so mod and startup-configuration changes require a restart.
+## Startup Flow
 
-## File identity
+1. MCSync reads the local `modsync.properties`.
+2. It fetches and strictly parses `mods-v5.json`.
+3. It checks the release sequence and rejects both downgrades and forks at the same sequence.
+4. It presents the selection screen for newly added recommended content.
+5. It downloads selected changes and verifies every file's size and SHA-256.
+6. It creates a backup and applies one atomic transaction.
+7. If a JAR or startup-time configuration changed, it exits so the player can restart before entering the game.
+8. If nothing changed, normal Minecraft loading continues.
 
-Content establishes identity.
+MCSync does not claim to hot-replace mods after the JVM has loaded their JARs. Updates involving mods, KubeJS startup scripts, or startup-time configuration require a restart.
 
-- SHA-256 identifies local files and locks manifest payloads.
-- Modrinth lookup uses exact SHA-512.
-- CurseForge lookup uses the official fingerprint.
-- Filename, display name, and version text never prove upstream identity.
-- A unique mod ID may inherit descriptions and selection metadata after an upgrade, but the current JAR is always resolved again.
-- Every official, mirror, direct, or publisher-hosted download must match the v5 size and SHA-256.
+## File Identity and Upstream Matching
 
-Only direct `mods/*.jar` files are queried against mod platforms. Other content is handled as ordinary release files.
+File content is the only reliable identity.
 
-## Publishing
+- Local installation, v5 import, backup, and rollback use **SHA-256**.
+- Modrinth lookup uses the current JAR's **SHA-512**.
+- CurseForge lookup uses the current JAR's official **fingerprint**.
+- Filenames, display names, and version strings are not used to confirm an upstream file.
+- A unique `modId` may inherit editable metadata such as descriptions and required/recommended state after a version upgrade.
+- After metadata inheritance, the current JAR is still queried against upstream sources again; old download coordinates are not reused directly.
+- Official, mirror, direct-link, and publisher-hosted downloads must all match the size and SHA-256 locked in v5.
 
-Run:
+During export, the publisher resolves pinned Modrinth/CurseForge coordinates into file URLs whose content matches the current JAR hash. At startup, a player fetches only the server-published v5 manifest and verifies local files; no mod platform is contacted while local files are correct, and a download occurs only when a file is missing or damaged. Metadata lookup remains only as a compatibility fallback for an older v5 manifest that lacks a pinned Modrinth file URL.
+
+Only JARs located directly in `mods/` are queried against Modrinth, CurseForge, or their mirrors. Resource packs, shaders, KubeJS, configuration, TACZ packs, and maid model packs are never mistakenly sent to mod-platform matching.
+
+## Required and Recommended Content
+
+- **Required**: a missing file or hash mismatch must be repaired; failure blocks the current launch.
+- **Recommended**: when first introduced, or when the recommended set grows, content is selected inside the Minecraft window and is selected by default; after a player deselects it, MCSync does not forcibly restore it.
+- Resource packs and shader packs may also be optional and support select-all and clear-all actions.
+- Mods deleted from the current client are not resurrected when an older v5 manifest is imported.
+
+## Publishing a v5 Release
+
+1. Prepare and fully test a client root.
+2. Run `java -jar MCSync-2.0.0.jar`.
+3. Select the client root under “Publishing Project”.
+4. On the “Mods” tab, review required/recommended state, bilingual descriptions, and upstream matching results.
+5. Under “Synchronization Scope”, confirm the directories to manage.
+6. Under “Configuration OTA”, add only configuration keys that genuinely need a uniform change.
+7. If server-list synchronization is needed, select a tested `servers.dat`.
+8. Under “Validation and Export”, resolve every blocker before exporting.
+9. Upload immutable files first, and upload `mods-v5.json` last.
+
+An earlier `mods-v5.json` may be selected on the “Publishing Project” tab. During export, MCSync compares size and SHA-256: unchanged publisher-hosted files reuse their previous immutable URLs and are not copied into the new release directory; only new or changed files must be uploaded. The output root also contains `UPLOAD-PLAN.json`, `UPLOAD-GUIDE.zh-CN.md`, and a fully equivalent `UPLOAD-GUIDE.en.md`, identifying uploads, reuse, external downloads, and removed paths.
+
+When republishing, an older `mods-v5.json` may be imported only on the Mods tab. It inherits safely attributable mod metadata without changing other publishing settings; hashes and download-source matching are then recalculated from the current JARs.
+
+When “Scan and Detect Upgrades” is used directly, the current `mods/` directory becomes the authoritative set and rebuilds the Mods table. A newer JAR with a unique mod ID replaces the old row and inherits required/recommended state, bilingual descriptions, side, and platform restrictions; download sources are still rematched from the newer JAR's hash. If multiple different JARs or versions with the same mod ID coexist, the GUI marks every related row as a conflict and blocks export.
+
+## Recommended Cloud Layout
 
 ```text
-java -jar MCSync-2.0.0.jar
+channel/stable/
+├─ mods-v5.json
+├─ releases/
+│  └─ <release-sequence>/
+│     ├─ mods/
+│     ├─ resourcepacks/
+│     ├─ shaderpacks/
+│     ├─ kubejs/
+│     └─ other-managed-files/
+└─ server-list/
+   ├─ serverlist.txt
+   └─ servers.dat
 ```
 
-Select a tested client root, review Mods, choose managed scopes, add guarded configuration mutations, validate, and export. Upload immutable files first and publish `mods-v5.json` last.
+Upgrade materials used by legacy 1.6.x, 1.7, and 1.9.x clients must remain at their original URLs. The new v5 directory does not need an adjacent v4 file. See the [legacy upgrade guide](中文使用指南.md).
 
-Importing an older v5 catalog in the Mods tab preserves safely matched editorial metadata without changing other project settings or resurrecting deleted mods.
+## Minimal Client Configuration
 
-## Documentation
+```properties
+manifest=https://files.example.com/minecraft/channel/stable/mods-v5.json
+language=auto
+strict=true
+requireManifest=true
+syncResourcePacks=false
+syncServerList=false
+connectTimeoutSeconds=15
+requestTimeoutSeconds=300
+fileOperationRetries=12
+```
 
-- [Chinese README](../README.md)
-- [Operations](MCSYNC-2.0-OPERATIONS.md)
-- [Requirements and security boundaries](MCSYNC-2.0-REQUIREMENTS.md)
-- [Development structure](MCSYNC-2.0-DEVELOPMENT.md)
-- [Legacy upgrade guide](中文使用指南.md)
+Real endpoints and credentials must not be committed to a public source repository.
 
-## Build
+## Build and Test
+
+Windows PowerShell:
 
 ```powershell
 .\build.ps1
 ```
 
-Artifacts are written to `out/`.
+The build runs the complete test suite and produces:
+
+- `out/MCSync-2.0.0.jar`
+- `out/MCSync-2.0.0-source.zip`
+- Chinese documentation and example configuration
+
+## Compatibility Notes
+
+The product name has changed to MCSync, but the following technical entry points are retained so installed legacy clients can upgrade:
+
+- `mcmodsync` mod ID
+- `modsync.properties`
+- `.modsync/`
+- `MCModSync-Config.jar`
+- v1-v4 manifest parsing
+- the 1.9.x upgrade chain
+
+Do not remove these entry points merely to make the naming uniform.
+
+## License
+
+See [LICENSE](../LICENSE).

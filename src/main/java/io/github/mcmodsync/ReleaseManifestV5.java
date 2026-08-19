@@ -419,7 +419,11 @@ record ReleaseManifestV5(
         if (!file.incompatiblePlatforms().isEmpty()) {
             result.put("incompatiblePlatforms", file.incompatiblePlatforms().stream().sorted().toList());
         }
-        DownloadSource source = file.download();
+        result.put("download", downloadJson(file.download()));
+        return result;
+    }
+
+    static Map<String, Object> downloadJson(DownloadSource source) {
         Map<String, Object> download = new LinkedHashMap<>();
         download.put("type", source.type());
         download.put("distributionPolicy", source.distributionPolicy());
@@ -441,8 +445,7 @@ record ReleaseManifestV5(
                     "priority", endpoint.priority(),
                     "thirdParty", endpoint.thirdParty())).toList());
         }
-        result.put("download", download);
-        return result;
+        return download;
     }
 
     private static void putIfNotBlank(Map<String, Object> target, String key, String value) {

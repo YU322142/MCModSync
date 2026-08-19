@@ -19,7 +19,10 @@ final class PublisherCloudBundle {
             PublisherProjectV5.Publication publication,
             Path stableManifest,
             Path clientProperties,
-            Path serverListManifest) {
+            Path serverListManifest,
+            Path uploadPlan,
+            Path uploadGuideZh,
+            Path uploadGuideEn) {
     }
 
     private PublisherCloudBundle() {
@@ -37,6 +40,23 @@ final class PublisherCloudBundle {
             String serverListManifestPath,
             boolean legacyGateways,
             Path updaterJar) throws IOException {
+        return publish(gameRoot, project, outputRoot, baseUrl, stablePath, legacyV4Path, legacyV2Path,
+                serverListSource, serverListManifestPath, legacyGateways, updaterJar, null);
+    }
+
+    static Result publish(
+            Path gameRoot,
+            Map<String, Object> project,
+            Path outputRoot,
+            String baseUrl,
+            String stablePath,
+            String legacyV4Path,
+            String legacyV2Path,
+            Path serverListSource,
+            String serverListManifestPath,
+            boolean legacyGateways,
+            Path updaterJar,
+            ReleaseManifestV5 previousManifest) throws IOException {
         Path output = outputRoot.toAbsolutePath().normalize();
         ensureEmpty(output);
         String base = normalizeBase(baseUrl);
@@ -54,10 +74,14 @@ final class PublisherCloudBundle {
         }
 
         long sequence = number(project.get("releaseSequence"), "releaseSequence").longValueExact();
+        if (previousManifest != null && previousManifest.releaseSequence() >= sequence) {
+            throw new IOException("上一版 releaseSequence 必须小于当前发布序号");
+        }
         Map<String, Object> remoteProject = withHostedEndpoints(project, base, sequence);
         Path releaseRoot = output.resolve("releases").resolve(Long.toString(sequence));
         PublisherProjectV5.Publication publication = PublisherProjectV5.publish(
-                gameRoot, remoteProject, releaseRoot, String.valueOf(project.get("releaseId")) + ".publisher.json");
+                gameRoot, remoteProject, releaseRoot, String.valueOf(project.get("releaseId")) + ".publisher.json",
+                previousManifest);
 
         Path stable = output.resolve(stableRelative.replace('/', java.io.File.separatorChar));
         Files.createDirectories(stable.getParent());
@@ -82,7 +106,12 @@ final class PublisherCloudBundle {
         }
         writeGuide(output.resolve("REMOTE-DEPLOYMENT.md"), sequence, stableRelative, stableUrl,
                 serverListRelative, legacyGateways);
-        return new Result(publication, stable, properties, serverListManifest);
+        PublisherReleaseDelta.Plan delta = PublisherReleaseDelta.plan(
+                previousManifest, publication.manifest(), publication.reusedHostedPaths());
+        PublisherReleaseDelta.Paths deltaPaths = PublisherReleaseDelta.write(
+                output, delta, previousManifest, publication.manifest(), stableRelative, serverListRelative);
+        return new Result(publication, stable, properties, serverListManifest,
+                deltaPaths.json(), deltaPaths.zh(), deltaPaths.en());
     }
 
     @SuppressWarnings("unchecked")

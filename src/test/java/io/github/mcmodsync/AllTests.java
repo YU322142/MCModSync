@@ -54,6 +54,7 @@ public final class AllTests {
         testV5CustomBuildUsesPublisherHostedDistribution();
         testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates();
         testPublisherResolvesCurseForgeWithoutLeakingCredentials();
+        testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
         testV5MirrorHashFailureFallsBackToOfficialCandidate();
         testReleaseSequenceAntiDowngradeGate();
         testStructuredConfigMutationEngine();
@@ -64,6 +65,7 @@ public final class AllTests {
         testV5PublisherProjectBuildsDeterministicRelease();
         testPublisherCloudBundleBuildsStableAndLegacyEntrypoints();
         testPublisherCloudBundleExportsServerList();
+        testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
         testNeoForgeMetadataAndUniversalBootstrap();
@@ -369,6 +371,74 @@ public final class AllTests {
                             && !serialized.toLowerCase(Locale.ROOT).contains("x-api-key"),
                     "发布器应把固定 fileId 解析成无凭据下载候选，绝不把 API key 写进清单");
             pass("publisher resolves CurseForge file IDs without leaking credentials");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private void testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            byte[] expected = "pinned-modrinth-file".getBytes(StandardCharsets.UTF_8);
+            String hash = Hashing.sha256(expected);
+            AtomicInteger metadataRequests = new AtomicInteger();
+            AtomicInteger fileRequests = new AtomicInteger();
+            server.createContext("/v2/version/version-1", exchange -> {
+                metadataRequests.incrementAndGet();
+                String fileUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/files/exact.jar";
+                respond(exchange, 200, ("""
+                        {"project_id":"project-1","files":[{
+                          "url":"%s","size":%d,"hashes":{"sha256":"%s"}
+                        }]}
+                        """).formatted(fileUrl.replace("http://", "https://"), expected.length, hash)
+                        .getBytes(StandardCharsets.UTF_8), "application/json");
+            });
+            server.createContext("/files/exact.jar", exchange -> {
+                fileRequests.incrementAndGet();
+                respond(exchange, 200, expected, "application/java-archive");
+            });
+            server.start();
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v2/";
+            Map<String, Object> resolved = new PublisherPlatformResolver(HttpClient.newHttpClient()).resolve(Map.of(
+                    "type", "modrinth",
+                    "projectId", "project-1",
+                    "versionId", "version-1",
+                    "distributionPolicy", "upstream-only",
+                    "endpoints", List.of(Map.of(
+                            "url", base,
+                            "role", "mirror",
+                            "purpose", "api",
+                            "region", "test",
+                            "priority", new BigDecimal("10"),
+                            "thirdParty", true))), hash, expected.length);
+            @SuppressWarnings("unchecked") List<Map<String, Object>> endpoints =
+                    (List<Map<String, Object>>) resolved.get("endpoints");
+            check(metadataRequests.get() == 1
+                            && endpoints.stream().anyMatch(endpoint -> "file".equals(endpoint.get("purpose"))
+                            && String.valueOf(endpoint.get("url")).endsWith("/files/exact.jar")),
+                    "发布器必须按当前 JAR 哈希把 Modrinth versionId 固化为文件 URL");
+
+            Path root = Files.createTempDirectory("mcsync-pinned-modrinth-");
+            try {
+                ReleaseManifestV5.DownloadSource source = new ReleaseManifestV5.DownloadSource(
+                        "modrinth", "project-1", "version-1", null, "upstream-only", List.of(
+                        new ReleaseManifestV5.DownloadEndpoint(
+                                URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/files/exact.jar"),
+                                "official", "file", "global", 100, false),
+                        new ReleaseManifestV5.DownloadEndpoint(
+                                URI.create(base), "official", "api", "global", 100, false)));
+                ReleaseManifestV5.FileEntry entry = new ReleaseManifestV5.FileEntry(
+                        "mods/exact.jar", hash, expected.length, "mod", true, true, Set.of("client"), source);
+                ModSyncConfig config = config(root,
+                        URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/manifest.json"),
+                        false, false);
+                byte[] downloaded = new ReleaseArtifactResolver(config, message -> { }).fetch(entry);
+                check(Arrays.equals(expected, downloaded) && metadataRequests.get() == 1 && fileRequests.get() == 1,
+                        "客户端已有固定文件 URL 时必须直接下载，不得再次查询 Modrinth metadata");
+            } finally {
+                deleteTree(root);
+            }
+            pass("publisher pins Modrinth file URLs and clients avoid metadata lookup");
         } finally {
             server.stop(0);
         }
@@ -1282,6 +1352,87 @@ public final class AllTests {
                             && properties.contains("serverListManifest=https://files.example.test/mcsync/server-list/serverlist.txt\n"),
                     "客户端配置模板应启用服务器列表同步并指向导出清单");
             pass("publisher cloud bundle exports server list and managed client configuration");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-cloud-delta-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("game/mods"));
+            Path unchanged = mods.resolve("unchanged.jar");
+            Path changed = mods.resolve("changed.jar");
+            Files.writeString(unchanged, "same-content", StandardCharsets.UTF_8);
+            Files.writeString(changed, "new-content", StandardCharsets.UTF_8);
+            String unchangedHash = Hashing.sha256(unchanged);
+            byte[] previousBytes = ("""
+                    {
+                      "schema":5,"releaseId":"delta-previous","releaseSequence":3001,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[
+                        {
+                          "path":"mods/unchanged.jar","sha256":"%s","size":%d,
+                          "kind":"mod","required":true,"restartRequired":true,"side":["client"],
+                          "download":{"type":"publisher-hosted","distributionPolicy":"redistributable",
+                            "endpoints":[{"url":"https://files.example.test/mcsync/releases/3001/mods/unchanged.jar",
+                              "role":"official","purpose":"file","region":"global","priority":100,"thirdParty":false}]}
+                        },
+                        {
+                          "path":"mods/removed.jar","sha256":"%s","size":7,
+                          "kind":"mod","required":true,"restartRequired":true,"side":["client"],
+                          "download":{"type":"publisher-hosted","distributionPolicy":"redistributable",
+                            "endpoints":[{"url":"https://files.example.test/mcsync/releases/3001/mods/removed.jar",
+                              "role":"official","purpose":"file","region":"global","priority":100,"thirdParty":false}]}
+                        }
+                      ],
+                      "configOperations":[]
+                    }
+                    """).formatted(unchangedHash, Files.size(unchanged), "0".repeat(64))
+                    .getBytes(StandardCharsets.UTF_8);
+            ReleaseManifestV5 previous = ReleaseManifestV5.parse(previousBytes);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> project = (Map<String, Object>) StrictJson.parse("""
+                    {
+                      "schema":1,"releaseId":"delta-current","releaseSequence":3002,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[
+                        {"path":"mods/unchanged.jar","kind":"mod","required":true,
+                         "restartRequired":true,"side":["client"],
+                         "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}},
+                        {"path":"mods/changed.jar","kind":"mod","required":true,
+                         "restartRequired":true,"side":["client"],
+                         "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}}
+                      ],
+                      "configOperations":[]
+                    }
+                    """);
+            Path output = root.resolve("cloud");
+            PublisherCloudBundle.Result result = PublisherCloudBundle.publish(
+                    root.resolve("game"), project, output, "https://files.example.test/mcsync",
+                    "channel/stable/mods-v5.json", "legacy/1.9/mods-v4.txt", "legacy/1.6/mods.txt",
+                    null, "", false, null, previous);
+            ReleaseManifestV5 stable = ReleaseManifestV5.parse(Files.readAllBytes(result.stableManifest()));
+            ReleaseManifestV5.FileEntry stableUnchanged = stable.files().stream()
+                    .filter(file -> file.path().equals("mods/unchanged.jar")).findFirst().orElseThrow();
+            check(stableUnchanged.download().endpoints().getFirst().uri().toASCIIString()
+                            .equals("https://files.example.test/mcsync/releases/3001/mods/unchanged.jar")
+                            && !Files.exists(output.resolve("releases/3002/mods/unchanged.jar"))
+                            && Files.isRegularFile(output.resolve("releases/3002/mods/changed.jar")),
+                    "增量发布必须复用上一版精确哈希 URL，只输出新增或变化的托管文件");
+            @SuppressWarnings("unchecked") Map<String, Object> plan = (Map<String, Object>) StrictJson.parse(
+                    Files.readString(result.uploadPlan(), StandardCharsets.UTF_8));
+            String zh = Files.readString(result.uploadGuideZh(), StandardCharsets.UTF_8);
+            String en = Files.readString(result.uploadGuideEn(), StandardCharsets.UTF_8);
+            check(new BigDecimal("1").equals(plan.get("uploadFileCount"))
+                            && new BigDecimal("1").equals(plan.get("reusedFileCount"))
+                            && new BigDecimal("1").equals(plan.get("removedPathCount"))
+                            && zh.contains("最后原子替换 `channel/stable/mods-v5.json`")
+                            && en.contains("Atomically replace `channel/stable/mods-v5.json` last"),
+                    "导出必须生成机器计划及内容等价的中英文上传替换指南");
+            pass("publisher reuses previous immutable files and writes bilingual incremental upload guides");
         } finally {
             deleteTree(root);
         }

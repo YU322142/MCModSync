@@ -17,6 +17,9 @@
 - Restricts mod-platform matching to JAR files directly under `mods/`; other managed files use ordinary download sources.
 - Supports direct hosting, Modrinth, CurseForge, and configurable mirrors with final size and SHA-256 verification.
 - Includes upgrade material for supported 1.6.x, 1.7, and 1.9.x clients.
+- Compares a release with the previous v5 by size and SHA-256, reuses immutable URLs for unchanged files, and exports only new or changed upload content.
+- Generates a machine-readable incremental plan and content-equivalent Chinese and English upload/replacement guides.
+- Resolves pinned Modrinth versions to hash-matching file URLs during publication, so clients with valid local files no longer query mod-platform metadata.
 
 ## 1.9.6
 

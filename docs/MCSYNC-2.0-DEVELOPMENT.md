@@ -31,11 +31,12 @@
 | `ReleaseArtifactResolver.java` | 解析 publisher/direct/Modrinth/CurseForge/镜像候选；缓存已验哈希文件，任何来源都不能绕过清单 SHA256。 |
 | `ParallelDownloadRunner.java` | 为旧清单与 schema-v5 提供统一的有界并发；默认 128，按任务数缩小，并允许通过系统属性下调。 |
 | `PublisherModAutoMatcher.java` | 仅识别 `mods/*.jar`；批量计算并匹配 Modrinth SHA-512 与 CurseForge fingerprint，无法精确匹配时回退本地托管。 |
-| `PublisherPlatformResolver.java` | 仅在发布者本机把 CurseForge fileId/API 解析为固定文件 URL；API key 不进入清单、JAR、客户端或日志。 |
+| `PublisherPlatformResolver.java` | 仅在发布者本机把 Modrinth versionId 与 CurseForge fileId/API 解析为当前哈希对应的固定文件 URL；API key 不进入清单、JAR、客户端或日志。 |
 | `ConfigMutationEngine.java` | 对 TOML、严格 JSON、properties 做键级 set/merge；凭据键、歧义键、类型漂移和无前像替换失败闭锁。 |
 | `ManagedPathPolicy.java` | 定义可 OTA 的路径边界，拒绝存档、区块、玩家数据、缓存、原生库、符号链接和 `servers.dat` 普通覆盖。 |
 | `MinecraftWindowStatus.java` / `SyncStatusReporter.java` | 在已有 Minecraft 窗口标题和 `.modsync/ui-status.json/.txt` 输出启动期状态；无额外更新器窗口，失败回退日志。 |
 | `PublisherProjectV5.java` / `PublisherMain.java` | 发布项目审查、哈希物化、许可来源分离、镜像预设、v5 清单和发布报告；上游文件不会被复制到发布目录。 |
+| `PublisherReleaseDelta.java` | 按大小与 SHA-256 对比相邻发布，复用旧不可变文件身份，并输出机器计划及内容等价的中英文上传替换指南。 |
 
 `releaseSequence` 是发布顺序，而不是整合包展示版本。展示版本可以包含语义化名称，但发布序号必须严格单调递增。GUI 默认在实际导出开始前以系统本地时间生成 `yyyyMMddHHmmssSSS`（17 位）序号；保存项目时同时记录是否启用自动刷新。关闭自动刷新仅用于精确复现或重放已经审计的固定发布。相同序号只允许同一 `releaseId` 和同一清单 SHA256 重放，以支持幂等启动检查。
 
@@ -56,6 +57,8 @@
 - `manual` 只能搭配 `manual` 来源。
 
 schema 会拒绝 `publisher-hosted + upstream-only`。出于中国大陆或其他特殊网络环境考虑，`upstream-only` 仍可使用第三方 API 或文件代理，但镜像端点必须显式声明 `role=mirror` 与 `thirdParty=true`，发布器也必须展示来源警告。这样做不会把文件复制进我们的发布目录；无论官方源还是第三方镜像，客户端最终只接受与清单锁定 ID、大小和 SHA256 完全一致的文件。
+
+发布器在导出时把平台固定版本解析为精确文件候选，并验证候选元数据中的大小与 SHA-256 是否对应当前本地 JAR。客户端启动时先用 v5 核对本地文件；只有需要修复的文件才进入下载解析。新清单已有固定文件 URL 时不查询平台 metadata，旧 v5 缺少文件 URL 时才使用受限并发兼容回退。
 
 首个内置中国区预设为 MCIMirror 的 API 前缀：Modrinth 使用 `https://mod.mcimirror.top/modrinth/v2/`，CurseForge 使用 `https://mod.mcimirror.top/curseforge/v1/`。该预设可关闭，异常时回退官方 API，且解析结果仍受固定项目/版本或文件 ID、大小和 SHA256 约束。
 

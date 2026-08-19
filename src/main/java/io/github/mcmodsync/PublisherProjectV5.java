@@ -36,7 +36,16 @@ final class PublisherProjectV5 {
         return Long.parseLong(LocalDateTime.now().format(RELEASE_SEQUENCE_TIME));
     }
 
-    record Publication(ReleaseManifestV5 manifest, Path manifestPath, Path reportPath, int hostedFiles) {
+    record Publication(
+            ReleaseManifestV5 manifest,
+            Path manifestPath,
+            Path reportPath,
+            int hostedFiles,
+            int reusedHostedFiles,
+            Set<String> reusedHostedPaths) {
+        Publication {
+            reusedHostedPaths = Set.copyOf(reusedHostedPaths);
+        }
     }
 
     /** Performs the same strict project/file/config checks as publication without network or output writes. */
@@ -93,6 +102,15 @@ final class PublisherProjectV5 {
             Map<String, Object> source,
             Path outputDirectory,
             String projectName) throws IOException {
+        return publish(gameRoot, source, outputDirectory, projectName, null);
+    }
+
+    static Publication publish(
+            Path gameRoot,
+            Map<String, Object> source,
+            Path outputDirectory,
+            String projectName,
+            ReleaseManifestV5 previousManifest) throws IOException {
         Path root = gameRoot.toAbsolutePath().normalize();
         Path output = outputDirectory.toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) throw new IOException("发布源游戏目录不存在: " + root);
@@ -116,6 +134,7 @@ final class PublisherProjectV5 {
         List<Object> files = array(source.get("files"), "files");
         ArrayList<Object> generatedFiles = new ArrayList<>();
         LinkedHashMap<String, Path> localFiles = new LinkedHashMap<>();
+        LinkedHashSet<String> reusedHostedPaths = new LinkedHashSet<>();
         PublisherPlatformResolver platformResolver = new PublisherPlatformResolver();
         for (Object raw : files) {
             Map<String, Object> file = object(raw, "files[]");
@@ -133,18 +152,28 @@ final class PublisherProjectV5 {
                 throw new IOException("检测到可能含凭据的配置文件，禁止整文件进入发布目录；请改用非敏感键级 OTA: " + relative);
             }
             LinkedHashMap<String, Object> generated = new LinkedHashMap<>(file);
+            String sha256 = Hashing.sha256(localBytes);
             if (generated.get("download") instanceof Map<?, ?> download) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> typedDownload = (Map<String, Object>) download;
                 try {
-                    generated.put("download", platformResolver.resolve(typedDownload));
+                    generated.put("download", platformResolver.resolve(typedDownload, sha256, localBytes.length));
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     throw new IOException("解析平台固定下载地址时被中断", interrupted);
                 }
             }
-            generated.put("sha256", Hashing.sha256(localBytes));
+            generated.put("sha256", sha256);
             generated.put("size", localBytes.length);
+            if (generated.get("download") instanceof Map<?, ?> rawDownload
+                    && "publisher-hosted".equals(rawDownload.get("type"))) {
+                ReleaseManifestV5.FileEntry reusable = PublisherReleaseDelta.reusable(
+                        previousManifest, relative, sha256, localBytes.length);
+                if (reusable != null) {
+                    generated.put("download", ReleaseManifestV5.downloadJson(reusable.download()));
+                    reusedHostedPaths.add(relative);
+                }
+            }
             generatedFiles.add(generated);
             localFiles.put(relative, local);
         }
@@ -161,6 +190,7 @@ final class PublisherProjectV5 {
         int hosted = 0;
         for (ReleaseManifestV5.FileEntry file : manifest.files()) {
             if (!file.download().type().equals("publisher-hosted")) continue;
+            if (reusedHostedPaths.contains(file.path())) continue;
             Path destination = output.resolve(file.path()).normalize();
             if (!destination.startsWith(output)) throw new IOException("发布目标路径逃逸: " + file.path());
             Files.createDirectories(destination.getParent());
@@ -184,11 +214,14 @@ final class PublisherProjectV5 {
         report.put("manifestSha256", Hashing.sha256(manifestPath));
         report.put("fileCount", manifest.files().size());
         report.put("publisherHostedFileCount", hosted);
+        report.put("reusedPublisherHostedFileCount", reusedHostedPaths.size());
+        report.put("reusedPublisherHostedPaths", reusedHostedPaths.stream().sorted().toList());
         report.put("downloadSourceTypes", manifest.files().stream()
                 .map(file -> file.download().type()).collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new)));
         Path reportPath = output.resolve("publication-report.json");
         Files.writeString(reportPath, StrictJson.stringify(report) + "\n", StandardCharsets.UTF_8);
-        return new Publication(manifest, manifestPath, reportPath, hosted);
+        return new Publication(manifest, manifestPath, reportPath, hosted,
+                reusedHostedPaths.size(), reusedHostedPaths);
     }
 
     static void writeTemplate(Path output) throws IOException {
