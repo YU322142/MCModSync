@@ -73,6 +73,7 @@ public final class AllTests {
         testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
         testPreviousPublisherOutputDirectorySelectsNewestRelease();
         testMinecraftEarlyProgressFailsClosedOutsideNeoForge();
+        testMinecraftEarlyProgressUsesAsciiSafeVisibleLabels();
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
         testNeoForgeMetadataAndUniversalBootstrap();
@@ -142,6 +143,20 @@ public final class AllTests {
             if (previous == null) System.clearProperty("modsync.inGameWindow");
             else System.setProperty("modsync.inGameWindow", previous);
         }
+    }
+
+    private void testMinecraftEarlyProgressUsesAsciiSafeVisibleLabels() {
+        check(MinecraftEarlyProgress.earlyWindowLabel(
+                        "正在下载 模组.jar", "fallback").equals(".jar"),
+                "NeoForge 早期窗口应剔除字体无法显示的中文，同时保留 ASCII 文件信息");
+        check(MinecraftEarlyProgress.earlyWindowLabel(
+                        "正在校验同步内容", "Checking synchronized content")
+                        .equals("Checking synchronized content"),
+                "纯中文状态应使用可见的英文早期窗口回退标签");
+        check(MinecraftEarlyProgress.earlyWindowLabel(
+                        "mods/demo.jar  42%", "fallback").equals("mods/demo.jar 42%"),
+                "ASCII 标签应保留路径与百分比并折叠多余空格");
+        pass("Minecraft early-window labels remain visible with the ASCII-only early font");
     }
 
     private void testMcsyncBrandingKeepsLegacyTechnicalIdentity() {

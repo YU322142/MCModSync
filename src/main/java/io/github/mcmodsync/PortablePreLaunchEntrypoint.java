@@ -58,22 +58,27 @@ final class PortablePreLaunchEntrypoint {
                 return;
             }
 
+            UserNotifier notifier = new UserNotifier(true, config.gameDirectory());
             SyncProbeResult result = ModSyncCoordinator.probe(
                     config,
                     message -> log(language, message),
-                    new UserNotifier(true, config.gameDirectory()));
+                    notifier);
             System.setProperty("modsync.status", result.status().name());
             log(language, loaderName + " 便携模式只读校验结束: " + result.status(),
                     loaderName + " portable read-only verification finished: " + result.status());
 
             if (result.status() == SyncProbeResult.Status.CHANGES_REQUIRED) {
+                notifier.phaseChanged(language.text(
+                        "下载、缓存与哈希校验已完成；正在移交隐藏提交助手……",
+                        "Download, cache and hash verification completed; handing off to the hidden commit helper…"));
+                MinecraftEarlyProgress.handoffToHiddenCommitHelper();
                 boolean helperStarted = PortableUpdateHelper.schedule(
                         config, message -> log(language, message), loaderName);
                 System.err.println("[MCSync] RESTART_REQUIRED");
                 if (helperStarted) {
                     log(language,
-                            "更新窗口已经启动；Minecraft 将正常退出，更新完成后请重新启动",
-                            "The update window started; Minecraft will exit normally. Launch again after the update");
+                            "游戏内校验阶段已完成；Minecraft 将正常退出，隐藏助手只负责原子提交，完成后请重新启动",
+                            "The in-game verification phase completed; Minecraft will exit normally. The hidden helper only performs the atomic commit; launch again afterward");
                     exitProcess(0);
                 }
                 throw new RestartRequiredException(language.text(

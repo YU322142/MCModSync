@@ -46,7 +46,7 @@ MCSync does not synchronize save state and must not manage:
 
 MCSync does not claim to hot-replace mods after the JVM has loaded their JARs. Updates involving mods, KubeJS startup scripts, or startup-time configuration require a restart.
 
-During NeoForge 1.21.1 startup, MCSync reuses NeoForge's early-loading window to show the phase, current file, percentage, completion state, and errors; it does not open a separate synchronization window. Fabric, mobile, or helper-process environments without an early loading window fall back to the title, logs, and `.modsync` status files. The Minecraft-window recommended-content selection remains available once the game UI can be displayed.
+During NeoForge 1.21.1 startup, MCSync reuses NeoForge's early-loading window to show checking, download, cache, and hash-verification progress; it does not open a separate synchronization window. That early window uses ASCII-safe file and status labels because its bootstrap font cannot reliably render the full game font. Complete localized details remain available in logs and `.modsync` status files. After verification, Minecraft exits and the hidden helper only performs the atomic commit of already verified content, so the post-exit commit phase no longer has a Minecraft window. Fabric, mobile, or helper-process environments without an early loading window fall back to the title, logs, and `.modsync` status files. The Minecraft-window recommended-content selection remains available once the game UI can be displayed.
 
 ## File Identity and Upstream Matching
 

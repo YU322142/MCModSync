@@ -20,6 +20,8 @@
 - Selects the complete previous publisher output directory and compares it with the current client directory by size and SHA-256. No earlier `mods-v5.json` is selected manually; unchanged files reuse immutable URLs and the current release directory contains only new or changed upgrade content.
 - Generates a machine-readable incremental plan and content-equivalent Chinese and English upload/replacement guides.
 - Resolves pinned Modrinth versions to hash-matching file URLs during publication, so clients with valid local files no longer query mod-platform metadata.
+- Fixed MCSync progress being pushed outside the visible NeoForge early window in large modpacks. MCSync now prepends its progress meter and uses status labels that the early window's ASCII font can render reliably.
+- Clearly separates download/cache/hash verification shown in the Minecraft window from the hidden atomic commit after exit, instead of reporting the hidden commit helper as an unavailable GUI window.
 
 ## 1.9.6
 

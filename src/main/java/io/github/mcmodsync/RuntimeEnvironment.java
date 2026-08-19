@@ -287,11 +287,15 @@ final class RuntimeEnvironment {
     }
 
     String summaryLine() {
+        boolean minecraftWindow = Boolean.getBoolean("modsync.inGameWindow")
+                && !Boolean.getBoolean("modsync.helperProcess");
         return "mobile=" + mobile
                 + ", launcher=" + launcherName
                 + ", cacio=" + cacioAwt
-                + ", dialogs=" + (dialogsUsable ? "swing" : "disabled")
-                + ", progress=" + (dialogsUsable ? "window+log" : "log+ui-status.txt+progress.log")
+                + ", dialogs=" + (dialogsUsable ? "swing" : minecraftWindow ? "suppressed-by-game-ui" : "disabled")
+                + ", progress=" + (minecraftWindow
+                        ? "minecraft-early-window+title+status"
+                        : dialogsUsable ? "window+log" : "log+ui-status.txt+progress.log")
                 + ", signals=" + (signals.isEmpty() ? "none" : String.join("; ", signals));
     }
 

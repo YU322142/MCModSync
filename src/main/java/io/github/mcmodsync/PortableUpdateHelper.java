@@ -55,8 +55,15 @@ public final class PortableUpdateHelper {
             if (environment.mobile() || !environment.dialogsUsable()) {
                 log("运行环境: " + environment.summaryLine(),
                         "Runtime environment: " + environment.summaryLine());
-                log("图形更新窗口: 不可用，改用日志与 .modsync/ui-status.txt / progress.log",
-                        "Update GUI: unavailable; using logs plus .modsync/ui-status.txt / progress.log");
+                if (Boolean.getBoolean("modsync.disableDialogs")
+                        && !environment.mobile()
+                        && !Boolean.getBoolean("modsync.forceHeadless")) {
+                    log("隐藏提交助手：按游戏内 UI 模式设计，不创建第二个窗口；状态同时写入 .modsync/ui-status.txt / progress.log",
+                            "Hidden commit helper: game-window UI mode intentionally avoids a second window; status is also written to .modsync/ui-status.txt / progress.log");
+                } else {
+                    log("图形更新窗口: 不可用，改用日志与 .modsync/ui-status.txt / progress.log",
+                            "Update GUI: unavailable; using logs plus .modsync/ui-status.txt / progress.log");
+                }
                 if (environment.mobile()) {
                     log("已识别为手机端/移动启动器环境，下载进度将写入启动器日志",
                             "Mobile/portable launcher detected; download progress will be written to launcher logs");
