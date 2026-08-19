@@ -57,6 +57,16 @@ final class MinecraftEarlyProgress {
         });
     }
 
+    static void hiddenCommitCountdown(int secondsRemaining) {
+        if (!enabled()) return;
+        invoke(() -> {
+            ensureMeter();
+            setAbsolute.invoke(meter, 1000);
+            label.invoke(meter, "MCSync verified - Minecraft exits in "
+                    + Math.max(secondsRemaining, 0) + "s; wait before relaunching");
+        });
+    }
+
     static void failed(String message) {
         if (!enabled()) return;
         invoke(() -> addMessage("MCSync: " + message));

@@ -68,10 +68,7 @@ final class PortablePreLaunchEntrypoint {
                     loaderName + " portable read-only verification finished: " + result.status());
 
             if (result.status() == SyncProbeResult.Status.CHANGES_REQUIRED) {
-                notifier.phaseChanged(language.text(
-                        "下载、缓存与哈希校验已完成；正在移交隐藏提交助手……",
-                        "Download, cache and hash verification completed; handing off to the hidden commit helper…"));
-                MinecraftEarlyProgress.handoffToHiddenCommitHelper();
+                showHiddenCommitNotice(notifier);
                 boolean helperStarted = PortableUpdateHelper.schedule(
                         config, message -> log(language, message), loaderName);
                 System.err.println("[MCSync] RESTART_REQUIRED");
@@ -153,6 +150,36 @@ final class PortablePreLaunchEntrypoint {
             return true;
         }
         return environment.mobile();
+    }
+
+    private static void showHiddenCommitNotice(UserNotifier notifier) {
+        int seconds = hiddenCommitNoticeSeconds();
+        String detail = language.text(
+                "下载和哈希校验已完成。Minecraft 即将退出；请不要立刻再次启动，等待隐藏助手完成原子提交。",
+                "Download and hash verification completed. Minecraft will exit; do not relaunch until the hidden helper finishes its atomic commit.");
+        notifier.phaseChanged(detail);
+        MinecraftEarlyProgress.handoffToHiddenCommitHelper();
+        for (int remaining = seconds; remaining > 0; remaining--) {
+            String countdown = language.text(
+                    "更新已校验，" + remaining + " 秒后退出；隐藏提交完成前请勿再次启动",
+                    "Update verified; exiting in " + remaining
+                            + "s. Do not relaunch until the hidden commit finishes");
+            MinecraftWindowStatus.update(countdown);
+            MinecraftEarlyProgress.hiddenCommitCountdown(remaining);
+            log(language, countdown);
+            if (Boolean.getBoolean("modsync.disableHandoffNoticeDelay")) continue;
+            try {
+                Thread.sleep(1000L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    static int hiddenCommitNoticeSeconds() {
+        int configured = Integer.getInteger("modsync.handoffNoticeSeconds", 3);
+        return Math.max(1, Math.min(configured, 10));
     }
 
     private static void exitProcess(int code) {

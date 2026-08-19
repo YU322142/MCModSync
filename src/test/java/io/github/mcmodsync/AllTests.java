@@ -74,6 +74,7 @@ public final class AllTests {
         testPreviousPublisherOutputDirectorySelectsNewestRelease();
         testMinecraftEarlyProgressFailsClosedOutsideNeoForge();
         testMinecraftEarlyProgressUsesAsciiSafeVisibleLabels();
+        testHiddenCommitNoticeDurationIsBounded();
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
         testNeoForgeMetadataAndUniversalBootstrap();
@@ -157,6 +158,24 @@ public final class AllTests {
                         "mods/demo.jar  42%", "fallback").equals("mods/demo.jar 42%"),
                 "ASCII 标签应保留路径与百分比并折叠多余空格");
         pass("Minecraft early-window labels remain visible with the ASCII-only early font");
+    }
+
+    private void testHiddenCommitNoticeDurationIsBounded() {
+        String previous = System.getProperty("modsync.handoffNoticeSeconds");
+        try {
+            System.clearProperty("modsync.handoffNoticeSeconds");
+            check(PortablePreLaunchEntrypoint.hiddenCommitNoticeSeconds() == 3,
+                    "隐藏提交前的游戏窗口提醒默认应持续 3 秒");
+            System.setProperty("modsync.handoffNoticeSeconds", "0");
+            check(PortablePreLaunchEntrypoint.hiddenCommitNoticeSeconds() == 1,
+                    "提醒不能被配置为完全不可见");
+            System.setProperty("modsync.handoffNoticeSeconds", "60");
+            check(PortablePreLaunchEntrypoint.hiddenCommitNoticeSeconds() == 10,
+                    "提醒倒计时应限制上限，避免无意长时间阻塞启动");
+            pass("hidden commit notice is visible and duration-bounded");
+        } finally {
+            restoreProperty("modsync.handoffNoticeSeconds", previous);
+        }
     }
 
     private void testMcsyncBrandingKeepsLegacyTechnicalIdentity() {
