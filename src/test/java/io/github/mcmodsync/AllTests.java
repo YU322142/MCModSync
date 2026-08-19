@@ -448,12 +448,13 @@ public final class AllTests {
         try {
             byte[] current = "current-mod-build".getBytes(StandardCharsets.UTF_8);
             String sha256 = Hashing.sha256(current);
+            String sha512 = Hashing.sha512(current);
             server.createContext("/v2/version/old-version", exchange -> respond(exchange, 404,
                     "{\"error\":\"version_not_found\"}".getBytes(StandardCharsets.UTF_8), "application/json"));
             server.createContext("/v2/project/demo-project/version", exchange -> respond(exchange, 200,
                     ("[{\"id\":\"current-version\",\"project_id\":\"demo-project\",\"files\":[{" +
                             "\"url\":\"https://cdn.example.invalid/current.jar\",\"size\":" + current.length + "," +
-                            "\"hashes\":{\"sha256\":\"" + sha256 + "\"}}]}]")
+                            "\"hashes\":{\"sha512\":\"" + sha512 + "\"}}]}]")
                             .getBytes(StandardCharsets.UTF_8), "application/json"));
             server.start();
             String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v2/";
@@ -462,12 +463,12 @@ public final class AllTests {
                     "distributionPolicy", "upstream-only",
                     "endpoints", List.of(Map.of("url", base, "role", "official", "purpose", "api",
                             "region", "test", "priority", new BigDecimal("10"), "thirdParty", false))),
-                    sha256, current.length);
+                    sha256, sha512, current.length);
             String serialized = StrictJson.stringify(resolved);
             check("current-version".equals(resolved.get("versionId"))
                             && serialized.contains("https://cdn.example.invalid/current.jar")
                             && !serialized.contains("https://cdn.example.invalid/old.jar"),
-                    "旧项目的 Modrinth versionId 已失效时，应按当前 SHA-256 找到并继承新版本坐标");
+                    "旧项目的 Modrinth versionId 已失效时，应按当前 SHA-512 找到并继承新版本坐标");
             pass("publisher repairs missing Modrinth versionId using the current file hash");
         } finally {
             server.stop(0);
@@ -479,6 +480,7 @@ public final class AllTests {
         try {
             byte[] expected = "pinned-modrinth-file".getBytes(StandardCharsets.UTF_8);
             String hash = Hashing.sha256(expected);
+            String sha512 = Hashing.sha512(expected);
             AtomicInteger metadataRequests = new AtomicInteger();
             AtomicInteger fileRequests = new AtomicInteger();
             server.createContext("/v2/version/version-1", exchange -> {
@@ -486,9 +488,9 @@ public final class AllTests {
                 String fileUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/files/exact.jar";
                 respond(exchange, 200, ("""
                         {"project_id":"project-1","files":[{
-                          "url":"%s","size":%d,"hashes":{"sha256":"%s"}
+                          "url":"%s","size":%d,"hashes":{"sha512":"%s"}
                         }]}
-                        """).formatted(fileUrl.replace("http://", "https://"), expected.length, hash)
+                        """).formatted(fileUrl.replace("http://", "https://"), expected.length, sha512)
                         .getBytes(StandardCharsets.UTF_8), "application/json");
             });
             server.createContext("/files/exact.jar", exchange -> {
@@ -508,7 +510,7 @@ public final class AllTests {
                             "purpose", "api",
                             "region", "test",
                             "priority", new BigDecimal("10"),
-                            "thirdParty", true))), hash, expected.length);
+                            "thirdParty", true))), hash, sha512, expected.length);
             @SuppressWarnings("unchecked") List<Map<String, Object>> endpoints =
                     (List<Map<String, Object>>) resolved.get("endpoints");
             check(metadataRequests.get() == 1

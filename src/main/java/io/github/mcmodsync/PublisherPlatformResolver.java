@@ -35,9 +35,14 @@ final class PublisherPlatformResolver {
 
     Map<String, Object> resolve(Map<String, Object> raw, String expectedSha256, long expectedSize)
             throws IOException, InterruptedException {
+        return resolve(raw, expectedSha256, "", expectedSize);
+    }
+
+    Map<String, Object> resolve(Map<String, Object> raw, String expectedSha256, String expectedSha512,
+                                long expectedSize) throws IOException, InterruptedException {
         LinkedHashMap<String, Object> source = new LinkedHashMap<>(raw);
         if ("modrinth".equals(source.get("type"))) {
-            return resolveModrinth(source, expectedSha256, expectedSize);
+            return resolveModrinth(source, expectedSha256, expectedSha512, expectedSize);
         }
         if (!"curseforge".equals(source.get("type"))) return source;
         String projectId = text(source.get("projectId"), "CurseForge projectId");
@@ -113,12 +118,14 @@ final class PublisherPlatformResolver {
     }
 
     private Map<String, Object> resolveModrinth(
-            LinkedHashMap<String, Object> source, String expectedSha256, long expectedSize)
+            LinkedHashMap<String, Object> source, String expectedSha256, String expectedSha512, long expectedSize)
             throws IOException, InterruptedException {
         String projectId = text(source.get("projectId"), "Modrinth projectId");
         String versionId = text(source.get("versionId"), "Modrinth versionId");
-        if (!expectedSha256.matches("[0-9a-fA-F]{64}") || expectedSize < 0) {
-            throw new IOException("解析 Modrinth 固定文件需要当前 JAR 的 SHA-256 和大小");
+        boolean hasSha256 = expectedSha256 != null && expectedSha256.matches("[0-9a-fA-F]{64}");
+        boolean hasSha512 = expectedSha512 != null && expectedSha512.matches("[0-9a-fA-F]{128}");
+        if ((!hasSha256 && !hasSha512) || expectedSize < 0) {
+            throw new IOException("解析 Modrinth 固定文件需要当前 JAR 的 SHA-256 或 SHA-512 和大小");
         }
         List<Map<String, Object>> endpoints = endpointMaps(source.get("endpoints"));
         boolean alreadyResolved = endpoints.stream().anyMatch(endpoint -> "file".equals(endpoint.get("purpose")));
@@ -134,7 +141,8 @@ final class PublisherPlatformResolver {
             try {
                 Map<String, Object> metadata = requestJsonObject(requestUri);
                 if (projectId.equals(metadata.get("project_id")) && metadata.get("files") instanceof List<?> files) {
-                    appendMatchingModrinthFiles(files, endpoint, resolved, expectedSha256, expectedSize);
+                    appendMatchingModrinthFiles(
+                            files, endpoint, resolved, expectedSha256, expectedSha512, expectedSize);
                 }
             } catch (IOException failure) {
                 last = failure;
@@ -142,7 +150,7 @@ final class PublisherPlatformResolver {
             // A saved publisher project can contain a versionId that is stale, deleted,
             // or no longer visible from the selected API endpoint. A 404 here must not
             // suppress the hash repair: enumerate the locked project and resolve the
-            // current local JAR by its exact SHA-256 and size.
+            // current local JAR by its exact platform hash and size.
             if (resolved.stream().noneMatch(value -> "file".equals(value.get("purpose")))) {
                 try {
                     Object versions = requestJson(apiBase.resolve("project/" +
@@ -155,7 +163,7 @@ final class PublisherPlatformResolver {
                             if (versionFiles instanceof List<?> list) {
                                 int before = resolved.size();
                                 appendMatchingModrinthFiles(list, endpoint, resolved,
-                                        expectedSha256, expectedSize);
+                                        expectedSha256, expectedSha512, expectedSize);
                                 if (resolved.size() > before && rawVersion.get("id") instanceof String currentVersionId) {
                                     source.put("versionId", currentVersionId);
                                 }
@@ -235,16 +243,21 @@ final class PublisherPlatformResolver {
     @SuppressWarnings("unchecked")
     private static void appendMatchingModrinthFiles(
             List<?> files, Map<String, Object> endpoint, ArrayList<Map<String, Object>> resolved,
-            String expectedSha256, long expectedSize) {
+            String expectedSha256, String expectedSha512, long expectedSize) {
         for (Object value : files) {
             if (!(value instanceof Map<?, ?> rawFile)) continue;
             Map<String, Object> file = (Map<String, Object>) rawFile;
             if (!(file.get("url") instanceof String url)
                     || !(file.get("size") instanceof Number size)
                     || !(file.get("hashes") instanceof Map<?, ?> hashes)
-                    || !(hashes.get("sha256") instanceof String sha256)
-                    || size.longValue() != expectedSize
-                    || !sha256.equalsIgnoreCase(expectedSha256)) continue;
+                    || size.longValue() != expectedSize) continue;
+            Object sha256Value = hashes.get("sha256");
+            Object sha512Value = hashes.get("sha512");
+            boolean sha256Matches = expectedSha256 != null && expectedSha256.matches("[0-9a-fA-F]{64}")
+                    && sha256Value instanceof String sha256 && sha256.equalsIgnoreCase(expectedSha256);
+            boolean sha512Matches = expectedSha512 != null && expectedSha512.matches("[0-9a-fA-F]{128}")
+                    && sha512Value instanceof String sha512 && sha512.equalsIgnoreCase(expectedSha512);
+            if (!sha256Matches && !sha512Matches) continue;
             URI fileUri = URI.create(url);
             if (!"https".equalsIgnoreCase(fileUri.getScheme()) || fileUri.getHost() == null
                     || fileUri.getUserInfo() != null || fileUri.getFragment() != null) continue;

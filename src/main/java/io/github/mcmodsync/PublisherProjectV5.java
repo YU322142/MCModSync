@@ -159,14 +159,18 @@ final class PublisherProjectV5 {
             }
             LinkedHashMap<String, Object> generated = new LinkedHashMap<>(file);
             String sha256 = Hashing.sha256(localBytes);
+            String sha512 = Hashing.sha512(localBytes);
             if (generated.get("download") instanceof Map<?, ?> download) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> typedDownload = (Map<String, Object>) download;
                 try {
-                    generated.put("download", platformResolver.resolve(typedDownload, sha256, localBytes.length));
+                    generated.put("download", platformResolver.resolve(
+                            typedDownload, sha256, sha512, localBytes.length));
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    throw new IOException("解析平台固定下载地址时被中断", interrupted);
+                    throw new IOException("解析平台固定下载地址时被中断: " + relative, interrupted);
+                } catch (IOException failure) {
+                    throw new IOException("无法解析平台来源: " + relative + "；" + failure.getMessage(), failure);
                 }
             }
             generated.put("sha256", sha256);

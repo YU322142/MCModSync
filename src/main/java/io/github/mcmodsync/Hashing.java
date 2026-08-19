@@ -50,6 +50,14 @@ final class Hashing {
         return hex(sha256Digest().digest(bytes));
     }
 
+    static String sha512(byte[] bytes) {
+        try {
+            return hex(MessageDigest.getInstance("SHA-512").digest(bytes));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前 Java 环境不支持 SHA-512", exception);
+        }
+    }
+
     private static MessageDigest md5Digest() {
         try {
             return MessageDigest.getInstance("MD5");
