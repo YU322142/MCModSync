@@ -301,9 +301,9 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCSync-*.jar' -Error
         }
     }
 Copy-Item -LiteralPath $jarPath -Destination (Join-Path $outputsDirectory $jarOutputName) -Force
-$readmeDestinationName = 'MCSync-README-zh-CN.md'
+$readmeDestinationNames = @('MCSync-README-zh-CN.md', 'MCSync-README-en.md')
 Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCSync-*.md' -ErrorAction SilentlyContinue |
-    Where-Object Name -ne $readmeDestinationName |
+    Where-Object Name -notin $readmeDestinationNames |
     ForEach-Object {
         try {
             Remove-Item -LiteralPath $_.FullName -Force
@@ -311,7 +311,8 @@ Get-ChildItem -LiteralPath $outputsDirectory -File -Filter 'MCSync-*.md' -ErrorA
             Write-Warning "Keeping locked old documentation: $($_.FullName)"
         }
     }
-Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $outputsDirectory $readmeDestinationName) -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $outputsDirectory 'MCSync-README-zh-CN.md') -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot 'docs\MCSYNC-2.0-README.en.md') -Destination (Join-Path $outputsDirectory 'MCSync-README-en.md') -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot 'modsync.properties.example') -Destination (Join-Path $outputsDirectory 'modsync.properties.example') -Force
 
 $sourceZip = Join-Path $outputsDirectory $sourceZipFileName
