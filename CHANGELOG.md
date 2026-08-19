@@ -4,6 +4,8 @@
 
 ## 2.0.0
 
+- CurseForge publication now converts ForgeCDN paths returned by the MCIMirror API into mirror file URLs and verifies every candidate by size and SHA-256. Simplified-Chinese systems prefer the mirror with official fallback; other locales use official endpoints only.
+
 ### Highlights
 
 - Renamed MCModSync to MCSync while preserving the legacy upgrade entry points.

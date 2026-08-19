@@ -55,6 +55,9 @@ public final class AllTests {
         testV5CustomBuildUsesPublisherHostedDistribution();
         testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates();
         testPublisherResolvesCurseForgeWithoutLeakingCredentials();
+        testCurseForgeMirrorRewritesForgeCdnDownloadUrl();
+        testCurseForgePublisherKeepsMultipleResolvedCandidates();
+        testDownloadCandidateLocaleRouting();
         testOfficialOnlyPlatformSourceGetsMirrorFallback();
         testCurseForgeStrictHashGateRejectsUnverifiableFile();
         testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
@@ -484,6 +487,79 @@ public final class AllTests {
                         && endpoints.size() == 2,
                 "旧项目只有 CurseForge 官方 API 时，应补入可严格哈希复核的中国镜像元数据入口");
         pass("official-only platform sources gain a strict mirror fallback");
+    }
+
+    private void testCurseForgeMirrorRewritesForgeCdnDownloadUrl() throws Exception {
+        URI mirrored = PublisherPlatformResolver.mirrorCurseForgeDownloadUrl(
+                URI.create("https://mod.mcimirror.top/curseforge/v1/"),
+                URI.create("https://edge.forgecdn.net/files/7429/14/ftb-xmod-compat-neoforge-21.1.7.jar"));
+        check(mirrored.equals(URI.create(
+                        "https://mod.mcimirror.top/files/7429/14/ftb-xmod-compat-neoforge-21.1.7.jar")),
+                "MCIMirror API 返回的 ForgeCDN 地址应切换到镜像文件域名并保持精确路径");
+        URI official = PublisherPlatformResolver.mirrorCurseForgeDownloadUrl(
+                DownloadEndpointPresets.CURSEFORGE_OFFICIAL,
+                URI.create("https://edge.forgecdn.net/files/7429/14/example.jar"));
+        check(official.getHost().equals("edge.forgecdn.net"),
+                "官方 CurseForge API 的文件地址不得被错误重写为第三方镜像");
+        pass("CurseForge mirror API rewrites ForgeCDN files to the verified mirror origin");
+    }
+
+    private void testCurseForgePublisherKeepsMultipleResolvedCandidates() throws Exception {
+        HttpServer first = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        HttpServer second = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            first.createContext("/v1/mods/889915/files/7429014/download-url", exchange -> respond(
+                    exchange, 200, "{\"data\":\"https://cdn-one.example.invalid/exact.jar\"}"
+                            .getBytes(StandardCharsets.UTF_8), "application/json"));
+            second.createContext("/v1/mods/889915/files/7429014/download-url", exchange -> respond(
+                    exchange, 200, "{\"data\":\"https://cdn-two.example.invalid/exact.jar\"}"
+                            .getBytes(StandardCharsets.UTF_8), "application/json"));
+            first.start();
+            second.start();
+            Map<String, Object> resolved = new PublisherPlatformResolver(HttpClient.newHttpClient()).resolve(Map.of(
+                    "type", "curseforge", "projectId", "889915", "fileId", new BigDecimal("7429014"),
+                    "distributionPolicy", "upstream-only", "endpoints", List.of(
+                            Map.of("url", "http://127.0.0.1:" + first.getAddress().getPort() + "/v1/",
+                                    "role", "mirror", "purpose", "api", "region", "one",
+                                    "priority", new BigDecimal("10"), "thirdParty", true),
+                            Map.of("url", "http://127.0.0.1:" + second.getAddress().getPort() + "/v1/",
+                                    "role", "official", "purpose", "api", "region", "two",
+                                    "priority", new BigDecimal("20"), "thirdParty", false))));
+            @SuppressWarnings("unchecked") List<Map<String, Object>> endpoints =
+                    (List<Map<String, Object>>) resolved.get("endpoints");
+            check(endpoints.stream().filter(value -> "file".equals(value.get("purpose"))).count() == 2
+                            && StrictJson.stringify(endpoints).contains("cdn-one.example.invalid")
+                            && StrictJson.stringify(endpoints).contains("cdn-two.example.invalid"),
+                    "发布器应保留所有成功解析并可依序回退的 CurseForge 文件候选");
+            pass("CurseForge publisher retains multiple resolved download candidates");
+        } finally {
+            first.stop(0);
+            second.stop(0);
+        }
+    }
+
+    private void testDownloadCandidateLocaleRouting() {
+        ReleaseManifestV5.DownloadEndpoint mirror = new ReleaseManifestV5.DownloadEndpoint(
+                URI.create("https://mod.mcimirror.top/files/demo.jar"),
+                "mirror", "file", "cn", 10, true);
+        ReleaseManifestV5.DownloadEndpoint official = new ReleaseManifestV5.DownloadEndpoint(
+                URI.create("https://cdn.example.test/files/demo.jar"),
+                "official", "file", "global", 100, false);
+        List<ReleaseManifestV5.DownloadEndpoint> endpoints = List.of(official, mirror);
+        List<ReleaseManifestV5.DownloadEndpoint> simplified =
+                ReleaseArtifactResolver.preferredEndpoints(endpoints, "file", Locale.SIMPLIFIED_CHINESE);
+        List<ReleaseManifestV5.DownloadEndpoint> traditional =
+                ReleaseArtifactResolver.preferredEndpoints(endpoints, "file", Locale.TRADITIONAL_CHINESE);
+        List<ReleaseManifestV5.DownloadEndpoint> english =
+                ReleaseArtifactResolver.preferredEndpoints(endpoints, "file", Locale.US);
+        check(simplified.equals(List.of(mirror, official)),
+                "简体中文系统应优先中国镜像，并保留官方地址作为备用");
+        check(traditional.equals(List.of(official)) && english.equals(List.of(official)),
+                "非简体中文系统只能使用官方候选，不应访问中国镜像");
+        check(ReleaseArtifactResolver.isSimplifiedChinese(Locale.forLanguageTag("zh-Hans-SG"))
+                        && !ReleaseArtifactResolver.isSimplifiedChinese(Locale.forLanguageTag("zh-Hant-TW")),
+                "明确的 Hans/Hant 语言脚本必须正确区分镜像线路");
+        pass("download candidates follow the machine display language");
     }
 
     private void testCurseForgeStrictHashGateRejectsUnverifiableFile() throws Exception {

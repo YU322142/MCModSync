@@ -170,7 +170,13 @@ final class PublisherProjectV5 {
                     Thread.currentThread().interrupt();
                     throw new IOException("解析平台固定下载地址时被中断: " + relative, interrupted);
                 } catch (IOException failure) {
-                    throw new IOException("无法解析平台来源: " + relative + "；" + failure.getMessage(), failure);
+                    if ("redistributable".equals(typedDownload.get("distributionPolicy"))) {
+                        generated.put("download", Map.of(
+                                "type", "publisher-hosted",
+                                "distributionPolicy", "redistributable"));
+                    } else {
+                        throw new IOException("无法解析平台来源: " + relative + "；" + failure.getMessage(), failure);
+                    }
                 }
             }
             generated.put("sha256", sha256);

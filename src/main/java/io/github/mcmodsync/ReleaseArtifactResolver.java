@@ -10,6 +10,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Semaphore;
@@ -118,9 +119,7 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
             throws IOException, InterruptedException {
         ReleaseManifestV5.DownloadSource source = entry.download();
         ArrayList<URI> result = new ArrayList<>();
-        source.endpoints().stream()
-                .filter(endpoint -> endpoint.purpose().equals("file"))
-                .sorted(Comparator.comparingInt(ReleaseManifestV5.DownloadEndpoint::priority))
+        preferredEndpoints(source.endpoints(), "file", Locale.getDefault(Locale.Category.DISPLAY)).stream()
                 .map(ReleaseManifestV5.DownloadEndpoint::uri)
                 .forEach(result::add);
         switch (source.type()) {
@@ -148,10 +147,8 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
 
     private List<URI> resolveModrinth(ReleaseManifestV5.DownloadSource source)
             throws IOException, InterruptedException {
-        List<ReleaseManifestV5.DownloadEndpoint> apiEndpoints = source.endpoints().stream()
-                .filter(endpoint -> endpoint.purpose().equals("api"))
-                .sorted(Comparator.comparingInt(ReleaseManifestV5.DownloadEndpoint::priority))
-                .toList();
+        List<ReleaseManifestV5.DownloadEndpoint> apiEndpoints = preferredEndpoints(
+                source.endpoints(), "api", Locale.getDefault(Locale.Category.DISPLAY));
         ArrayList<URI> result = new ArrayList<>();
         IOException last = null;
         for (ReleaseManifestV5.DownloadEndpoint endpoint : apiEndpoints) {
@@ -189,6 +186,32 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
         }
         if (result.isEmpty()) throw new IOException("无法解析锁定的 Modrinth versionId", last);
         return result;
+    }
+
+    static List<ReleaseManifestV5.DownloadEndpoint> preferredEndpoints(
+            List<ReleaseManifestV5.DownloadEndpoint> endpoints, String purpose, Locale locale) {
+        boolean chinaMirror = isSimplifiedChinese(locale);
+        return endpoints.stream()
+                .filter(endpoint -> endpoint.purpose().equals(purpose))
+                .filter(endpoint -> chinaMirror || isGlobalOfficial(endpoint))
+                .sorted(chinaMirror
+                        ? Comparator.comparingInt(ReleaseManifestV5.DownloadEndpoint::priority)
+                        : Comparator.comparingInt((ReleaseManifestV5.DownloadEndpoint endpoint) ->
+                                isGlobalOfficial(endpoint) ? 0 : 1)
+                                .thenComparingInt(ReleaseManifestV5.DownloadEndpoint::priority))
+                .toList();
+    }
+
+    static boolean isSimplifiedChinese(Locale locale) {
+        if (locale == null || !"zh".equalsIgnoreCase(locale.getLanguage())) return false;
+        if ("Hans".equalsIgnoreCase(locale.getScript())) return true;
+        return "CN".equalsIgnoreCase(locale.getCountry());
+    }
+
+    private static boolean isGlobalOfficial(ReleaseManifestV5.DownloadEndpoint endpoint) {
+        return !endpoint.thirdParty()
+                && !"mirror".equals(endpoint.role())
+                && !"cn".equals(endpoint.region());
     }
 
     private URI resolvePublisherPath(String path) {

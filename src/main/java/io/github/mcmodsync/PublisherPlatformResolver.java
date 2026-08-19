@@ -53,19 +53,28 @@ final class PublisherPlatformResolver {
         if (alreadyResolved) {
             if (!strictHashRequested(expectedSha256, expectedSize)) return source;
             IOException last = null;
+            ArrayList<Map<String, Object>> verified = new ArrayList<>(endpoints.stream()
+                    .filter(value -> !"file".equals(value.get("purpose"))).toList());
             for (Map<String, Object> endpoint : endpoints.stream()
                     .filter(value -> "file".equals(value.get("purpose")))
                     .sorted(Comparator.comparingInt(value -> ((Number) value.getOrDefault("priority", 100)).intValue()))
                     .toList()) {
                 try {
                     URI fileUri = URI.create(text(endpoint.get("url"), "CurseForge file endpoint"));
-                    if (downloadMatches(fileUri, expectedSha256, expectedSize)) return source;
-                    last = new IOException("CurseForge 固定文件未通过 SHA-256/大小复核");
+                    if (downloadMatches(fileUri, expectedSha256, expectedSize)) {
+                        addDistinctEndpoint(verified, endpoint);
+                    } else {
+                        last = new IOException("CurseForge 固定文件未通过 SHA-256/大小复核");
+                    }
                 } catch (IOException failure) {
                     last = failure;
                 }
             }
-            throw new IOException("CurseForge 固定文件复核失败，已放弃该平台来源", last);
+            if (verified.stream().noneMatch(value -> "file".equals(value.get("purpose")))) {
+                throw new IOException("CurseForge 固定文件复核失败，已放弃该平台来源", last);
+            }
+            source.put("endpoints", verified);
+            return source;
         }
 
         ArrayList<Map<String, Object>> resolved = new ArrayList<>(endpoints);
@@ -78,25 +87,76 @@ final class PublisherPlatformResolver {
             URI requestUri = apiBase.resolve("mods/" + Rfc3986.encodePathSegment(projectId)
                     + "/files/" + fileId + "/download-url");
             try {
-                URI fileUri = requestDownloadUrl(requestUri);
-                if (strictHashRequested(expectedSha256, expectedSize)
-                        && !downloadMatches(fileUri, expectedSha256, expectedSize)) {
-                    throw new IOException("CurseForge 下载内容未通过 SHA-256/大小复核，已放弃该平台来源");
+                URI upstreamFile = requestDownloadUrl(requestUri);
+                ArrayList<ResolvedCandidate> candidates = new ArrayList<>();
+                URI regionalFile = mirrorCurseForgeDownloadUrl(apiBase, upstreamFile);
+                candidates.add(new ResolvedCandidate(regionalFile, endpoint));
+                if (!regionalFile.equals(upstreamFile)) {
+                    LinkedHashMap<String, Object> official = new LinkedHashMap<>(endpoint);
+                    official.put("role", "official");
+                    official.put("region", "global");
+                    official.put("priority", Math.max(100,
+                            ((Number) endpoint.getOrDefault("priority", 100)).intValue()));
+                    official.put("thirdParty", false);
+                    candidates.add(new ResolvedCandidate(upstreamFile, official));
                 }
-                LinkedHashMap<String, Object> fileEndpoint = new LinkedHashMap<>(endpoint);
-                fileEndpoint.put("url", fileUri.toASCIIString());
-                fileEndpoint.put("purpose", "file");
-                resolved.add(fileEndpoint);
+                for (ResolvedCandidate candidate : candidates) {
+                    if (strictHashRequested(expectedSha256, expectedSize)
+                            && !downloadMatches(candidate.uri(), expectedSha256, expectedSize)) {
+                        last = new IOException("CurseForge 候选未通过 SHA-256/大小复核: " + candidate.uri());
+                        continue;
+                    }
+                    LinkedHashMap<String, Object> fileEndpoint = new LinkedHashMap<>(candidate.template());
+                    fileEndpoint.put("url", candidate.uri().toASCIIString());
+                    fileEndpoint.put("purpose", "file");
+                    addDistinctEndpoint(resolved, fileEndpoint);
+                }
             } catch (IOException failure) {
                 last = failure;
             }
-            if (resolved.stream().anyMatch(endpointValue -> "file".equals(endpointValue.get("purpose")))) break;
         }
         if (resolved.stream().noneMatch(endpoint -> "file".equals(endpoint.get("purpose")))) {
             throw new IOException("无法把 CurseForge 固定 fileId 解析为下载地址", last);
         }
         source.put("endpoints", resolved);
         return source;
+    }
+
+    private static void addDistinctEndpoint(List<Map<String, Object>> endpoints, Map<String, Object> candidate) {
+        String url = String.valueOf(candidate.get("url"));
+        if (endpoints.stream().noneMatch(existing -> url.equals(String.valueOf(existing.get("url")))
+                && String.valueOf(candidate.get("purpose")).equals(String.valueOf(existing.get("purpose"))))) {
+            endpoints.add(new LinkedHashMap<>(candidate));
+        }
+    }
+
+    private record ResolvedCandidate(URI uri, Map<String, Object> template) {
+    }
+
+    /**
+     * MCIMirror's CurseForge API intentionally preserves the upstream ForgeCDN URL in metadata.
+     * For mainland-China delivery the documented mirror form keeps the exact path while replacing
+     * the ForgeCDN origin with mod.mcimirror.top. The resulting bytes are still verified against
+     * the publisher's local SHA-256 and size before the URL is accepted.
+     */
+    static URI mirrorCurseForgeDownloadUrl(URI apiBase, URI upstreamFile) throws IOException {
+        if (!"mod.mcimirror.top".equalsIgnoreCase(apiBase.getHost())) return upstreamFile;
+        String host = upstreamFile.getHost();
+        if (!("edge.forgecdn.net".equalsIgnoreCase(host)
+                || "media.forgecdn.net".equalsIgnoreCase(host)
+                || "mediafilez.forgecdn.net".equalsIgnoreCase(host))) {
+            throw new IOException("MCIMirror CurseForge API 返回了非 ForgeCDN 文件地址");
+        }
+        String rawPath = upstreamFile.getRawPath();
+        if (rawPath == null || !rawPath.startsWith("/")) {
+            throw new IOException("ForgeCDN 文件地址缺少绝对路径");
+        }
+        try {
+            return URI.create("https://mod.mcimirror.top" + rawPath
+                    + (upstreamFile.getRawQuery() == null ? "" : "?" + upstreamFile.getRawQuery()));
+        } catch (IllegalArgumentException invalid) {
+            throw new IOException("无法构造 MCIMirror CurseForge 文件镜像地址", invalid);
+        }
     }
 
     private static boolean strictHashRequested(String expectedSha256, long expectedSize) {
