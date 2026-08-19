@@ -241,6 +241,7 @@ final class PublisherProjectV5 {
                     "serverListManifestPath":"server-list/serverlist.txt",
                     "gameRoot":"",
                     "outputDirectory":"",
+                    "previousOutputDirectory":"",
                     "generateLegacyGateways":true
                   },
                   "managedScopes": [

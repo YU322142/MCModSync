@@ -11,13 +11,13 @@
 - Added early-start transactional synchronization with verified download, backup, commit, and rollback.
 - Added in-game required/recommended selection for first launch and newly added optional content.
 - Added the 2.0 publishing GUI for Mods, managed files, key-level configuration OTA, optional packs, server lists, validation, and export.
-- Matches Modrinth and CurseForge files by content hash or official fingerprint rather than filename.
+- Matches Modrinth by content hash. A CurseForge fingerprint only locates a candidate; the publisher must download it and verify exact size and SHA-256, otherwise that platform source is abandoned.
 - Detects a unique modId replacement as an upgrade, inherits publisher-edited settings, and re-resolves the new JAR by content hash.
 - Marks every JAR in a duplicate-modId set as a conflict and blocks export instead of choosing a version automatically.
 - Restricts mod-platform matching to JAR files directly under `mods/`; other managed files use ordinary download sources.
 - Supports direct hosting, Modrinth, CurseForge, and configurable mirrors with final size and SHA-256 verification.
 - Includes upgrade material for supported 1.6.x, 1.7, and 1.9.x clients.
-- Compares a release with the previous v5 by size and SHA-256, reuses immutable URLs for unchanged files, and exports only new or changed upload content.
+- Selects the complete previous publisher output directory and compares it with the current client directory by size and SHA-256. No earlier `mods-v5.json` is selected manually; unchanged files reuse immutable URLs and the current release directory contains only new or changed upgrade content.
 - Generates a machine-readable incremental plan and content-equivalent Chinese and English upload/replacement guides.
 - Resolves pinned Modrinth versions to hash-matching file URLs during publication, so clients with valid local files no longer query mod-platform metadata.
 

@@ -83,7 +83,7 @@ Only JARs located directly in `mods/` are queried against Modrinth, CurseForge, 
 8. Under “Validation and Export”, resolve every blocker before exporting.
 9. Upload immutable files first, and upload `mods-v5.json` last.
 
-An earlier `mods-v5.json` may be selected on the “Publishing Project” tab. During export, MCSync compares size and SHA-256: unchanged publisher-hosted files reuse their previous immutable URLs and are not copied into the new release directory; only new or changed files must be uploaded. The output root also contains `UPLOAD-PLAN.json`, `UPLOAD-GUIDE.zh-CN.md`, and a fully equivalent `UPLOAD-GUIDE.en.md`, identifying uploads, reuse, external downloads, and removed paths.
+The **complete output directory of the previous publication** may be selected on the “Publishing Project” tab. MCSync automatically locates its newest release record and compares it with the actual files in the current client directory by size and SHA-256; the publisher does not manually select an earlier `mods-v5.json`. Unchanged publisher-hosted files reuse their previous immutable URLs and are not copied again, while the current `releases/<releaseSequence>/` contains only new or changed upgrade files. The output root also contains `UPLOAD-PLAN.json`, `UPLOAD-GUIDE.zh-CN.md`, and a fully equivalent `UPLOAD-GUIDE.en.md`, identifying additions/replacements, reuse, external downloads, and removed paths.
 
 When republishing, an older `mods-v5.json` may be imported only on the Mods tab. It inherits safely attributable mod metadata without changing other publishing settings; hashes and download-source matching are then recalculated from the current JARs.
 

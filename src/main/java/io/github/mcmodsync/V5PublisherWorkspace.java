@@ -59,7 +59,7 @@ final class V5PublisherWorkspace {
     private final JPanel root = new JPanel(new BorderLayout(8, 8));
     private final JTextField gameRoot = new JTextField();
     private final JTextField outputDirectory = new JTextField();
-    private final JTextField previousManifestPath = new JTextField();
+    private final JTextField previousOutputDirectory = new JTextField();
     private final JTextField releaseId = new JTextField("motiquies-2.0.0-ota.1");
     private final JSpinner releaseSequence = new JSpinner(new SpinnerNumberModel(
             PublisherProjectV5.currentTimeReleaseSequence(), 1L, Long.MAX_VALUE, 1L));
@@ -121,7 +121,7 @@ final class V5PublisherWorkspace {
         JPanel form = new JPanel(new GridBagLayout());
         form.setBorder(BorderFactory.createEmptyBorder(18, 18, 10, 18));
         GridBagConstraints c = constraints();
-        addPathRow(form, c, 0, "测试完成的客户端游戏根目录：", gameRoot, "选择目录", true);
+        addPathRow(form, c, 0, "本次待发布客户端目录：", gameRoot, "选择目录", true);
         addPathRow(form, c, 1, "空的发布输出目录：", outputDirectory, "选择目录", false);
         addFieldRow(form, c, 2, "发布 ID：", releaseId);
         c.gridx = 0;
@@ -135,13 +135,14 @@ final class V5PublisherWorkspace {
         c.weightx = 0;
         form.add(autoReleaseSequence, c);
         addFieldRow(form, c, 4, "最低 MCSync 版本：", minimumVersion);
-        addFilePathRow(form, c, 5, "上一版 mods-v5.json（可选）：", previousManifestPath,
-                "选择上一版", "选择用于增量复用的上一版 mods-v5.json");
+        addPathRow(form, c, 5, "上一版发布输出目录（推荐）：", previousOutputDirectory, "选择目录", true);
 
         JTextArea note = new JTextArea(
                 "此工作台直接产生 schema-v5 发布。releaseSequence 只能增加，客户端会拒绝降级。\n"
                         + "自动扫描只查找 mods/resourcepacks/shaderpacks/kubejs 等可分发内容；"
-                        + "config/defaultconfigs 默认不整树扫描，应在“配置 OTA”按键级管理，防止携带密钥。");
+                        + "config/defaultconfigs 默认不整树扫描，应在“配置 OTA”按键级管理，防止携带密钥。\n"
+                        + "增量发布以“上一版发布输出目录”对比当前输出；程序从旧输出中的 manifest-v5.json 读取不可变文件地址，\n"
+                        + "不再要求把 mods-v5.json 单独作为比较基线。");
         note.setEditable(false);
         note.setLineWrap(true);
         note.setWrapStyleWord(true);
@@ -151,7 +152,7 @@ final class V5PublisherWorkspace {
         panel.add(note, BorderLayout.CENTER);
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        JButton continueV5 = new JButton("从现有 mods-v5.json 继续发布…");
+        JButton continueV5 = new JButton("仅导入旧 v5 的描述与设置…");
         JButton load = new JButton("打开发布项目…");
         JButton save = new JButton("保存发布项目…");
         continueV5.addActionListener(event -> importExistingV5Manifest());
@@ -1008,15 +1009,15 @@ final class V5PublisherWorkspace {
         }
         if (!releaseId.getText().matches("[A-Za-z0-9._-]{1,128}")) errors.add("releaseId 格式无效。");
         if (minimumVersion.getText().isBlank()) errors.add("最低 MCSync 版本不能为空。");
-        if (!previousManifestPath.getText().isBlank()) {
+        if (!previousOutputDirectory.getText().isBlank()) {
             try {
-                ReleaseManifestV5 previous = readPreviousManifest();
+                ReleaseManifestV5 previous = readPreviousBaseline();
                 long currentSequence = ((Number) releaseSequence.getValue()).longValue();
                 if (previous.releaseSequence() >= currentSequence) {
                     errors.add("上一版 releaseSequence 必须小于当前发布序号。");
                 }
             } catch (Exception failure) {
-                errors.add("上一版清单无效：" + failure.getMessage());
+                errors.add("上一版发布输出无效：" + failure.getMessage());
             }
         }
         try {
@@ -1128,8 +1129,7 @@ final class V5PublisherWorkspace {
             @Override
             protected PublisherCloudBundle.Result doInBackground() throws Exception {
                 Path updater = generateLegacyGateways.isSelected() ? locateUpdaterJar(rootPath) : null;
-                ReleaseManifestV5 previous = previousManifestPath.getText().isBlank()
-                        ? null : readPreviousManifest();
+                ReleaseManifestV5 previous = readPreviousBaseline();
                 return PublisherCloudBundle.publish(
                         rootPath, project, output, normalizedBaseUrl(), stableManifestPath.getText(),
                         legacyV4Path.getText(), legacyV2Path.getText(),
@@ -1226,7 +1226,6 @@ final class V5PublisherWorkspace {
             @SuppressWarnings("unchecked") Map<String, Object> manifest = (Map<String, Object>) raw;
             Map<String, Object> project = continuationProject(manifest);
             loadProjectMap(project);
-            previousManifestPath.setText(selected.toString());
             autoReleaseSequence.setSelected(true);
             releaseSequence.setValue(PublisherProjectV5.currentTimeReleaseSequence());
             projectFile = null;
@@ -1263,16 +1262,9 @@ final class V5PublisherWorkspace {
         return name == null || directory == null ? null : Path.of(directory, name).toAbsolutePath().normalize();
     }
 
-    private ReleaseManifestV5 readPreviousManifest() throws IOException {
-        Path path = Path.of(previousManifestPath.getText()).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-            throw new IOException("上一版 mods-v5.json 不存在或不是普通文件: " + path);
-        }
-        try {
-            return ReleaseManifestV5.parse(Files.readAllBytes(path));
-        } catch (IllegalArgumentException failure) {
-            throw new IOException("无法解析上一版 mods-v5.json: " + failure.getMessage(), failure);
-        }
+    private ReleaseManifestV5 readPreviousBaseline() throws IOException {
+        return previousOutputDirectory.getText().isBlank()
+                ? null : PublisherOutputBaseline.read(Path.of(previousOutputDirectory.getText()));
     }
 
     @SuppressWarnings("unchecked")
@@ -1292,7 +1284,7 @@ final class V5PublisherWorkspace {
         remote.put("serverListManifestPath", cloudPath(serverListManifestPath.getText()));
         remote.put("gameRoot", gameRoot.getText().strip());
         remote.put("outputDirectory", outputDirectory.getText().strip());
-        remote.put("previousManifestPath", previousManifestPath.getText().strip());
+        remote.put("previousOutputDirectory", previousOutputDirectory.getText().strip());
         remote.put("autoReleaseSequence", true);
         remote.put("generateLegacyGateways", generateLegacyGateways.isSelected());
         project.put("remote", remote);
@@ -1390,7 +1382,7 @@ final class V5PublisherWorkspace {
         remote.put("serverListManifestPath", cloudPath(serverListManifestPath.getText()));
         remote.put("gameRoot", gameRoot.getText().strip());
         remote.put("outputDirectory", outputDirectory.getText().strip());
-        remote.put("previousManifestPath", previousManifestPath.getText().strip());
+        remote.put("previousOutputDirectory", previousOutputDirectory.getText().strip());
         remote.put("autoReleaseSequence", autoReleaseSequence.isSelected());
         remote.put("generateLegacyGateways", generateLegacyGateways.isSelected());
         project.put("remote", remote);
@@ -1525,7 +1517,7 @@ final class V5PublisherWorkspace {
                 "serverListManifestPath", serverListManifestPath.getText())));
         gameRoot.setText(String.valueOf(remote.getOrDefault("gameRoot", gameRoot.getText())));
         outputDirectory.setText(String.valueOf(remote.getOrDefault("outputDirectory", outputDirectory.getText())));
-        previousManifestPath.setText(String.valueOf(remote.getOrDefault("previousManifestPath", "")));
+        previousOutputDirectory.setText(String.valueOf(remote.getOrDefault("previousOutputDirectory", "")));
         autoReleaseSequence.setSelected(!Boolean.FALSE.equals(remote.get("autoReleaseSequence")));
         generateLegacyGateways.setSelected(!Boolean.FALSE.equals(remote.get("generateLegacyGateways")));
         scopes.rows.clear();

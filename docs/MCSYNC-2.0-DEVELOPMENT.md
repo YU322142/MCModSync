@@ -37,6 +37,7 @@
 | `MinecraftWindowStatus.java` / `SyncStatusReporter.java` | 在已有 Minecraft 窗口标题和 `.modsync/ui-status.json/.txt` 输出启动期状态；无额外更新器窗口，失败回退日志。 |
 | `PublisherProjectV5.java` / `PublisherMain.java` | 发布项目审查、哈希物化、许可来源分离、镜像预设、v5 清单和发布报告；上游文件不会被复制到发布目录。 |
 | `PublisherReleaseDelta.java` | 按大小与 SHA-256 对比相邻发布，复用旧不可变文件身份，并输出机器计划及内容等价的中英文上传替换指南。 |
+| `PublisherOutputBaseline.java` | 从上一版完整发布输出目录自动选择最高发布序号的不可变记录，作为目录间升级差异基线；GUI 不要求人工挑选旧清单文件。 |
 
 `releaseSequence` 是发布顺序，而不是整合包展示版本。展示版本可以包含语义化名称，但发布序号必须严格单调递增。GUI 默认在实际导出开始前以系统本地时间生成 `yyyyMMddHHmmssSSS`（17 位）序号；保存项目时同时记录是否启用自动刷新。关闭自动刷新仅用于精确复现或重放已经审计的固定发布。相同序号只允许同一 `releaseId` 和同一清单 SHA256 重放，以支持幂等启动检查。
 

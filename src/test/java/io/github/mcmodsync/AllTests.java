@@ -67,6 +67,7 @@ public final class AllTests {
         testPublisherCloudBundleBuildsStableAndLegacyEntrypoints();
         testPublisherCloudBundleExportsServerList();
         testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
+        testPreviousPublisherOutputDirectorySelectsNewestRelease();
         testMinecraftEarlyProgressFailsClosedOutsideNeoForge();
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
@@ -1477,6 +1478,31 @@ public final class AllTests {
                             && en.contains("Atomically replace `channel/stable/mods-v5.json` last"),
                     "导出必须生成机器计划及内容等价的中英文上传替换指南");
             pass("publisher reuses previous immutable files and writes bilingual incremental upload guides");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPreviousPublisherOutputDirectorySelectsNewestRelease() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-previous-output-");
+        try {
+            Path oldRelease = root.resolve("releases/20260818010101000");
+            Path newRelease = root.resolve("releases/20260819010101000");
+            Files.createDirectories(oldRelease);
+            Files.createDirectories(newRelease);
+            Files.write(oldRelease.resolve("manifest-v5.json"),
+                    releaseManifest(20260818010101000L, "previous-old").serialize());
+            Files.write(newRelease.resolve("manifest-v5.json"),
+                    releaseManifest(20260819010101000L, "previous-newest").serialize());
+            Files.createDirectories(root.resolve("channel/stable"));
+            Files.write(root.resolve("channel/stable/mods-v5.json"),
+                    releaseManifest(20260818020101000L, "previous-stable-old").serialize());
+
+            ReleaseManifestV5 selected = PublisherOutputBaseline.read(root);
+            check(selected.releaseSequence() == 20260819010101000L
+                            && selected.releaseId().equals("previous-newest"),
+                    "上一版完整发布输出目录必须自动选择最高发布序号，而不是依赖人工选择 mods-v5.json");
+            pass("previous publisher output directory selects its newest immutable release");
         } finally {
             deleteTree(root);
         }
