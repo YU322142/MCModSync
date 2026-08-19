@@ -66,6 +66,7 @@ public final class AllTests {
         testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
         testPublisherRepairsStaleModrinthVersionIdByCurrentHash();
         testV5MirrorHashFailureFallsBackToOfficialCandidate();
+        testConcurrentIdenticalContentSharesCache();
         testReleaseSequenceAntiDowngradeGate();
         testLoadedProjectSequenceAlwaysAdvances();
         testStructuredConfigMutationEngine();
@@ -811,6 +812,56 @@ public final class AllTests {
             pass("v5 mirror hash failures fall back to the official candidate");
         } finally {
             server.stop(0);
+            deleteTree(root);
+        }
+    }
+
+    private void testConcurrentIdenticalContentSharesCache() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-shared-cache-");
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        ExecutorService serverExecutor = Executors.newCachedThreadPool();
+        try {
+            byte[] expected = new byte[256 * 1024];
+            Arrays.fill(expected, (byte) 0x5a);
+            String hash = Hashing.sha256(expected);
+            AtomicInteger requests = new AtomicInteger();
+            server.createContext("/shared.bin", exchange -> {
+                requests.incrementAndGet();
+                respond(exchange, 200, expected, "application/octet-stream");
+            });
+            server.setExecutor(serverExecutor);
+            server.start();
+            URI file = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/shared.bin");
+            ReleaseManifestV5.DownloadSource source = new ReleaseManifestV5.DownloadSource(
+                    "direct", "", "", null, "upstream-only", List.of(
+                    new ReleaseManifestV5.DownloadEndpoint(
+                            file, "official", "file", "global", 100, false)));
+            List<ReleaseManifestV5.FileEntry> entries = java.util.stream.IntStream.range(0, 32)
+                    .mapToObj(index -> new ReleaseManifestV5.FileEntry(
+                            "mods/shared-" + index + ".jar", hash, expected.length,
+                            "mod", true, true, Set.of("client"), source))
+                    .toList();
+            ModSyncConfig config = config(root,
+                    URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/manifest.json"),
+                    false, false);
+            ReleaseArtifactResolver resolver = new ReleaseArtifactResolver(config, message -> { });
+            resolver.prefetch(entries);
+            Path cache = root.resolve(".modsync/cache-v5/" + hash + ".bin");
+            long partials;
+            try (var files = Files.list(cache.getParent())) {
+                partials = files.filter(path -> path.getFileName().toString().endsWith(".part")).count();
+            }
+            check(Files.isRegularFile(cache)
+                            && Files.size(cache) == expected.length
+                            && Hashing.sha256(cache).equals(hash)
+                            && partials == 0
+                            && Arrays.equals(expected, resolver.readCached(entries.getFirst()))
+                            && requests.get() >= 1,
+                    "并发下载相同 SHA-256 内容时必须合并为单一缓存且不残留临时文件");
+            pass("concurrent identical content shares one cache artifact");
+        } finally {
+            server.stop(0);
+            serverExecutor.shutdownNow();
             deleteTree(root);
         }
     }

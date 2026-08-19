@@ -19,6 +19,7 @@ import java.util.function.Consumer;
 /** Resolves pinned v5 sources into hash-checked bytes; mirrors are transport candidates only. */
 final class ReleaseArtifactResolver implements ReleaseTransactionEngine.ArtifactProvider {
     private static final Semaphore PLATFORM_METADATA_LIMIT = new Semaphore(8, true);
+    private static final Object[] CACHE_LOCKS = createCacheLocks();
     private final ModSyncConfig config;
     private final HttpClient client;
     private final Consumer<String> logger;
@@ -49,23 +50,22 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
 
     byte[] readCached(ReleaseManifestV5.FileEntry entry) throws IOException {
         Path cached = cachePath(entry);
-        if (!Files.isRegularFile(cached) || Files.size(cached) != entry.size()
-                || !Hashing.sha256(cached).equals(entry.sha256())) {
+        byte[] bytes = readValidCache(cached, entry);
+        if (bytes == null) {
             throw new IOException("预下载缓存缺失或已损坏: " + entry.path());
         }
-        return Files.readAllBytes(cached);
+        return bytes;
     }
 
     @Override
     public byte[] fetch(ReleaseManifestV5.FileEntry entry) throws IOException, InterruptedException {
         Path cached = cachePath(entry);
-        if (Files.isRegularFile(cached) && Files.size(cached) == entry.size()
-                && Hashing.sha256(cached).equals(entry.sha256())) {
-            byte[] bytes = Files.readAllBytes(cached);
+        byte[] cachedBytes = readValidCache(cached, entry);
+        if (cachedBytes != null) {
+            byte[] bytes = cachedBytes;
             reportCompleted(entry, bytes.length);
             return bytes;
         }
-        Files.deleteIfExists(cached);
         List<URI> candidates = resolveCandidates(entry);
         IOException last = null;
         for (URI candidate : candidates) {
@@ -81,7 +81,7 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
                 if (bytes.length != entry.size() || !Hashing.sha256(bytes).equals(entry.sha256())) {
                     throw new IOException("候选源返回的文件与清单锁定哈希不一致");
                 }
-                storeCache(cached, bytes);
+                storeCache(cached, bytes, entry.sha256());
                 reportCompleted(entry, bytes.length);
                 return bytes;
             } catch (IOException failure) {
@@ -105,14 +105,50 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
         return directory.resolve(entry.sha256() + ".bin");
     }
 
-    private static void storeCache(Path target, byte[] bytes) throws IOException {
-        Path temporary = Files.createTempFile(target.getParent(), ".download-", ".part");
-        Files.write(temporary, bytes);
-        try {
-            Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException failure) {
-            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+    private static byte[] readValidCache(Path target, ReleaseManifestV5.FileEntry entry) throws IOException {
+        synchronized (cacheLock(target)) {
+            if (!isValidCache(target, entry.size(), entry.sha256())) return null;
+            return Files.readAllBytes(target);
         }
+    }
+
+    private static void storeCache(Path target, byte[] bytes, String expectedSha256) throws IOException {
+        synchronized (cacheLock(target)) {
+            if (isValidCache(target, bytes.length, expectedSha256)) return;
+            Path temporary = Files.createTempFile(target.getParent(), ".download-", ".part");
+            try {
+                Files.write(temporary, bytes);
+                Files.deleteIfExists(target);
+                try {
+                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
+                } catch (AtomicMoveNotSupportedException failure) {
+                    Files.move(temporary, target);
+                }
+                if (!isValidCache(target, bytes.length, expectedSha256)) {
+                    Files.deleteIfExists(target);
+                    throw new IOException("下载缓存提交后哈希校验失败: " + target.getFileName());
+                }
+            } finally {
+                Files.deleteIfExists(temporary);
+            }
+        }
+    }
+
+    private static boolean isValidCache(Path target, long expectedSize, String expectedSha256) throws IOException {
+        return Files.isRegularFile(target)
+                && Files.size(target) == expectedSize
+                && Hashing.sha256(target).equals(expectedSha256);
+    }
+
+    private static Object cacheLock(Path target) {
+        int index = Math.floorMod(target.toAbsolutePath().normalize().hashCode(), CACHE_LOCKS.length);
+        return CACHE_LOCKS[index];
+    }
+
+    private static Object[] createCacheLocks() {
+        Object[] locks = new Object[256];
+        for (int index = 0; index < locks.length; index++) locks[index] = new Object();
+        return locks;
     }
 
     private List<URI> resolveCandidates(ReleaseManifestV5.FileEntry entry)
