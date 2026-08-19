@@ -66,6 +66,7 @@ public final class AllTests {
         testPublisherCloudBundleBuildsStableAndLegacyEntrypoints();
         testPublisherCloudBundleExportsServerList();
         testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
+        testMinecraftEarlyProgressFailsClosedOutsideNeoForge();
         testManifestGenerationAndParsing();
         testFabricModIdAndV1Compatibility();
         testNeoForgeMetadataAndUniversalBootstrap();
@@ -120,6 +121,21 @@ public final class AllTests {
         testUnsupportedAndroidLauncherUsesDesktopLogic();
         testHeadlessProgressIsLoggedAndWritten();
         System.out.println("All tests passed: " + passed);
+    }
+
+    private void testMinecraftEarlyProgressFailsClosedOutsideNeoForge() {
+        String previous = System.getProperty("modsync.inGameWindow");
+        try {
+            System.setProperty("modsync.inGameWindow", "true");
+            MinecraftEarlyProgress.phase("test phase");
+            MinecraftEarlyProgress.progress(new SyncObserver.DownloadProgress(
+                    "test.jar", 1, 1, 5, 10, 5, 10, 500));
+            MinecraftEarlyProgress.completed(1, 0, 0, "test complete");
+            pass("Minecraft early-window progress fails closed without NeoForge");
+        } finally {
+            if (previous == null) System.clearProperty("modsync.inGameWindow");
+            else System.setProperty("modsync.inGameWindow", previous);
+        }
     }
 
     private void testMcsyncBrandingKeepsLegacyTechnicalIdentity() {

@@ -89,6 +89,7 @@ final class UserNotifier implements SyncObserver {
 
     private void reportPhase(String phase, String detail) {
         MinecraftWindowStatus.update(detail == null || detail.isBlank() ? phase : phase + " — " + detail);
+        MinecraftEarlyProgress.phase(detail == null || detail.isBlank() ? phase : phase + " — " + detail);
         if (statusReporter != null) {
             statusReporter.phase(phase, detail);
         }
@@ -102,6 +103,7 @@ final class UserNotifier implements SyncObserver {
 
     private void reportProgress(DownloadProgress progress) {
         MinecraftWindowStatus.update(progress.fileName() + "  " + (progress.totalPermille() / 10.0) + "%");
+        MinecraftEarlyProgress.progress(progress);
         if (statusReporter != null) {
             statusReporter.progress(progress);
         }
@@ -109,6 +111,8 @@ final class UserNotifier implements SyncObserver {
 
     private void reportCompleted(int downloaded, int quarantined, int unchanged) {
         MinecraftWindowStatus.update(text("更新已就绪，请重启", "Update ready; restart required"));
+        MinecraftEarlyProgress.completed(downloaded, quarantined, unchanged,
+                text("更新已就绪，请重启", "Update ready; restart required"));
         if (statusReporter != null) {
             statusReporter.completed(downloaded, quarantined, unchanged, portableMode);
         }
@@ -654,8 +658,8 @@ final class UserNotifier implements SyncObserver {
     @Override
     public void downloadProgress(DownloadProgress progress) {
         progressUiStarted = true;
+        reportProgress(progress);
         if (!dialogsAvailable()) {
-            reportProgress(progress);
             return;
         }
         pendingProgress.set(progress);
@@ -737,6 +741,7 @@ final class UserNotifier implements SyncObserver {
 
     static void showFatalError(Throwable failure) {
         String message = mostUsefulMessage(failure);
+        MinecraftEarlyProgress.failed(message);
         DisplayLanguage language = DisplayLanguage.detect(resolveOptionalGameDirectory());
         System.err.println("[MCSync] "
                 + language.text("游戏启动已阻止: ", "Game startup blocked: ") + message);
