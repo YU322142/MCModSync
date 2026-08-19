@@ -36,6 +36,12 @@ final class PublisherProjectV5 {
         return Long.parseLong(LocalDateTime.now().format(RELEASE_SEQUENCE_TIME));
     }
 
+    static long nextReleaseSequence(long previous) {
+        long now = currentTimeReleaseSequence();
+        if (previous == Long.MAX_VALUE) return Long.MAX_VALUE;
+        return Math.max(now, previous + 1L);
+    }
+
     record Publication(
             ReleaseManifestV5 manifest,
             Path manifestPath,

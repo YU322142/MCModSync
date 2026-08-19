@@ -57,8 +57,10 @@ public final class AllTests {
         testPublisherResolvesCurseForgeWithoutLeakingCredentials();
         testCurseForgeStrictHashGateRejectsUnverifiableFile();
         testPublisherResolvesModrinthToExactFileWithoutClientMetadataLookup();
+        testPublisherRepairsStaleModrinthVersionIdByCurrentHash();
         testV5MirrorHashFailureFallsBackToOfficialCandidate();
         testReleaseSequenceAntiDowngradeGate();
+        testLoadedProjectSequenceAlwaysAdvances();
         testStructuredConfigMutationEngine();
         testV5AtomicReleaseTransactionAndOwnership();
         testV5InterruptedCommitRecoversFromDurableJournal();
@@ -146,6 +148,15 @@ public final class AllTests {
         check(BuildInfo.VERSION.equals("2.0.0"), "首个 MCSync 版本应为 2.0.0");
         check(BuildInfo.TECHNICAL_MOD_ID.equals("mcmodsync"), "必须保留旧 modId 才能从 1.9.x 原地升级");
         pass("MCSync branding preserves the legacy technical upgrade identity");
+    }
+
+    private void testLoadedProjectSequenceAlwaysAdvances() {
+        long current = PublisherProjectV5.currentTimeReleaseSequence();
+        long futureLike = current + 10_000;
+        check(PublisherProjectV5.nextReleaseSequence(1) >= current
+                        && PublisherProjectV5.nextReleaseSequence(futureLike) > futureLike,
+                "打开旧项目或自动导出时，防降级序号必须刷新并严格大于旧项目序号");
+        pass("loaded publisher project always advances release sequence");
     }
 
     private void testCurseForgeCandidateStatusDoesNotClaimFingerprintProof() {
@@ -427,6 +438,39 @@ public final class AllTests {
             }
             check(blocked, "CurseForge 无法用 SHA-256/大小复核下载内容时必须放弃平台来源");
             pass("CurseForge strict hash gate rejects unverifiable files");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private void testPublisherRepairsStaleModrinthVersionIdByCurrentHash() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        try {
+            byte[] current = "current-mod-build".getBytes(StandardCharsets.UTF_8);
+            String sha256 = Hashing.sha256(current);
+            server.createContext("/v2/version/old-version", exchange -> respond(exchange, 200,
+                    ("{\"project_id\":\"demo-project\",\"files\":[{\"url\":\"https://cdn.example.invalid/old.jar\"," +
+                            "\"size\":3,\"hashes\":{\"sha256\":\"" + "0".repeat(64) + "\"}}]}")
+                            .getBytes(StandardCharsets.UTF_8), "application/json"));
+            server.createContext("/v2/project/demo-project/version", exchange -> respond(exchange, 200,
+                    ("[{\"id\":\"current-version\",\"project_id\":\"demo-project\",\"files\":[{" +
+                            "\"url\":\"https://cdn.example.invalid/current.jar\",\"size\":" + current.length + "," +
+                            "\"hashes\":{\"sha256\":\"" + sha256 + "\"}}]}]")
+                            .getBytes(StandardCharsets.UTF_8), "application/json"));
+            server.start();
+            String base = "http://127.0.0.1:" + server.getAddress().getPort() + "/v2/";
+            Map<String, Object> resolved = new PublisherPlatformResolver(HttpClient.newHttpClient()).resolve(Map.of(
+                    "type", "modrinth", "projectId", "demo-project", "versionId", "old-version",
+                    "distributionPolicy", "upstream-only",
+                    "endpoints", List.of(Map.of("url", base, "role", "official", "purpose", "api",
+                            "region", "test", "priority", new BigDecimal("10"), "thirdParty", false))),
+                    sha256, current.length);
+            String serialized = StrictJson.stringify(resolved);
+            check("current-version".equals(resolved.get("versionId"))
+                            && serialized.contains("https://cdn.example.invalid/current.jar")
+                            && !serialized.contains("https://cdn.example.invalid/old.jar"),
+                    "旧项目的 Modrinth versionId 与当前 JAR 不一致时，应按当前 SHA-256 找到并继承新版本坐标");
+            pass("publisher repairs stale Modrinth versionId using the current file hash");
         } finally {
             server.stop(0);
         }

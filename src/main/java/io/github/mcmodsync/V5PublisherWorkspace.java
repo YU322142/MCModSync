@@ -1118,7 +1118,8 @@ final class V5PublisherWorkspace {
 
     private void publish(JButton button) {
         if (autoReleaseSequence.isSelected()) {
-            releaseSequence.setValue(PublisherProjectV5.currentTimeReleaseSequence());
+            releaseSequence.setValue(PublisherProjectV5.nextReleaseSequence(
+                    ((Number) releaseSequence.getValue()).longValue()));
         }
         showValidation();
         List<String> errors = validateProject();
@@ -1214,6 +1215,11 @@ final class V5PublisherWorkspace {
             @SuppressWarnings("unchecked") Map<String, Object> project = (Map<String, Object>) raw;
             loadProjectMap(project);
             projectFile = selected;
+            // Opening an older project means preparing a new publication. Never reuse its
+            // release sequence, even when the saved project had auto-refresh disabled.
+            autoReleaseSequence.setSelected(true);
+            releaseSequence.setValue(PublisherProjectV5.nextReleaseSequence(
+                    ((Number) releaseSequence.getValue()).longValue()));
             validation.append("项目已加载：" + selected + "\n");
             if (gameRoot.getText().isBlank()) {
                 validation.append("旧项目没有保存客户端根目录；请在“发布项目”页重新选择。\n");
@@ -1247,7 +1253,8 @@ final class V5PublisherWorkspace {
             Map<String, Object> project = continuationProject(manifest);
             loadProjectMap(project);
             autoReleaseSequence.setSelected(true);
-            releaseSequence.setValue(PublisherProjectV5.currentTimeReleaseSequence());
+            releaseSequence.setValue(PublisherProjectV5.nextReleaseSequence(
+                    ((Number) releaseSequence.getValue()).longValue()));
             projectFile = null;
             validation.append("已继承现有 v5 清单：" + selected + "\n"
                     + "已保留双语描述、必须/可选、同步范围和配置 OTA；导出时将重新计算文件哈希与时间序号。\n");

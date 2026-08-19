@@ -138,22 +138,28 @@ final class PublisherPlatformResolver {
                 }
                 Object filesRaw = metadata.get("files");
                 if (!(filesRaw instanceof List<?> files)) throw new IOException("Modrinth metadata 缺少 files");
-                for (Object value : files) {
-                    if (!(value instanceof Map<?, ?> rawFile)) continue;
-                    @SuppressWarnings("unchecked") Map<String, Object> file = (Map<String, Object>) rawFile;
-                    if (!(file.get("url") instanceof String url)
-                            || !(file.get("size") instanceof Number size)
-                            || !(file.get("hashes") instanceof Map<?, ?> hashes)
-                            || !(hashes.get("sha256") instanceof String sha256)
-                            || size.longValue() != expectedSize
-                            || !sha256.equalsIgnoreCase(expectedSha256)) continue;
-                    URI fileUri = URI.create(url);
-                    if (!"https".equalsIgnoreCase(fileUri.getScheme()) || fileUri.getHost() == null
-                            || fileUri.getUserInfo() != null || fileUri.getFragment() != null) continue;
-                    LinkedHashMap<String, Object> fileEndpoint = new LinkedHashMap<>(endpoint);
-                    fileEndpoint.put("url", fileUri.toASCIIString());
-                    fileEndpoint.put("purpose", "file");
-                    resolved.add(fileEndpoint);
+                appendMatchingModrinthFiles(files, endpoint, resolved, expectedSha256, expectedSize);
+                // A saved publisher project can contain an older versionId after a mod
+                // upgrade. Re-resolve by the current file hash instead of failing the
+                // entire publication on the stale coordinate.
+                if (resolved.stream().noneMatch(value -> "file".equals(value.get("purpose")))) {
+                    Object versions = requestJson(apiBase.resolve("project/" +
+                            Rfc3986.encodePathSegment(projectId) + "/version"));
+                    if (versions instanceof List<?> versionList) {
+                        for (Object version : versionList) {
+                            if (!(version instanceof Map<?, ?> rawVersion)) continue;
+                            Object versionFiles = rawVersion.get("files");
+                            if (versionFiles instanceof List<?> list) {
+                                int before = resolved.size();
+                                appendMatchingModrinthFiles(list, endpoint, resolved,
+                                        expectedSha256, expectedSize);
+                                if (resolved.size() > before && rawVersion.get("id") instanceof String currentVersionId) {
+                                    source.put("versionId", currentVersionId);
+                                }
+                            }
+                            if (resolved.stream().anyMatch(value -> "file".equals(value.get("purpose")))) break;
+                        }
+                    }
                 }
             } catch (IOException failure) {
                 last = failure;
@@ -209,6 +215,41 @@ final class PublisherPlatformResolver {
         if (!(parsed instanceof Map<?, ?> raw)) throw new IOException("Modrinth API 返回值不是对象");
         @SuppressWarnings("unchecked") Map<String, Object> result = (Map<String, Object>) raw;
         return result;
+    }
+
+    private Object requestJson(URI uri) throws IOException, InterruptedException {
+        HttpResponse<String> response = client.send(HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(30))
+                .header("Accept", "application/json")
+                .header("User-Agent", BuildInfo.USER_AGENT).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IOException("Modrinth API HTTP " + response.statusCode());
+        }
+        return StrictJson.parse(response.body());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void appendMatchingModrinthFiles(
+            List<?> files, Map<String, Object> endpoint, ArrayList<Map<String, Object>> resolved,
+            String expectedSha256, long expectedSize) {
+        for (Object value : files) {
+            if (!(value instanceof Map<?, ?> rawFile)) continue;
+            Map<String, Object> file = (Map<String, Object>) rawFile;
+            if (!(file.get("url") instanceof String url)
+                    || !(file.get("size") instanceof Number size)
+                    || !(file.get("hashes") instanceof Map<?, ?> hashes)
+                    || !(hashes.get("sha256") instanceof String sha256)
+                    || size.longValue() != expectedSize
+                    || !sha256.equalsIgnoreCase(expectedSha256)) continue;
+            URI fileUri = URI.create(url);
+            if (!"https".equalsIgnoreCase(fileUri.getScheme()) || fileUri.getHost() == null
+                    || fileUri.getUserInfo() != null || fileUri.getFragment() != null) continue;
+            LinkedHashMap<String, Object> fileEndpoint = new LinkedHashMap<>(endpoint);
+            fileEndpoint.put("url", fileUri.toASCIIString());
+            fileEndpoint.put("purpose", "file");
+            resolved.add(fileEndpoint);
+        }
     }
 
     @SuppressWarnings("unchecked")
