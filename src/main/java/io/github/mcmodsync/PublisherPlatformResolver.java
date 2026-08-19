@@ -5,6 +5,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -19,7 +21,8 @@ final class PublisherPlatformResolver {
     private final HttpClient client;
 
     PublisherPlatformResolver() {
-        this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build());
+        this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
+                .followRedirects(HttpClient.Redirect.NORMAL).build());
     }
 
     PublisherPlatformResolver(HttpClient client) {
@@ -41,7 +44,23 @@ final class PublisherPlatformResolver {
         long fileId = integer(source.get("fileId"), "CurseForge fileId");
         List<Map<String, Object>> endpoints = endpointMaps(source.get("endpoints"));
         boolean alreadyResolved = endpoints.stream().anyMatch(endpoint -> "file".equals(endpoint.get("purpose")));
-        if (alreadyResolved) return source;
+        if (alreadyResolved) {
+            if (!strictHashRequested(expectedSha256, expectedSize)) return source;
+            IOException last = null;
+            for (Map<String, Object> endpoint : endpoints.stream()
+                    .filter(value -> "file".equals(value.get("purpose")))
+                    .sorted(Comparator.comparingInt(value -> ((Number) value.getOrDefault("priority", 100)).intValue()))
+                    .toList()) {
+                try {
+                    URI fileUri = URI.create(text(endpoint.get("url"), "CurseForge file endpoint"));
+                    if (downloadMatches(fileUri, expectedSha256, expectedSize)) return source;
+                    last = new IOException("CurseForge 固定文件未通过 SHA-256/大小复核");
+                } catch (IOException failure) {
+                    last = failure;
+                }
+            }
+            throw new IOException("CurseForge 固定文件复核失败，已放弃该平台来源", last);
+        }
 
         ArrayList<Map<String, Object>> resolved = new ArrayList<>(endpoints);
         IOException last = null;
@@ -79,13 +98,18 @@ final class PublisherPlatformResolver {
 
     private boolean downloadMatches(URI fileUri, String expectedSha256, long expectedSize)
             throws IOException, InterruptedException {
-        HttpResponse<byte[]> response = client.send(HttpRequest.newBuilder(fileUri)
-                .timeout(Duration.ofSeconds(90))
-                .header("User-Agent", BuildInfo.USER_AGENT)
-                .GET().build(), HttpResponse.BodyHandlers.ofByteArray());
-        if (response.statusCode() < 200 || response.statusCode() >= 300) return false;
-        byte[] bytes = response.body();
-        return bytes.length == expectedSize && Hashing.sha256(bytes).equalsIgnoreCase(expectedSha256);
+        Path temporary = Files.createTempFile("mcsync-curseforge-verify-", ".jar");
+        try {
+            HttpResponse<Path> response = client.send(HttpRequest.newBuilder(fileUri)
+                    .timeout(Duration.ofSeconds(90))
+                    .header("User-Agent", BuildInfo.USER_AGENT)
+                    .GET().build(), HttpResponse.BodyHandlers.ofFile(temporary));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) return false;
+            return Files.size(temporary) == expectedSize
+                    && Hashing.sha256(temporary).equalsIgnoreCase(expectedSha256);
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     private Map<String, Object> resolveModrinth(

@@ -10,6 +10,7 @@ import javax.swing.JLabel;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JProgressBar;
 import javax.swing.JSpinner;
 import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
@@ -18,6 +19,7 @@ import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingWorker;
+import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.RowFilter;
 import javax.swing.table.TableColumn;
@@ -81,6 +83,7 @@ final class V5PublisherWorkspace {
     private final JTable modsTable = new JTable(files);
     private final JTable scopeTable = new JTable(scopes);
     private final JTable configTable = new JTable(config);
+    private final JProgressBar modMatchProgress = new JProgressBar(0, 100);
     private final JTextArea validation = new JTextArea();
     private final JLabel summary = new JLabel();
     private final PublisherModAutoMatcher modMatcher = new PublisherModAutoMatcher();
@@ -253,7 +256,12 @@ final class V5PublisherWorkspace {
         buttons.add(recommended);
         buttons.add(editMetadata);
         buttons.add(remove);
-        panel.add(buttons, BorderLayout.SOUTH);
+        modMatchProgress.setStringPainted(true);
+        modMatchProgress.setString("等待扫描");
+        JPanel footer = new JPanel(new BorderLayout(6, 4));
+        footer.add(buttons, BorderLayout.NORTH);
+        footer.add(modMatchProgress, BorderLayout.SOUTH);
+        panel.add(footer, BorderLayout.SOUTH);
         return panel;
     }
 
@@ -399,7 +407,7 @@ final class V5PublisherWorkspace {
     private JScrollPane releaseChecklist() {
         JTextArea checklist = new JTextArea(
                 "导出门禁\n"
-                        + "  • mods/*.jar 已完成平台精确匹配或回退本地发布\n"
+                        + "  • mods/*.jar 已完成 SHA-256 验证的平台匹配或回退本地发布\n"
                         + "  • 其他文件全部使用本地发布，不接触模组站\n"
                         + "  • 中国镜像仅是第三方传输候选，保留官方回退\n"
                         + "  • required 文件不能使用 manual\n"
@@ -539,7 +547,8 @@ final class V5PublisherWorkspace {
                 List<FileRow> modRows = found.stream()
                         .filter(row -> PublisherModAutoMatcher.isModArtifact(row.path, row.kind)).toList();
                 Map<Path, PublisherModAutoMatcher.Match> matches = modMatcher.matchAll(
-                        modRows.stream().map(row -> rootPath.resolve(row.path)).toList());
+                        modRows.stream().map(row -> rootPath.resolve(row.path)).toList(),
+                        V5PublisherWorkspace.this::updateModMatchProgress);
                 for (FileRow row : modRows) {
                     PublisherModAutoMatcher.Match match = matches.get(rootPath.resolve(row.path));
                     if (match == null) match = new PublisherModAutoMatcher.Match(
@@ -558,7 +567,7 @@ final class V5PublisherWorkspace {
                     files.rows.sort(Comparator.comparing(row -> row.path));
                     files.fireTableDataChanged();
                     validation.append("扫描完成：新增 " + found.size()
-                            + " 个文件；Mod 已按精确哈希匹配，其他文件固定本地托管。\n");
+                            + " 个文件；Mod 已完成 SHA-256 复核或回退本地托管，其他文件固定本地托管。\n");
                     refreshSummary();
                 } catch (Exception failure) {
                     showError(cause(failure).getMessage());
@@ -920,10 +929,12 @@ final class V5PublisherWorkspace {
             return;
         }
         if (button != null) button.setEnabled(false);
-        validation.append("正在按 SHA-512 查询 Modrinth，并定位 CurseForge 候选；CurseForge 将在导出时复核 SHA-256…\n");
+        validation.append("正在计算哈希、查询平台，并立即下载复核 CurseForge 候选；临时缓存会在每个候选后删除…\n");
+        updateModMatchProgress(0, "准备匹配 " + mods.size() + " 个 Mod");
         new SwingWorker<Map<Path, PublisherModAutoMatcher.Match>, Void>() {
             @Override protected Map<Path, PublisherModAutoMatcher.Match> doInBackground() {
-                return modMatcher.matchAll(mods.stream().map(row -> rootPath.resolve(row.path)).toList());
+                return modMatcher.matchAll(mods.stream().map(row -> rootPath.resolve(row.path)).toList(),
+                        V5PublisherWorkspace.this::updateModMatchProgress);
             }
             @Override protected void done() {
                 if (button != null) button.setEnabled(true);
@@ -946,6 +957,14 @@ final class V5PublisherWorkspace {
                 }
             }
         }.execute();
+    }
+
+    private void updateModMatchProgress(int percent, String detail) {
+        SwingUtilities.invokeLater(() -> {
+            int bounded = Math.max(0, Math.min(100, percent));
+            modMatchProgress.setValue(bounded);
+            modMatchProgress.setString(bounded + "% — " + detail);
+        });
     }
 
     private void addFiles() {

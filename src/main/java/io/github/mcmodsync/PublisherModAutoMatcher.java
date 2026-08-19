@@ -24,7 +24,13 @@ final class PublisherModAutoMatcher {
     private final HttpClient client;
 
     PublisherModAutoMatcher() {
-        client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
+        client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
+                .followRedirects(HttpClient.Redirect.NORMAL).build();
+    }
+
+    @FunctionalInterface
+    interface ProgressListener {
+        void update(int percent, String detail);
     }
 
     record Match(Map<String, Object> download, String detail, String displayName, String descriptionEn) {
@@ -47,11 +53,20 @@ final class PublisherModAutoMatcher {
     }
 
     Map<Path, Match> matchAll(List<Path> jars) {
+        return matchAll(jars, (percent, detail) -> { });
+    }
+
+    Map<Path, Match> matchAll(List<Path> jars, ProgressListener progress) {
         LinkedHashMap<Path, Signature> readable = new LinkedHashMap<>();
         LinkedHashMap<Path, Match> result = new LinkedHashMap<>();
+        progress.update(0, "准备扫描 " + jars.size() + " 个 Mod");
+        int readIndex = 0;
         for (Path jar : jars) {
+            progress.update(jars.isEmpty() ? 15 : Math.max(1, readIndex * 15 / jars.size()),
+                    "计算本地 SHA-256/SHA-512：" + jar.getFileName());
             if (!Files.isRegularFile(jar) || !jar.getFileName().toString().toLowerCase().endsWith(".jar")) {
                 result.put(jar, local("不是可匹配的 Mod JAR"));
+                readIndex++;
                 continue;
             }
             try {
@@ -61,14 +76,48 @@ final class PublisherModAutoMatcher {
             } catch (IOException failure) {
                 result.put(jar, local("读取失败，使用本地文件"));
             }
+            readIndex++;
         }
+        progress.update(20, "按 SHA-512 查询 Modrinth");
         batchModrinth(readable, result);
+        progress.update(35, "使用 CurseForge fingerprint 定位候选（尚未视为验证通过）");
         batchCurseForge(readable, result);
+        verifyCurseForgeCandidates(readable, result, progress);
+        progress.update(90, "读取上游名称与英文描述");
         enrichPlatformMetadata(result);
         for (Path jar : readable.keySet()) {
             result.putIfAbsent(jar, local("未在 Modrinth/CurseForge 精确匹配，使用本地文件"));
         }
+        progress.update(100, "匹配与 SHA-256 复核完成；临时验证缓存已清理");
         return result;
+    }
+
+    private void verifyCurseForgeCandidates(
+            Map<Path, Signature> jars, Map<Path, Match> result, ProgressListener progress) {
+        List<Path> candidates = result.entrySet().stream()
+                .filter(entry -> "curseforge".equals(entry.getValue().download().get("type")))
+                .map(Map.Entry::getKey).toList();
+        PublisherPlatformResolver resolver = new PublisherPlatformResolver();
+        for (int index = 0; index < candidates.size(); index++) {
+            Path path = candidates.get(index);
+            Signature signature = jars.get(path);
+            Match candidate = result.get(path);
+            progress.update(40 + index * 45 / candidates.size(),
+                    "下载并复核 CurseForge 候选：" + path.getFileName()
+                            + "（" + (index + 1) + "/" + candidates.size() + "）");
+            try {
+                Map<String, Object> verified = resolver.resolve(
+                        candidate.download(), signature.sha256(), Files.size(path));
+                result.put(path, new Match(verified,
+                        "CurseForge SHA-256 已验证 " + shortHash(signature.sha256())
+                                + "（" + text(verified.get("projectId")) + "/"
+                                + text(verified.get("fileId")) + "）",
+                        candidate.displayName(), candidate.descriptionEn()));
+            } catch (Exception failure) {
+                result.put(path, local("CurseForge 候选未通过 SHA-256/大小复核，已回退本地托管"));
+            }
+        }
+        if (candidates.isEmpty()) progress.update(85, "没有需要下载复核的 CurseForge 候选");
     }
 
     private void enrichPlatformMetadata(Map<Path, Match> result) {
@@ -276,6 +325,11 @@ final class PublisherModAutoMatcher {
         String shortHash = hash.length() > 16 ? hash.substring(0, 16) + "…" : hash;
         return "CurseForge 候选 " + projectId + "/" + fileId
                 + "；待导出时下载并复核 SHA-256 " + shortHash;
+    }
+
+    private static String shortHash(String sha256) {
+        String hash = sha256 == null ? "" : sha256.strip().toUpperCase();
+        return hash.length() > 16 ? hash.substring(0, 16) + "…" : hash;
     }
 
     private static String digest(String algorithm, byte[] bytes) {
