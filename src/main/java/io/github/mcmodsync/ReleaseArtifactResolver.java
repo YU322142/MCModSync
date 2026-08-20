@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileSystemException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -20,6 +21,8 @@ import java.util.function.Consumer;
 final class ReleaseArtifactResolver implements ReleaseTransactionEngine.ArtifactProvider {
     private static final Semaphore PLATFORM_METADATA_LIMIT = new Semaphore(8, true);
     private static final Object[] CACHE_LOCKS = createCacheLocks();
+    private static final int CACHE_COMMIT_ATTEMPTS = 8;
+    private static final long CACHE_COMMIT_RETRY_MILLIS = 125L;
     private final ModSyncConfig config;
     private final HttpClient client;
     private final Consumer<String> logger;
@@ -118,15 +121,35 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
             Path temporary = Files.createTempFile(target.getParent(), ".download-", ".part");
             try {
                 Files.write(temporary, bytes);
-                Files.deleteIfExists(target);
-                try {
-                    Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE);
-                } catch (AtomicMoveNotSupportedException failure) {
-                    Files.move(temporary, target);
+                FileSystemException lastSharingFailure = null;
+                for (int attempt = 1; attempt <= CACHE_COMMIT_ATTEMPTS; attempt++) {
+                    if (isValidCache(target, bytes.length, expectedSha256)) return;
+                    try {
+                        try {
+                            Files.move(temporary, target,
+                                    StandardCopyOption.ATOMIC_MOVE,
+                                    StandardCopyOption.REPLACE_EXISTING);
+                        } catch (AtomicMoveNotSupportedException failure) {
+                            Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+                        }
+                        if (!isValidCache(target, bytes.length, expectedSha256)) {
+                            throw new IOException("下载缓存提交后哈希校验失败: " + target.getFileName());
+                        }
+                        return;
+                    } catch (FileSystemException failure) {
+                        lastSharingFailure = failure;
+                        if (isValidCache(target, bytes.length, expectedSha256)) return;
+                        if (attempt == CACHE_COMMIT_ATTEMPTS) throw failure;
+                        try {
+                            Thread.sleep(CACHE_COMMIT_RETRY_MILLIS * attempt);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException("等待下载缓存提交重试时被中断", interrupted);
+                        }
+                    }
                 }
-                if (!isValidCache(target, bytes.length, expectedSha256)) {
-                    Files.deleteIfExists(target);
-                    throw new IOException("下载缓存提交后哈希校验失败: " + target.getFileName());
+                if (lastSharingFailure != null) {
+                    throw lastSharingFailure;
                 }
             } finally {
                 Files.deleteIfExists(temporary);
