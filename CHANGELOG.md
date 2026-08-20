@@ -4,6 +4,7 @@
 
 ## 2.0.0
 
+- Fixed publisher scans failing to append files after adding synchronization scopes. Safe-content scanning now follows the current scope table and includes `config/`, `defaultconfigs/`, and `configureddefaults/`. Account/session data, credentials, backups, temporary/runtime caches, and credential-shaped configuration documents are skipped by path/content blacklists with visible reasons; precise configuration repairs still use key-level OTA.
 - Fixed Simplified-Chinese Windows installations being routed as English when a launcher supplied `-Duser.language=en`. Download routing now reads the operating-system user locale first and only falls back to JVM/environment locales.
 - Verified CurseForge ForgeCDN file URLs are now normalized as official global endpoints even when their metadata was discovered through a Chinese mirror API. This preserves mirror-first behavior for Simplified Chinese while giving every other locale a valid official fallback.
 - Clarified self-update behavior: a client can only install the MCSync hash currently published by the stable `mods-v5.json`; an unpublished local build cannot be discovered automatically, and a broken release manifest blocks the entire atomic transaction including self-update.

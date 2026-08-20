@@ -43,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -50,8 +51,6 @@ import java.util.Set;
 
 /** Primary MCSync 2.0 publisher workspace embedded in the executable JAR. */
 final class V5PublisherWorkspace {
-    private static final List<String> AUTO_SCAN_ROOTS = List.of(
-            "resourcepacks", "shaderpacks", "kubejs", "tacz", "tlm_custom_pack");
     private static final Set<String> NEVER_SCAN_ROOTS = Set.of(
             "saves", "world", "logs", "crash-reports", "screenshots", "natives", "libraries",
             "assets", "versions", "downloads", "backups", "simplebackups", ".minecraft");
@@ -144,8 +143,8 @@ final class V5PublisherWorkspace {
 
         JTextArea note = new JTextArea(
                 "此工作台直接产生 schema-v5 发布。releaseSequence 只能增加，客户端会拒绝降级。\n"
-                        + "自动扫描只查找 mods/resourcepacks/shaderpacks/kubejs 等可分发内容；"
-                        + "config/defaultconfigs 默认不整树扫描，应在“配置 OTA”按键级管理，防止携带密钥。\n"
+                        + "自动扫描读取当前同步范围中的普通目录与文件；config/defaultconfigs/configureddefaults 也会参与，"
+                        + "但凭据、身份、备份和运行态缓存会按路径与内容黑名单跳过。精确修复仍建议使用“配置 OTA”。\n"
                         + "增量发布以“上一版完整发布输出/升级包”对比当前客户端；程序只需要其中完整的 manifest-v5.json，\n"
                         + "旧文件本体不必重复携带。ZIP 升级包、releases/<序号> 目录和完整输出目录均可作为基线；只有差分清单而没有完整索引时会阻止导出。\n"
                         + "未变化文件复用旧不可变地址，当前 releases/<序号>/ 只输出新增或变化的文件。");
@@ -287,13 +286,17 @@ final class V5PublisherWorkspace {
         panel.add(new JScrollPane(scopeTable), BorderLayout.CENTER);
         JPanel footer = new JPanel(new BorderLayout());
         JTextArea excluded = new JTextArea(
-                "永久排除：saves/world/playerdata/advancements/stats/logs/crash-reports/screenshots/"
+                "策略：managed 会移除 MCSync 上一版拥有、但新清单已删除的文件；additive 只添加/更新清单文件，"
+                        + "不因清单省略而删除；first-install 只在目标不存在时安装，之后保留玩家本地版本。\n"
+                        + "“扫描安全内容目录”会读取这里声明的普通目录或文件；mods 由 Mods 页扫描。"
+                        + "config/defaultconfigs/configureddefaults 会正常扫描，敏感路径和敏感配置键按黑名单跳过并报告。\n"
+                        + "永久排除：saves/world/playerdata/advancements/stats/logs/crash-reports/screenshots/"
                         + "journeymap/xaero 玩家探索数据、运行库与启动器缓存。\n"
                         + "内置于 Mod JAR 中的默认资源包/数据包/模型包不单独同步，由 mods 文件本身管理。");
         excluded.setEditable(false);
         excluded.setLineWrap(true);
         excluded.setWrapStyleWord(true);
-        excluded.setRows(3);
+        excluded.setRows(6);
         excluded.setOpaque(false);
         JPanel buttons = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton add = new JButton("添加范围");
@@ -550,10 +553,13 @@ final class V5PublisherWorkspace {
         }
         button.setEnabled(false);
         validation.append("\n正在扫描安全内容目录…\n");
-        new SwingWorker<List<FileRow>, Void>() {
+        List<String> declaredScanPaths = publisherContentScanPaths(
+                scopes.rows.stream().map(row -> row.path).toList());
+        new SwingWorker<ContentScanResult, Void>() {
             @Override
-            protected List<FileRow> doInBackground() throws Exception {
+            protected ContentScanResult doInBackground() throws Exception {
                 ArrayList<FileRow> found = new ArrayList<>();
+                ArrayList<String> skipped = new ArrayList<>();
                 Set<String> existing = files.normalizedPaths();
                 Path options = rootPath.resolve("options.txt");
                 if (Files.isRegularFile(options, LinkOption.NOFOLLOW_LINKS)
@@ -563,23 +569,39 @@ final class V5PublisherWorkspace {
                     row.applyLocal("首装保留：不覆盖玩家已有 options.txt");
                     found.add(row);
                 }
-                for (String directory : AUTO_SCAN_ROOTS) {
-                    Path scanRoot = rootPath.resolve(directory);
-                    if (!Files.isDirectory(scanRoot, LinkOption.NOFOLLOW_LINKS)) continue;
-                    try (var stream = Files.walk(scanRoot)) {
-                        for (Path path : stream.filter(candidate -> Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS))
-                                .sorted().toList()) {
+                for (String declaredPath : declaredScanPaths) {
+                    Path scanRoot = rootPath.resolve(declaredPath);
+                    List<Path> candidates;
+                    if (Files.isRegularFile(scanRoot, LinkOption.NOFOLLOW_LINKS)) {
+                        candidates = List.of(scanRoot);
+                    } else if (Files.isDirectory(scanRoot, LinkOption.NOFOLLOW_LINKS)) {
+                        try (var stream = Files.walk(scanRoot)) {
+                            candidates = stream
+                                    .filter(candidate -> Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS))
+                                    .sorted()
+                                    .toList();
+                        }
+                    } else {
+                        continue;
+                    }
+                    for (Path path : candidates) {
                             if (Files.isSymbolicLink(path)) continue;
                             String relative = rootPath.relativize(path).toString().replace('\\', '/');
                             String first = relative.split("/", 2)[0].toLowerCase(Locale.ROOT);
                             if (NEVER_SCAN_ROOTS.contains(first) || !existing.add(relative.toLowerCase(Locale.ROOT))) continue;
+                            byte[] inspected = SensitiveDataPolicy.isConfigTree(relative)
+                                    ? Files.readAllBytes(path) : null;
+                            String exclusion = SensitiveDataPolicy.publisherScanExclusionReason(relative, inspected);
+                            if (exclusion != null) {
+                                skipped.add(relative + " — " + exclusion);
+                                continue;
+                            }
                             FileRow row = FileRow.scanned(relative, kindFor(relative));
                             if (!PublisherModAutoMatcher.isModArtifact(relative, row.kind)) {
                                 row.confirmed = true;
                                 row.applyLocal("非 Mod 文件固定本地托管");
                             }
                             found.add(row);
-                        }
                     }
                 }
                 List<FileRow> modRows = found.stream()
@@ -593,25 +615,64 @@ final class V5PublisherWorkspace {
                             PublisherModAutoMatcher.localDownload(), "未匹配，使用本地文件");
                     row.applyMatch(match);
                 }
-                return found;
+                return new ContentScanResult(List.copyOf(found), List.copyOf(skipped));
             }
 
             @Override
             protected void done() {
                 button.setEnabled(true);
                 try {
-                    List<FileRow> found = get();
+                    ContentScanResult result = get();
+                    List<FileRow> found = result.found();
                     files.rows.addAll(found);
                     files.rows.sort(Comparator.comparing(row -> row.path));
                     files.fireTableDataChanged();
                     validation.append("扫描完成：新增 " + found.size()
-                            + " 个文件；Mod 已完成 SHA-256 复核或回退本地托管，其他文件固定本地托管。\n");
+                            + " 个文件；按安全黑名单跳过 " + result.skipped().size() + " 个文件。"
+                            + "Mod 已完成 SHA-256 复核或回退本地托管，其他文件固定本地托管。\n");
+                    int shown = Math.min(30, result.skipped().size());
+                    for (int index = 0; index < shown; index++) {
+                        validation.append("  跳过: " + result.skipped().get(index) + "\n");
+                    }
+                    if (result.skipped().size() > shown) {
+                        validation.append("  另有 " + (result.skipped().size() - shown) + " 个黑名单命中未展开。\n");
+                    }
                     refreshSummary();
                 } catch (Exception failure) {
                     showError(cause(failure).getMessage());
                 }
             }
         }.execute();
+    }
+
+    static List<String> publisherContentScanPaths(List<String> declaredScopes) {
+        ArrayList<String> candidates = new ArrayList<>();
+        HashSet<String> unique = new HashSet<>();
+        for (String declared : declaredScopes) {
+            if (declared == null) continue;
+            String normalized = declared.strip().replace('\\', '/');
+            while (normalized.endsWith("/")) normalized = normalized.substring(0, normalized.length() - 1);
+            if (normalized.isBlank() || normalized.startsWith("/") || normalized.contains("..")) continue;
+            String lower = normalized.toLowerCase(Locale.ROOT);
+            String first = lower.split("/", 2)[0];
+            if (first.equals("mods") || NEVER_SCAN_ROOTS.contains(first)
+                    || lower.equals("options.txt") || lower.equals(".modsync") || lower.startsWith(".modsync/")) {
+                continue;
+            }
+            if (unique.add(lower)) candidates.add(normalized);
+        }
+        candidates.sort(Comparator.comparingInt(String::length).thenComparing(String::compareToIgnoreCase));
+        LinkedHashSet<String> roots = new LinkedHashSet<>();
+        for (String candidate : candidates) {
+            String lower = candidate.toLowerCase(Locale.ROOT);
+            boolean nested = roots.stream().map(value -> value.toLowerCase(Locale.ROOT))
+                    .anyMatch(parent -> lower.equals(parent) || lower.startsWith(parent + "/"));
+            if (!nested) roots.add(candidate);
+        }
+        return List.copyOf(roots);
+    }
+
+    private record ContentScanResult(List<FileRow> found, List<String> skipped) {
     }
 
     private void scanMods(JButton button) {
@@ -1051,6 +1112,7 @@ final class V5PublisherWorkspace {
         if (normalized.startsWith("shaderpacks/")) return "shader-pack";
         if (normalized.startsWith("kubejs/")) return "kubejs";
         if (normalized.startsWith("defaultconfigs/")) return "default-config";
+        if (normalized.startsWith("configureddefaults/")) return "default-config";
         if (normalized.startsWith("config/")) return "config";
         return "support";
     }

@@ -71,6 +71,8 @@ public final class AllTests {
         testConcurrentIdenticalContentSharesCache();
         testReleaseSequenceAntiDowngradeGate();
         testLoadedProjectSequenceAlwaysAdvances();
+        testPublisherCustomScopesParticipateInContentScan();
+        testPublisherConfigBlacklistKeepsGameplayDataAndRejectsSensitiveState();
         testStructuredConfigMutationEngine();
         testV5AtomicReleaseTransactionAndOwnership();
         testV5NewReleaseDoesNotRewriteUnchangedFiles();
@@ -142,6 +144,48 @@ public final class AllTests {
         testUnsupportedAndroidLauncherUsesDesktopLogic();
         testHeadlessProgressIsLoggedAndWritten();
         System.out.println("All tests passed: " + passed);
+    }
+
+    private void testPublisherCustomScopesParticipateInContentScan() {
+        List<String> scanPaths = V5PublisherWorkspace.publisherContentScanPaths(List.of(
+                "mods", "resourcepacks", "shaderpacks", "kubejs", "tacz", "tlm_custom_pack",
+                "config", "defaultconfigs", "configureddefaults", "options.txt",
+                "custom_models", "custom_models/subdirectory", "custom-file.json",
+                "saves", "logs", ".modsync/cache"));
+        check(scanPaths.size() == 10 && Set.copyOf(scanPaths).equals(Set.of(
+                        "tacz", "kubejs", "resourcepacks", "shaderpacks", "custom_models",
+                        "tlm_custom_pack", "custom-file.json", "config", "defaultconfigs",
+                        "configureddefaults")),
+                "custom and config scopes should join safe scanning while nested, mod and state scopes stay excluded");
+        pass("publisher custom scopes participate in safe content scanning");
+    }
+
+    private void testPublisherConfigBlacklistKeepsGameplayDataAndRejectsSensitiveState() {
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "config/create-client.toml", "[client]\nponder=true\n".getBytes(StandardCharsets.UTF_8)) == null,
+                "ordinary mod gameplay/client configuration should remain publishable");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "defaultconfigs/c6c-common.toml", "disallow_maid_change_model=true\n".getBytes(StandardCharsets.UTF_8)) == null,
+                "default gameplay configuration should remain publishable");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "configureddefaults/mod/data.json", "{\"enabled\":true}\n".getBytes(StandardCharsets.UTF_8)) == null,
+                "configured defaults mod data should remain publishable");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "config/language/tokenizer.json", "{\"vocabulary\":[]}\n".getBytes(StandardCharsets.UTF_8)) == null,
+                "ordinary data names containing token as part of another word should not be false positives");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "config/web_server.json", "{\"enabled\":false}\n".getBytes(StandardCharsets.UTF_8)) != null,
+                "known credential-bearing web server config should be path-blacklisted");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "config/mod/cache/state.json", "{}\n".getBytes(StandardCharsets.UTF_8)) != null,
+                "runtime cache directories inside config should be blacklisted");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "defaultconfigs/bridge.toml", "token = \"do-not-publish\"\n".getBytes(StandardCharsets.UTF_8)) != null,
+                "credential-shaped config content should be blacklisted");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "configureddefaults/mod/options.toml.bak", "enabled=true\n".getBytes(StandardCharsets.UTF_8)) != null,
+                "backup config files should be blacklisted");
+        pass("publisher config blacklist preserves gameplay data and excludes sensitive state");
     }
 
     private void testMinecraftEarlyProgressFailsClosedOutsideNeoForge() {

@@ -109,6 +109,8 @@ Modrinth/CurseForge 不取“最新版”，只解析清单锁定的版本/文�
 
 配置键名包含 token、password、secret、credential、API key、private key 等凭据语义时禁止 OTA；发布器也会拒绝把疑似凭据配置整文件复制进发布目录。
 
+发布扫描采用“声明范围 + 敏感黑名单”：`config/**`、`defaultconfigs/**`、`configureddefaults/**` 中未命中黑名单的模组数据和玩法配置可作为普通受管文件；账号/会话、凭据、备份、临时文件、解包缓存，以及内容含敏感键的配置必须跳过并报告原因。精确故障修复优先使用带前像约束的键级 OTA。
+
 ## 7. 原子事务与恢复
 
 一次 OTA 的文件、目录包、配置和 MCSync 自更新属于同一发布事务：

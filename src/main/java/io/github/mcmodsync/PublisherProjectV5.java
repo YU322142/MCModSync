@@ -76,8 +76,11 @@ final class PublisherProjectV5 {
             Path local = pathPolicy.resolve(relative, false);
             if (!Files.isRegularFile(local, LinkOption.NOFOLLOW_LINKS)) throw new IOException("发布项目中的文件不存在: " + relative);
             byte[] bytes = Files.readAllBytes(local);
-            if ((relative.startsWith("config/") || relative.startsWith("defaultconfigs/")
-                    || relative.startsWith("kubejs/config/"))
+            String sensitiveReason = SensitiveDataPolicy.publisherScanExclusionReason(relative, bytes);
+            if (sensitiveReason != null) {
+                throw new IOException("配置文件被安全黑名单拒绝: " + relative + "（" + sensitiveReason + "）");
+            }
+            if (relative.startsWith("kubejs/config/")
                     && SensitiveDataPolicy.looksLikeCredentialDocument(bytes)) {
                 throw new IOException("检测到可能含凭据的配置文件，请改用键级 OTA: " + relative);
             }
@@ -169,8 +172,12 @@ final class PublisherProjectV5 {
                 throw new IOException("发布项目中的文件不存在或不是普通文件: " + relative);
             }
             byte[] localBytes = Files.readAllBytes(local);
-            if ((relative.startsWith("config/") || relative.startsWith("defaultconfigs/")
-                    || relative.startsWith("kubejs/config/"))
+            String sensitiveReason = SensitiveDataPolicy.publisherScanExclusionReason(relative, localBytes);
+            if (sensitiveReason != null) {
+                throw new IOException("配置文件被安全黑名单拒绝，禁止整文件进入发布目录: "
+                        + relative + "（" + sensitiveReason + "）");
+            }
+            if (relative.startsWith("kubejs/config/")
                     && SensitiveDataPolicy.looksLikeCredentialDocument(localBytes)) {
                 throw new IOException("检测到可能含凭据的配置文件，禁止整文件进入发布目录；请改用非敏感键级 OTA: " + relative);
             }
