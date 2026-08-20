@@ -103,6 +103,15 @@ server-list/servers.dat
 
 Upgrade materials used by legacy 1.6.x, 1.7, and 1.9.x clients must remain at their original URLs. The new v5 directory does not need an adjacent v4 file. See the [legacy upgrade guide](中文使用指南.md).
 
+The Remote and Legacy Upgrade page provides two workflows. Enable permanent legacy gateways during a complete publication to emit `legacy/` together with the cloud output. If schema-v5 has already been published, select a new empty directory and choose **Generate legacy gateway upload package only**; this does not rescan the client or rebuild the object store. The standalone package contains `legacy-artifacts.json`, `SHA256SUMS.txt`, and content-equivalent Chinese and English upload guides. Its permanent public entries are:
+
+```text
+<public-base-url>/legacy/1.9/mods-v4.txt
+<public-base-url>/legacy/1.6/mods.txt
+```
+
+Legacy clients install MCSync and the configuration bootstrap from these entries. Only after the game exits, replacement completes, and the client starts again does the bootstrap switch to `<public-base-url>/channel/stable/mods-v5.json`.
+
 ## Minimal Client Configuration
 
 ```properties
