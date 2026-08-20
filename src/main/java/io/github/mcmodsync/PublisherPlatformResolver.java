@@ -172,6 +172,18 @@ final class PublisherPlatformResolver {
         return normalized;
     }
 
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> normalizeVerifiedPlatformDownload(Map<String, Object> download) {
+        LinkedHashMap<String, Object> normalized = new LinkedHashMap<>(download);
+        if (!"curseforge".equals(normalized.get("type"))
+                || !(normalized.get("endpoints") instanceof List<?> endpoints)) return normalized;
+        normalized.put("endpoints", endpoints.stream().map(raw -> {
+            if (!(raw instanceof Map<?, ?> map)) return raw;
+            return normalizeVerifiedCurseForgeFileEndpoint((Map<String, Object>) map);
+        }).toList());
+        return normalized;
+    }
+
     private static boolean isOfficialForgeCdnHost(String host) {
         return "edge.forgecdn.net".equalsIgnoreCase(host)
                 || "media.forgecdn.net".equalsIgnoreCase(host)

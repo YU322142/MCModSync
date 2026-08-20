@@ -187,10 +187,11 @@ final class PublisherProjectV5 {
                                 previousManifest, relative, sha256, localBytes.length, typedDownload)
                         : null;
                 if (stored != null) {
-                    generated.put("download", stored);
+                    generated.put("download", PublisherPlatformResolver.normalizeVerifiedPlatformDownload(stored));
                     reusedPlatformVerifications++;
                 } else if (previousEvidence != null) {
-                    generated.put("download", ReleaseManifestV5.downloadJson(previousEvidence.download()));
+                    generated.put("download", PublisherPlatformResolver.normalizeVerifiedPlatformDownload(
+                            ReleaseManifestV5.downloadJson(previousEvidence.download())));
                     reusedPlatformVerifications++;
                 } else {
                     try {

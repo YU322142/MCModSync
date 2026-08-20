@@ -597,6 +597,17 @@ public final class AllTests {
                         && Boolean.FALSE.equals(normalized.get("thirdParty"))
                         && ((Number) normalized.get("priority")).intValue() >= 100,
                 "通过 SHA-256 复核的 ForgeCDN 文件必须按官方全局地址发布，不能遗留镜像标签");
+        Map<String, Object> download = PublisherPlatformResolver.normalizeVerifiedPlatformDownload(Map.of(
+                "type", "curseforge", "projectId", "1308486", "fileId", 7996778,
+                "distributionPolicy", "upstream-only", "endpoints", List.of(Map.of(
+                        "url", "https://edge.forgecdn.net/files/7996/778/example.jar",
+                        "role", "mirror", "purpose", "file", "region", "cn",
+                        "priority", 10, "thirdParty", true))));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> reusedEndpoint = (Map<String, Object>) ((List<?>) download.get("endpoints")).getFirst();
+        check(reusedEndpoint.get("role").equals("official")
+                        && Boolean.FALSE.equals(reusedEndpoint.get("thirdParty")),
+                "从上一版或持久验证缓存复用的 CurseForge 下载证据也必须完成规范化");
         pass("verified ForgeCDN file endpoints are normalized as global official downloads");
     }
 
