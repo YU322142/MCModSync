@@ -160,9 +160,12 @@ final class PublisherCloudBundle {
         writeClientProperties(properties, stableUrl, serverListUrl);
         reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 2, 5, "生成客户端引导配置");
         if (legacyGateways) {
-            ManagedClientConfig managed = ManagedClientConfig.fromPropertiesFile(properties);
-            buildLegacyDirectory(output.resolve(parent(v4Relative)), updaterJar, managed, true, sequence);
-            buildLegacyDirectory(output.resolve(parent(v2Relative)), updaterJar, managed, false, sequence);
+            ManagedClientConfig finalConfig = ManagedClientConfig.fromPropertiesFile(properties);
+            ManagedClientConfig legacyCatalogConfig = finalConfig.forLegacyGateway(base + "/" + v4Relative);
+            buildLegacyDirectory(output.resolve(parent(v4Relative)), updaterJar,
+                    finalConfig, legacyCatalogConfig, true, sequence);
+            buildLegacyDirectory(output.resolve(parent(v2Relative)), updaterJar,
+                    finalConfig, legacyCatalogConfig, false, sequence);
         }
         reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 3, 5, "生成旧版升级材料");
         writeGuide(output.resolve("REMOTE-DEPLOYMENT.md"), sequence, stableRelative, stableUrl,
@@ -245,13 +248,14 @@ final class PublisherCloudBundle {
     private static void buildLegacyDirectory(
             Path directory,
             Path updater,
-            ManagedClientConfig managed,
+            ManagedClientConfig finalConfig,
+            ManagedClientConfig legacyCatalogConfig,
             boolean v4,
             long releaseSequence) throws IOException {
         Files.createDirectories(directory);
         Files.copy(updater, directory.resolve("MCSync-2.0.0.jar"), StandardCopyOption.REPLACE_EXISTING);
-        ManagedClientConfig.writeBootstrapJar(directory, managed);
-        ModManifest catalog = ModManifest.scan(directory).withManagedClientConfig(managed)
+        ManagedClientConfig.writeBootstrapJar(directory, finalConfig);
+        ModManifest catalog = ModManifest.scan(directory).withManagedClientConfig(legacyCatalogConfig)
                 .withCatalogVersion(Long.toString(releaseSequence));
         if (v4) catalog.write(directory.resolve("mods-v4.txt"));
         else LegacyUpgradeManifest.write(catalog, directory.resolve("mods.txt"));

@@ -1752,12 +1752,31 @@ public final class AllTests {
             check(v4.entries().size() == 2 && v4.catalogVersion().equals("2000001")
                             && v2.startsWith(ModManifest.MAGIC_V2 + "\n") && v2DataRows == 2,
                     "1.9.x 与 1.6.x/1.7.x 网关都应只包含 MCSync 和配置引导");
-            check(v4.managedClientConfig().orElseThrow().values().get("manifest")
-                            .equals("https://files.example.test/mcsync/channel/stable/mods-v5.json"),
-                    "旧版配置引导应把升级后客户端切到 2.0 稳定入口");
+            String legacyManifest = v4.managedClientConfig().orElseThrow().values().get("manifest");
+            check(legacyManifest.equals("https://files.example.test/mcsync/legacy/1.9/mods-v4.txt")
+                            && URI.create(legacyManifest).getPath().endsWith("/mods-v4.txt"),
+                    "1.9.x 必须先读取自洽的 mods-v4.txt，不能在升级前看到 v5 地址");
+            check(ManagedClientConfig.fromManifestText(v2).orElseThrow().values().get("manifest")
+                            .equals("https://files.example.test/mcsync/legacy/1.9/mods-v4.txt"),
+                    "1.6.x/1.7.x 升级网关也应先迁移到可被旧客户端读取的 v4 入口");
             check(Files.isRegularFile(output.resolve("legacy/1.6/MCModSync-Config.jar"))
                             && v2.contains("\tMCModSync-Config.jar\n"),
                     "1.6.x/1.7.x 网关必须下发已锁定的配置引导 JAR");
+            Path upgradedClient = Files.createDirectories(root.resolve("upgraded-client"));
+            Path upgradedMods = Files.createDirectories(upgradedClient.resolve("mods"));
+            Files.copy(output.resolve("legacy/1.9/MCModSync-Config.jar"),
+                    upgradedMods.resolve(ManagedClientConfig.BOOTSTRAP_FILE_NAME));
+            Files.writeString(upgradedClient.resolve("modsync.properties"),
+                    "manifest=" + legacyManifest + "\n", StandardCharsets.UTF_8);
+            check(ManagedClientConfig.installFromBootstrapJar(upgradedClient, ignored -> { }),
+                    "旧版下载升级组件后，配置引导 JAR 应在重启时切换到 v5");
+            java.util.Properties upgradedProperties = new java.util.Properties();
+            try (var input = Files.newInputStream(upgradedClient.resolve("modsync.properties"))) {
+                upgradedProperties.load(input);
+            }
+            check(upgradedProperties.getProperty("manifest")
+                            .equals("https://files.example.test/mcsync/channel/stable/mods-v5.json"),
+                    "升级后的 2.0 客户端必须由配置引导 JAR 切换到最终 mods-v5.json");
             check(Files.isRegularFile(result.stableManifest())
                             && result.stableManifest().getFileName().toString().equals("mods-v5.json"),
                     "新版稳定入口必须使用 mods-v5.json，旧版网关单独输出");

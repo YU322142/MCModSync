@@ -33,6 +33,7 @@
 - Shows an estimated hidden-commit duration before Minecraft exits, based on the actual number and size of files to write, while warning that many small files or slower disks can take longer.
 - Fixed schema-v5 releases restaging, backing up, and rewriting every file in the complete desired-state manifest whenever the release sequence changed. The complete manifest is still verified and recorded in the ownership ledger, but the transaction now commits only additions, changes, removals, and configuration mutations.
 - The previous baseline can now be a complete publisher output, a standalone `manifest-v5.json`/`mods-v5.json`, or a ZIP upgrade package. An upgrade package only needs the complete desired-state index, not duplicate old payloads; publication is blocked when that index is absent.
+- Fixed the legacy upgrade ordering: `legacy/1.9/mods-v4.txt` and `legacy/1.6/mods.txt` now always advertise a v4 address that old clients can parse; the downloaded configuration bootstrap switches the restarted 2.0 client to the final `mods-v5.json` only after the upgrade components are installed, preventing 1.9.x from terminating before downloading them.
 
 ## 1.9.6
 

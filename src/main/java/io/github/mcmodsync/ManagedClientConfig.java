@@ -216,6 +216,13 @@ final class ManagedClientConfig {
         return values;
     }
 
+    ManagedClientConfig forLegacyGateway(String legacyManifestUrl) {
+        Map<String, String> legacyValues = new LinkedHashMap<>(values);
+        legacyValues.put("manifest", legacyManifestUrl);
+        legacyValues.remove("mobileManifest");
+        return validated(legacyValues, "旧版升级网关");
+    }
+
     private static ManagedClientConfig validated(Map<String, String> source, String description) {
         Map<String, String> normalized = new LinkedHashMap<>();
         for (Map.Entry<String, String> entry : source.entrySet()) {
