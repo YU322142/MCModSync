@@ -7,7 +7,8 @@ import java.util.regex.Pattern;
 
 /** Prevents release manifests and hosted config snapshots from becoming credential distribution channels. */
 final class SensitiveDataPolicy {
-    private static final int MAX_INSPECTED_CONFIG_BYTES = 4 * 1024 * 1024;
+    private static final int INSPECTION_WINDOW_BYTES = 1024 * 1024;
+    private static final int INSPECTION_OVERLAP_BYTES = 512;
     private static final Set<String> CONFIG_ROOTS = Set.of(
             "config", "defaultconfigs", "configureddefaults");
     private static final Set<String> BLACKLISTED_PATH_SEGMENTS = Set.of(
@@ -47,9 +48,16 @@ final class SensitiveDataPolicy {
     }
 
     static boolean looksLikeCredentialDocument(byte[] bytes) {
-        if (bytes.length == 0 || bytes.length > MAX_INSPECTED_CONFIG_BYTES) return false;
-        String text = new String(bytes, StandardCharsets.UTF_8);
-        return JSON_KEY.matcher(text).find() || TEXT_KEY.matcher(text).find();
+        if (bytes.length == 0) return false;
+        int start = 0;
+        while (start < bytes.length) {
+            int end = Math.min(bytes.length, start + INSPECTION_WINDOW_BYTES);
+            String text = new String(bytes, start, end - start, StandardCharsets.UTF_8);
+            if (JSON_KEY.matcher(text).find() || TEXT_KEY.matcher(text).find()) return true;
+            if (end == bytes.length) break;
+            start = end - INSPECTION_OVERLAP_BYTES;
+        }
+        return false;
     }
 
     static boolean isConfigTree(String relative) {
@@ -86,9 +94,6 @@ final class SensitiveDataPolicy {
                     || segment.endsWith("authtoken")) {
                 return "文件名疑似包含凭据类型: " + segment;
             }
-        }
-        if (bytes != null && bytes.length > MAX_INSPECTED_CONFIG_BYTES) {
-            return "配置文件超过 4 MiB，无法执行安全内容检查；请显式拆分或改用键级 OTA";
         }
         if (bytes != null && looksLikeCredentialDocument(bytes)) {
             return "配置内容包含 token/password/secret/API key 等敏感键";

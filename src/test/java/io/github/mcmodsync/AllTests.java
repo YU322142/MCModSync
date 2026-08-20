@@ -185,6 +185,17 @@ public final class AllTests {
         check(SensitiveDataPolicy.publisherScanExclusionReason(
                         "configureddefaults/mod/options.toml.bak", "enabled=true\n".getBytes(StandardCharsets.UTF_8)) != null,
                 "backup config files should be blacklisted");
+        byte[] largeSafeData = new byte[5 * 1024 * 1024];
+        Arrays.fill(largeSafeData, (byte) 'x');
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "configureddefaults/mod/large-gameplay-data.dat", largeSafeData) == null,
+                "large safe mod data should not be excluded merely because of its size");
+        byte[] credentialTail = "\napi_key = \"do-not-publish\"\n".getBytes(StandardCharsets.UTF_8);
+        System.arraycopy(credentialTail, 0, largeSafeData,
+                largeSafeData.length - credentialTail.length, credentialTail.length);
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "configureddefaults/mod/large-gameplay-data.dat", largeSafeData) != null,
+                "credential keys near the end of a large config should still be detected");
         pass("publisher config blacklist preserves gameplay data and excludes sensitive state");
     }
 
