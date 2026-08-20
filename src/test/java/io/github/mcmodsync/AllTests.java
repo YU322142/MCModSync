@@ -56,9 +56,11 @@ public final class AllTests {
         testChinaApiMirrorPresetsRemainExplicitThirdPartyCandidates();
         testPublisherResolvesCurseForgeWithoutLeakingCredentials();
         testCurseForgeMirrorRewritesForgeCdnDownloadUrl();
+        testVerifiedForgeCdnEndpointBecomesGlobalOfficial();
         testCurseForgePublisherKeepsMultipleResolvedCandidates();
         testCurseForgeFallsBackToFileMetadataDownloadUrl();
         testDownloadCandidateLocaleRouting();
+        testMachineLocaleIgnoresLauncherLanguageOverride();
         testPublisherReusesPreviousPlatformVerificationByHash();
         testPublisherPersistsSuccessfulPlatformVerificationAcrossRetries();
         testOfficialOnlyPlatformSourceGetsMirrorFallback();
@@ -565,6 +567,37 @@ public final class AllTests {
                         && !ReleaseArtifactResolver.isSimplifiedChinese(Locale.forLanguageTag("zh-Hant-TW")),
                 "明确的 Hans/Hant 语言脚本必须正确区分镜像线路");
         pass("download candidates follow the machine display language");
+    }
+
+    private void testMachineLocaleIgnoresLauncherLanguageOverride() {
+        String previous = System.getProperty("mcsync.machineLocale");
+        try {
+            System.setProperty("mcsync.machineLocale", "zh-CN");
+            check(ReleaseArtifactResolver.isSimplifiedChinese(MachineLocale.detect()),
+                    "机器区域显式为 zh-CN 时必须使用简中线路，不能被 -Duser.language=en 覆盖");
+            Locale parsed = MachineLocale.parseWindowsLocaleName(
+                    "HKEY_CURRENT_USER\\Control Panel\\International\r\n"
+                            + "    LocaleName    REG_SZ    zh-CN\r\n");
+            check(parsed != null && parsed.toLanguageTag().equalsIgnoreCase("zh-CN"),
+                    "必须能读取 Windows 当前用户 LocaleName");
+        } finally {
+            if (previous == null) System.clearProperty("mcsync.machineLocale");
+            else System.setProperty("mcsync.machineLocale", previous);
+        }
+        pass("machine locale routing survives launcher JVM language overrides");
+    }
+
+    private void testVerifiedForgeCdnEndpointBecomesGlobalOfficial() {
+        Map<String, Object> normalized = PublisherPlatformResolver.normalizeVerifiedCurseForgeFileEndpoint(
+                Map.of("url", "https://edge.forgecdn.net/files/7996/778/example.jar",
+                        "role", "mirror", "purpose", "file", "region", "cn",
+                        "priority", 10, "thirdParty", true));
+        check(normalized.get("role").equals("official")
+                        && normalized.get("region").equals("global")
+                        && Boolean.FALSE.equals(normalized.get("thirdParty"))
+                        && ((Number) normalized.get("priority")).intValue() >= 100,
+                "通过 SHA-256 复核的 ForgeCDN 文件必须按官方全局地址发布，不能遗留镜像标签");
+        pass("verified ForgeCDN file endpoints are normalized as global official downloads");
     }
 
     private void testPublisherReusesPreviousPlatformVerificationByHash() {

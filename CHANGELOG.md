@@ -4,6 +4,10 @@
 
 ## 2.0.0
 
+- Fixed Simplified-Chinese Windows installations being routed as English when a launcher supplied `-Duser.language=en`. Download routing now reads the operating-system user locale first and only falls back to JVM/environment locales.
+- Verified CurseForge ForgeCDN file URLs are now normalized as official global endpoints even when their metadata was discovered through a Chinese mirror API. This preserves mirror-first behavior for Simplified Chinese while giving every other locale a valid official fallback.
+- Clarified self-update behavior: a client can only install the MCSync hash currently published by the stable `mods-v5.json`; an unpublished local build cannot be discovered automatically, and a broken release manifest blocks the entire atomic transaction including self-update.
+
 - Added a real publisher progress bar covering hashing and platform verification, hosted-file copying, manifest writing, and cloud-bundle assembly; expensive file validation no longer blocks the GUI thread.
 - When a previous publication is selected, platform Mods now reuse verified download evidence by SHA-256, size, and pinned platform coordinates; unchanged files no longer repeat platform API lookup or full-Mod verification downloads.
 - Successful platform verification is now persisted immediately as a small atomic evidence cache at `.modsync/publisher-platform-verifications-v1.json`; a later publication failure no longer causes already verified Mods to be downloaded again on retry.

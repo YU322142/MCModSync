@@ -62,7 +62,7 @@ final class PublisherPlatformResolver {
                 try {
                     URI fileUri = URI.create(text(endpoint.get("url"), "CurseForge file endpoint"));
                     if (downloadMatches(fileUri, expectedSha256, expectedSize)) {
-                        addDistinctEndpoint(verified, endpoint);
+                        addDistinctEndpoint(verified, normalizeVerifiedCurseForgeFileEndpoint(endpoint));
                     } else {
                         last = new IOException("CurseForge 固定文件未通过 SHA-256/大小复核");
                     }
@@ -107,7 +107,7 @@ final class PublisherPlatformResolver {
                     LinkedHashMap<String, Object> fileEndpoint = new LinkedHashMap<>(candidate.template());
                     fileEndpoint.put("url", candidate.uri().toASCIIString());
                     fileEndpoint.put("purpose", "file");
-                    addDistinctEndpoint(resolved, fileEndpoint);
+                    addDistinctEndpoint(resolved, normalizeVerifiedCurseForgeFileEndpoint(fileEndpoint));
                 }
             } catch (IOException failure) {
                 last = failure;
@@ -159,6 +159,25 @@ final class PublisherPlatformResolver {
         }
     }
 
+    static Map<String, Object> normalizeVerifiedCurseForgeFileEndpoint(Map<String, Object> endpoint) {
+        LinkedHashMap<String, Object> normalized = new LinkedHashMap<>(endpoint);
+        if (!"file".equals(normalized.get("purpose"))) return normalized;
+        URI uri = safeUri(normalized.get("url"));
+        if (uri == null || !isOfficialForgeCdnHost(uri.getHost())) return normalized;
+        normalized.put("role", "official");
+        normalized.put("region", "global");
+        normalized.put("priority", Math.max(100,
+                ((Number) normalized.getOrDefault("priority", 100)).intValue()));
+        normalized.put("thirdParty", false);
+        return normalized;
+    }
+
+    private static boolean isOfficialForgeCdnHost(String host) {
+        return "edge.forgecdn.net".equalsIgnoreCase(host)
+                || "media.forgecdn.net".equalsIgnoreCase(host)
+                || "mediafilez.forgecdn.net".equalsIgnoreCase(host);
+    }
+
     private record ResolvedCandidate(URI uri, Map<String, Object> template) {
     }
 
@@ -171,9 +190,7 @@ final class PublisherPlatformResolver {
     static URI mirrorCurseForgeDownloadUrl(URI apiBase, URI upstreamFile) throws IOException {
         if (!"mod.mcimirror.top".equalsIgnoreCase(apiBase.getHost())) return upstreamFile;
         String host = upstreamFile.getHost();
-        if (!("edge.forgecdn.net".equalsIgnoreCase(host)
-                || "media.forgecdn.net".equalsIgnoreCase(host)
-                || "mediafilez.forgecdn.net".equalsIgnoreCase(host))) {
+        if (!isOfficialForgeCdnHost(host)) {
             throw new IOException("MCIMirror CurseForge API 返回了非 ForgeCDN 文件地址");
         }
         String rawPath = upstreamFile.getRawPath();

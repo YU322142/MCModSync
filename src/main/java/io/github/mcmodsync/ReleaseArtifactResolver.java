@@ -27,6 +27,7 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
     private final HttpClient client;
     private final Consumer<String> logger;
     private final SyncObserver observer;
+    private final Locale routingLocale;
     private final AtomicInteger completedFiles = new AtomicInteger();
     private int totalFiles = 1;
 
@@ -38,6 +39,7 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
         this.config = config;
         this.logger = logger;
         this.observer = observer;
+        this.routingLocale = MachineLocale.detect();
         this.client = RequiredManifestFetcher.createClient(config.connectTimeout());
     }
 
@@ -178,7 +180,7 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
             throws IOException, InterruptedException {
         ReleaseManifestV5.DownloadSource source = entry.download();
         ArrayList<URI> result = new ArrayList<>();
-        preferredEndpoints(source.endpoints(), "file", Locale.getDefault(Locale.Category.DISPLAY)).stream()
+        preferredEndpoints(source.endpoints(), "file", routingLocale).stream()
                 .map(ReleaseManifestV5.DownloadEndpoint::uri)
                 .forEach(result::add);
         switch (source.type()) {
@@ -207,7 +209,7 @@ final class ReleaseArtifactResolver implements ReleaseTransactionEngine.Artifact
     private List<URI> resolveModrinth(ReleaseManifestV5.DownloadSource source)
             throws IOException, InterruptedException {
         List<ReleaseManifestV5.DownloadEndpoint> apiEndpoints = preferredEndpoints(
-                source.endpoints(), "api", Locale.getDefault(Locale.Category.DISPLAY));
+                source.endpoints(), "api", routingLocale);
         ArrayList<URI> result = new ArrayList<>();
         IOException last = null;
         for (ReleaseManifestV5.DownloadEndpoint endpoint : apiEndpoints) {
