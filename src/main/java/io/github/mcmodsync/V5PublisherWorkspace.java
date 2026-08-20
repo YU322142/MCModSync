@@ -70,6 +70,7 @@ final class V5PublisherWorkspace {
     private final JTextField stableManifestPath = new JTextField("channel/stable/mods-v5.json");
     private final JTextField legacyV4Path = new JTextField("legacy/1.9/mods-v4.txt");
     private final JTextField legacyV2Path = new JTextField("legacy/1.6/mods.txt");
+    private final JTextField legacyOutputDirectory = new JTextField();
     private final JCheckBox syncServerList = new JCheckBox("同步服务器列表（保留玩家自定义条目）", true);
     private final JTextField serverListSource = new JTextField();
     private final JTextField serverListManifestPath = new JTextField("server-list/serverlist.txt");
@@ -86,6 +87,7 @@ final class V5PublisherWorkspace {
     private final JProgressBar publishProgress = new JProgressBar(0, 100);
     private final JLabel publishProgressDetail = new JLabel("尚未开始发布");
     private final JTextArea validation = new JTextArea();
+    private final JTextArea legacyUrlPreview = new JTextArea();
     private final JLabel summary = new JLabel();
     private final PublisherModAutoMatcher modMatcher = new PublisherModAutoMatcher();
     private Path projectFile;
@@ -354,13 +356,14 @@ final class V5PublisherWorkspace {
         addFieldRow(form, c, 1, "2.0 稳定入口：", stableManifestPath);
         addFieldRow(form, c, 2, "1.9.x 升级入口：", legacyV4Path);
         addFieldRow(form, c, 3, "1.6.x/1.7.x 升级入口：", legacyV2Path);
-        addFilePathRow(form, c, 4, "服务器列表源：", serverListSource, "选择 servers.dat");
-        addFieldRow(form, c, 5, "服务器列表清单路径：", serverListManifestPath);
+        addPathRow(form, c, 4, "旧版入口独立输出目录：", legacyOutputDirectory, "选择空目录", false);
+        addFilePathRow(form, c, 5, "服务器列表源：", serverListSource, "选择 servers.dat");
+        addFieldRow(form, c, 6, "服务器列表清单路径：", serverListManifestPath);
         c.gridx = 1;
-        c.gridy = 6;
+        c.gridy = 7;
         c.gridwidth = 2;
         form.add(syncServerList, c);
-        c.gridy = 7;
+        c.gridy = 8;
         form.add(generateLegacyGateways, c);
         panel.add(form, BorderLayout.NORTH);
 
@@ -381,8 +384,43 @@ final class V5PublisherWorkspace {
         explanation.setLineWrap(true);
         explanation.setWrapStyleWord(true);
         explanation.setBorder(BorderFactory.createTitledBorder("云端布局与发布顺序"));
-        panel.add(new JScrollPane(explanation), BorderLayout.CENTER);
+        JSplitPane details = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+                new JScrollPane(explanation), new JScrollPane(legacyUrlPreview));
+        details.setResizeWeight(0.72);
+        details.setBorder(null);
+        legacyUrlPreview.setEditable(false);
+        legacyUrlPreview.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
+        legacyUrlPreview.setBorder(BorderFactory.createTitledBorder("旧版入口预览与上传说明"));
+        refreshLegacyUrlPreview();
+        panel.add(details, BorderLayout.CENTER);
+
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton preview = new JButton("刷新入口预览");
+        JButton generate = new JButton("仅生成旧版入口上传包");
+        preview.addActionListener(event -> refreshLegacyUrlPreview());
+        generate.addActionListener(event -> generateLegacyGateways(generate));
+        actions.add(preview);
+        actions.add(generate);
+        panel.add(actions, BorderLayout.SOUTH);
         return panel;
+    }
+
+    private void refreshLegacyUrlPreview() {
+        try {
+            String base = normalizedBaseUrl();
+            String v4 = base + "/" + cloudPath(legacyV4Path.getText());
+            String v2 = base + "/" + cloudPath(legacyV2Path.getText());
+            String stable = base + "/" + cloudPath(stableManifestPath.getText());
+            legacyUrlPreview.setText("1.9.x：       " + v4 + "\n"
+                    + "1.6.x/1.7.x：" + v2 + "\n"
+                    + "升级后 v5：   " + stable + "\n\n"
+                    + "独立生成不会扫描或复制完整客户端，也不会改动既有 v5 对象库。\n"
+                    + "把输出目录中的 legacy/ 按原相对路径上传到公开根目录；"
+                    + "SHA256SUMS.txt 和 legacy-artifacts.json 用于上传后核验。");
+            legacyUrlPreview.setCaretPosition(0);
+        } catch (Exception failure) {
+            legacyUrlPreview.setText("入口预览不可用：" + failure.getMessage());
+        }
     }
 
     private JPanel exportPanel() {
@@ -1341,6 +1379,100 @@ final class V5PublisherWorkspace {
         }.execute();
     }
 
+    private void generateLegacyGateways(JButton button) {
+        refreshLegacyUrlPreview();
+        ArrayList<String> errors = new ArrayList<>();
+        Path rootPath = null;
+        Path output = null;
+        Path updater = null;
+        try {
+            URI base = URI.create(normalizedBaseUrl());
+            if (!"https".equalsIgnoreCase(base.getScheme()) || base.getHost() == null) {
+                errors.add("公开根地址必须是 HTTPS 绝对地址。");
+            }
+            validateCloudPath(stableManifestPath.getText(), "2.0 稳定入口", "mods-v5.json");
+            validateCloudPath(legacyV4Path.getText(), "1.9.x 入口", "mods-v4.txt");
+            validateCloudPath(legacyV2Path.getText(), "1.6.x 入口", "mods.txt");
+        } catch (Exception failure) {
+            errors.add("远端入口无效：" + failure.getMessage());
+        }
+        try {
+            rootPath = requireGameRoot();
+            updater = locateUpdaterJar(rootPath);
+        } catch (Exception failure) {
+            errors.add("升级器无效：" + failure.getMessage());
+        }
+        try {
+            if (legacyOutputDirectory.getText().isBlank() && !outputDirectory.getText().isBlank()) {
+                Path normal = Path.of(outputDirectory.getText()).toAbsolutePath().normalize();
+                legacyOutputDirectory.setText(normal.resolveSibling(normal.getFileName() + "-legacy-upgrade").toString());
+            }
+            if (legacyOutputDirectory.getText().isBlank()) {
+                errors.add("请选择旧版入口独立输出目录。");
+            } else {
+                output = Path.of(legacyOutputDirectory.getText()).toAbsolutePath().normalize();
+                if (Files.exists(output)) {
+                    if (!Files.isDirectory(output)) errors.add("旧版入口输出目标不是目录：" + output);
+                    else try (var entries = Files.list(output)) {
+                        if (entries.findAny().isPresent()) errors.add("旧版入口输出目录必须为空：" + output);
+                    }
+                }
+            }
+        } catch (Exception failure) {
+            errors.add("旧版入口输出目录无效：" + failure.getMessage());
+        }
+        if (!errors.isEmpty()) {
+            StringBuilder message = new StringBuilder("无法生成旧版入口：\n");
+            for (String error : errors) message.append(" - ").append(error).append('\n');
+            legacyUrlPreview.append("\n\n" + message);
+            showError(message.toString());
+            return;
+        }
+
+        Path finalOutput = output;
+        Path finalUpdater = updater;
+        Map<String, Object> project;
+        try {
+            project = projectMap();
+        } catch (Exception failure) {
+            showError("无法生成旧版入口项目：" + failure.getMessage());
+            return;
+        }
+        button.setEnabled(false);
+        button.setText("正在生成…");
+        legacyUrlPreview.append("\n\n正在生成独立旧版入口包；不会扫描完整客户端…\n");
+        new SwingWorker<PublisherCloudBundle.LegacyResult, Void>() {
+            @Override
+            protected PublisherCloudBundle.LegacyResult doInBackground() throws Exception {
+                return PublisherCloudBundle.publishLegacyGateways(project, finalOutput, finalUpdater);
+            }
+
+            @Override
+            protected void done() {
+                button.setEnabled(true);
+                button.setText("仅生成旧版入口上传包");
+                try {
+                    PublisherCloudBundle.LegacyResult result = get();
+                    legacyUrlPreview.append("生成完成：" + result.outputRoot() + "\n"
+                            + "1.9.x 清单：" + result.v4Manifest() + "\n"
+                            + "1.6.x/1.7.x 清单：" + result.v2Manifest() + "\n"
+                            + "机器清单：" + result.artifactManifest() + "\n"
+                            + "SHA-256 清单：" + result.sha256Sums() + "\n");
+                    legacyUrlPreview.setCaretPosition(legacyUrlPreview.getDocument().getLength());
+                    JOptionPane.showMessageDialog(owner,
+                            "旧版永久升级入口上传包已生成。\n\n"
+                                    + "把 legacy/ 按原路径上传到公开根目录。\n"
+                                    + "详细说明：" + result.guideZh(),
+                            "旧版入口生成完成", JOptionPane.INFORMATION_MESSAGE);
+                } catch (Exception failure) {
+                    Throwable actual = cause(failure);
+                    legacyUrlPreview.append("生成失败：" + actual.getMessage() + "\n");
+                    showError(actual.getMessage());
+                }
+            }
+        }.execute();
+    }
+
     private void applyPublishProgress(PublisherProgress.Update update) {
         int start;
         int span;
@@ -1487,6 +1619,7 @@ final class V5PublisherWorkspace {
         remote.put("stablePath", cloudPath(stableManifestPath.getText()));
         remote.put("legacyV4Path", cloudPath(legacyV4Path.getText()));
         remote.put("legacyV2Path", cloudPath(legacyV2Path.getText()));
+        remote.put("legacyOutputDirectory", legacyOutputDirectory.getText().strip());
         remote.put("syncServerList", syncServerList.isSelected());
         remote.put("serverListSource", serverListSource.getText().strip());
         remote.put("serverListManifestPath", cloudPath(serverListManifestPath.getText()));
@@ -1585,6 +1718,7 @@ final class V5PublisherWorkspace {
         remote.put("stablePath", cloudPath(stableManifestPath.getText()));
         remote.put("legacyV4Path", cloudPath(legacyV4Path.getText()));
         remote.put("legacyV2Path", cloudPath(legacyV2Path.getText()));
+        remote.put("legacyOutputDirectory", legacyOutputDirectory.getText().strip());
         remote.put("syncServerList", syncServerList.isSelected());
         remote.put("serverListSource", serverListSource.getText().strip());
         remote.put("serverListManifestPath", cloudPath(serverListManifestPath.getText()));
@@ -1718,6 +1852,7 @@ final class V5PublisherWorkspace {
         stableManifestPath.setText(String.valueOf(remote.getOrDefault("stablePath", stableManifestPath.getText())));
         legacyV4Path.setText(String.valueOf(remote.getOrDefault("legacyV4Path", legacyV4Path.getText())));
         legacyV2Path.setText(String.valueOf(remote.getOrDefault("legacyV2Path", legacyV2Path.getText())));
+        legacyOutputDirectory.setText(String.valueOf(remote.getOrDefault("legacyOutputDirectory", "")));
         boolean savedServerList = Boolean.TRUE.equals(remote.get("syncServerList"));
         syncServerList.setSelected(savedServerList);
         serverListSource.setText(String.valueOf(remote.getOrDefault("serverListSource", "")));
@@ -1727,7 +1862,8 @@ final class V5PublisherWorkspace {
         outputDirectory.setText(String.valueOf(remote.getOrDefault("outputDirectory", outputDirectory.getText())));
         previousOutputDirectory.setText(String.valueOf(remote.getOrDefault("previousOutputDirectory", "")));
         autoReleaseSequence.setSelected(!Boolean.FALSE.equals(remote.get("autoReleaseSequence")));
-        generateLegacyGateways.setSelected(!Boolean.FALSE.equals(remote.get("generateLegacyGateways")));
+        generateLegacyGateways.setSelected(Boolean.TRUE.equals(remote.get("generateLegacyGateways")));
+        refreshLegacyUrlPreview();
         scopes.rows.clear();
         for (Object value : (List<Object>) project.getOrDefault("managedScopes", List.of())) {
             Map<String, Object> row = (Map<String, Object>) value;

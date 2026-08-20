@@ -82,6 +82,7 @@ public final class AllTests {
         testV5CoordinatorDownloadsBeforeStartupAndBecomesIdempotent();
         testV5PublisherProjectBuildsDeterministicRelease();
         testPublisherCloudBundleBuildsStableAndLegacyEntrypoints();
+        testPublisherBuildsStandaloneLegacyGatewayUploadPackage();
         testPublisherCloudBundleExportsServerList();
         testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
         testPublisherFullCloudUsesEvidenceWithoutOmittingHostedObjects();
@@ -1941,6 +1942,52 @@ public final class AllTests {
                             && result.stableManifest().getFileName().toString().equals("mods-v5.json"),
                     "新版稳定入口必须使用 mods-v5.json，旧版网关单独输出");
             pass("publisher cloud bundle builds v5 JSON and separate legacy v4/v2 materials");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPublisherBuildsStandaloneLegacyGatewayUploadPackage() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-standalone-legacy-");
+        try {
+            Path updater = root.resolve("MCSync-2.0.0.jar");
+            writeFabricJar(updater, BuildInfo.TECHNICAL_MOD_ID, BuildInfo.VERSION);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> project = (Map<String, Object>) StrictJson.parse("""
+                    {
+                      "schema":1,"releaseId":"legacy-only","releaseSequence":20260820123456789,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "remote":{
+                        "baseUrl":"https://files.example.test/mcsync",
+                        "stablePath":"channel/stable/mods-v5.json",
+                        "legacyV4Path":"legacy/1.9/mods-v4.txt",
+                        "legacyV2Path":"legacy/1.6/mods.txt",
+                        "syncServerList":false
+                      },
+                      "managedScopes":[],"files":[],"configOperations":[]
+                    }
+                    """);
+            Path output = root.resolve("legacy-upload");
+            PublisherCloudBundle.LegacyResult result = PublisherCloudBundle.publishLegacyGateways(
+                    project, output, updater);
+            ModManifest v4 = ModManifest.parse(Files.readString(result.v4Manifest(), StandardCharsets.UTF_8));
+            String v2 = Files.readString(result.v2Manifest(), StandardCharsets.UTF_8);
+            long v2Rows = v2.lines().filter(line -> !line.isBlank() && !line.startsWith("#")).count();
+            @SuppressWarnings("unchecked") Map<String, Object> artifacts = (Map<String, Object>) StrictJson.parse(
+                    Files.readString(result.artifactManifest(), StandardCharsets.UTF_8));
+            String sums = Files.readString(result.sha256Sums(), StandardCharsets.UTF_8);
+            check(v4.entries().size() == 2 && v2.startsWith(ModManifest.MAGIC_V2 + "\n") && v2Rows == 2
+                            && v4.managedClientConfig().orElseThrow().values().get("manifest")
+                            .equals("https://files.example.test/mcsync/legacy/1.9/mods-v4.txt")
+                            && Files.readString(result.clientProperties(), StandardCharsets.UTF_8)
+                            .contains("manifest=https://files.example.test/mcsync/channel/stable/mods-v5.json")
+                            && artifacts.get("stableUrl").equals(
+                            "https://files.example.test/mcsync/channel/stable/mods-v5.json")
+                            && sums.contains(Hashing.sha256(result.v4Manifest()) + "  legacy/1.9/mods-v4.txt")
+                            && sums.contains(Hashing.sha256(result.v2Manifest()) + "  legacy/1.6/mods.txt")
+                            && Files.isRegularFile(result.guideZh()) && Files.isRegularFile(result.guideEn()),
+                    "独立旧版入口包应生成两代网关、稳定 v5 引导、机器清单、SHA 清单和双语说明");
+            pass("publisher builds a standalone verified legacy gateway upload package");
         } finally {
             deleteTree(root);
         }

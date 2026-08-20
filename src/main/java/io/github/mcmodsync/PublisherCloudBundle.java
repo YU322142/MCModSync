@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,6 +17,17 @@ import java.util.Map;
 
 /** Builds a content-addressed object store, historical manifests, and the stable channel pointer. */
 final class PublisherCloudBundle {
+    record LegacyResult(
+            Path outputRoot,
+            Path v4Manifest,
+            Path v2Manifest,
+            Path clientProperties,
+            Path artifactManifest,
+            Path sha256Sums,
+            Path guideZh,
+            Path guideEn) {
+    }
+
     record Result(
             PublisherProjectV5.Publication publication,
             Path stableManifest,
@@ -27,6 +39,124 @@ final class PublisherCloudBundle {
     }
 
     private PublisherCloudBundle() {
+    }
+
+    static LegacyResult publishLegacyGateways(
+            Map<String, Object> project,
+            Path outputRoot,
+            Path updaterJar) throws IOException {
+        Path output = outputRoot.toAbsolutePath().normalize();
+        ensureEmptyTarget(output);
+        if (updaterJar == null || !Files.isRegularFile(updaterJar)) {
+            throw new IOException("生成旧版网关时缺少 MCSync 2.0.0 JAR");
+        }
+        Map<String, Object> remote = object(project.get("remote"), "remote");
+        String base = normalizeBase(String.valueOf(remote.get("baseUrl")));
+        String stableRelative = validatePath(
+                String.valueOf(remote.getOrDefault("stablePath", "channel/stable/mods-v5.json")),
+                "mods-v5.json");
+        String v4Relative = validatePath(
+                String.valueOf(remote.getOrDefault("legacyV4Path", "legacy/1.9/mods-v4.txt")),
+                "mods-v4.txt");
+        String v2Relative = validatePath(
+                String.valueOf(remote.getOrDefault("legacyV2Path", "legacy/1.6/mods.txt")),
+                "mods.txt");
+        long sequence = number(project.get("releaseSequence"), "releaseSequence").longValueExact();
+        Path parent = output.getParent();
+        if (parent == null) throw new IOException("旧版升级输出目录必须有父目录: " + output);
+        Files.createDirectories(parent);
+        Path staging = Files.createTempDirectory(parent, "." + output.getFileName() + ".legacy-");
+        boolean committed = false;
+        try {
+            Path properties = staging.resolve("client-modsync.properties");
+            String serverListUrl = null;
+            if (Boolean.TRUE.equals(remote.get("syncServerList"))) {
+                String serverListRelative = validatePath(
+                        String.valueOf(remote.getOrDefault(
+                                "serverListManifestPath", "server-list/serverlist.txt")),
+                        "serverlist.txt");
+                serverListUrl = base + "/" + serverListRelative;
+            }
+            writeClientProperties(properties, base + "/" + stableRelative, serverListUrl);
+            ManagedClientConfig finalConfig = ManagedClientConfig.fromPropertiesFile(properties);
+            ManagedClientConfig legacyCatalogConfig = finalConfig.forLegacyGateway(base + "/" + v4Relative);
+            buildLegacyDirectory(staging.resolve(parent(v4Relative)), updaterJar,
+                    finalConfig, legacyCatalogConfig, true, sequence);
+            buildLegacyDirectory(staging.resolve(parent(v2Relative)), updaterJar,
+                    finalConfig, legacyCatalogConfig, false, sequence);
+            Path guideZh = staging.resolve("LEGACY-UPGRADE.zh-CN.md");
+            Path guideEn = staging.resolve("LEGACY-UPGRADE.en.md");
+            Files.writeString(guideZh,
+                    "# MCSync 旧版永久升级入口\n\n"
+                            + "- 1.9.x 入口：`" + base + "/" + v4Relative + "`\n"
+                            + "- 1.6.x/1.7.x 入口：`" + base + "/" + v2Relative + "`\n"
+                            + "- 2.0 稳定入口：`" + base + "/" + stableRelative + "`\n\n"
+                            + "旧客户端先从对应 legacy 入口取得 MCSync 与配置引导组件。"
+                            + "游戏退出并完成替换、再次启动后，配置引导会把客户端切换到 2.0 稳定 v5 入口。\n\n"
+                            + "上传时保持相对路径不变。以后重新发布 2.0 内容时不必改动永久 legacy URL；"
+                            + "只有需要更换升级器本身时，才重新生成并上传本目录。\n",
+                    StandardCharsets.UTF_8);
+            Files.writeString(guideEn,
+                    "# MCSync permanent legacy upgrade gateways\n\n"
+                            + "- 1.9.x entry: `" + base + "/" + v4Relative + "`\n"
+                            + "- 1.6.x/1.7.x entry: `" + base + "/" + v2Relative + "`\n"
+                            + "- 2.0 stable entry: `" + base + "/" + stableRelative + "`\n\n"
+                            + "A legacy client first downloads MCSync and the configuration bootstrap from its "
+                            + "legacy gateway. After the game exits, replacement completes, and the client starts "
+                            + "again, the bootstrap switches it to the stable schema-v5 entry.\n\n"
+                            + "Preserve all relative paths while uploading. Normal 2.0 republishing does not require "
+                            + "changing these permanent legacy URLs; regenerate this directory only when the updater "
+                            + "itself changes.\n",
+                    StandardCharsets.UTF_8);
+
+            List<Path> artifacts;
+            try (var paths = Files.walk(staging)) {
+                artifacts = paths.filter(Files::isRegularFile)
+                        .filter(path -> !path.equals(staging.resolve("legacy-artifacts.json")))
+                        .filter(path -> !path.equals(staging.resolve("SHA256SUMS.txt")))
+                        .sorted(Comparator.comparing(path -> staging.relativize(path).toString()))
+                        .toList();
+            }
+            List<Object> artifactRows = new ArrayList<>();
+            for (Path path : artifacts) {
+                LinkedHashMap<String, Object> row = new LinkedHashMap<>();
+                row.put("path", staging.relativize(path).toString().replace('\\', '/'));
+                row.put("sha256", uncheckedSha256(path));
+                row.put("size", BigDecimal.valueOf(uncheckedSize(path)));
+                artifactRows.add(row);
+            }
+            Path artifactManifest = staging.resolve("legacy-artifacts.json");
+            Files.writeString(artifactManifest, StrictJson.stringify(Map.of(
+                    "schema", BigDecimal.ONE,
+                    "releaseSequence", BigDecimal.valueOf(sequence),
+                    "stableUrl", base + "/" + stableRelative,
+                    "legacyV4Url", base + "/" + v4Relative,
+                    "legacyV2Url", base + "/" + v2Relative,
+                    "artifacts", artifactRows)) + "\n", StandardCharsets.UTF_8);
+            ArrayList<Path> hashedArtifacts = new ArrayList<>(artifacts);
+            hashedArtifacts.add(artifactManifest);
+            hashedArtifacts.sort(Comparator.comparing(path -> staging.relativize(path).toString()));
+            StringBuilder sums = new StringBuilder();
+            for (Path path : hashedArtifacts) {
+                sums.append(Hashing.sha256(path)).append("  ")
+                        .append(staging.relativize(path).toString().replace('\\', '/')).append('\n');
+            }
+            Path sha256Sums = staging.resolve("SHA256SUMS.txt");
+            Files.writeString(sha256Sums, sums, StandardCharsets.UTF_8);
+            commitStaging(staging, output);
+            committed = true;
+            return new LegacyResult(
+                    output,
+                    output.resolve(v4Relative),
+                    output.resolve(v2Relative),
+                    output.resolve("client-modsync.properties"),
+                    output.resolve("legacy-artifacts.json"),
+                    output.resolve("SHA256SUMS.txt"),
+                    output.resolve("LEGACY-UPGRADE.zh-CN.md"),
+                    output.resolve("LEGACY-UPGRADE.en.md"));
+        } finally {
+            if (!committed) deleteStaging(staging);
+        }
     }
 
     static Result publish(
@@ -416,5 +546,27 @@ final class PublisherCloudBundle {
     private static BigDecimal number(Object value, String name) {
         if (!(value instanceof BigDecimal number)) throw new IllegalArgumentException(name + " 必须是整数");
         return number;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> object(Object value, String name) {
+        if (!(value instanceof Map<?, ?> map)) throw new IllegalArgumentException(name + " 必须是对象");
+        return (Map<String, Object>) map;
+    }
+
+    private static String uncheckedSha256(Path path) {
+        try {
+            return Hashing.sha256(path);
+        } catch (IOException failure) {
+            throw new java.io.UncheckedIOException(failure);
+        }
+    }
+
+    private static long uncheckedSize(Path path) {
+        try {
+            return Files.size(path);
+        } catch (IOException failure) {
+            throw new java.io.UncheckedIOException(failure);
+        }
     }
 }

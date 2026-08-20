@@ -153,6 +153,26 @@ public final class PublisherMain {
                 return 1;
             }
         }
+        if (arguments.length >= 1 && arguments[0].equals("--publish-legacy-gateways")) {
+            if (arguments.length != 4) {
+                printUsage();
+                return 2;
+            }
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> project = (Map<String, Object>) StrictJson.parse(
+                        Files.readString(Path.of(arguments[1]), StandardCharsets.UTF_8));
+                PublisherCloudBundle.LegacyResult output = PublisherCloudBundle.publishLegacyGateways(
+                        project, Path.of(arguments[3]), Path.of(arguments[2]));
+                System.out.println("MCSync legacy upgrade gateways generated: " + output.outputRoot());
+                System.out.println("1.9.x: " + output.v4Manifest());
+                System.out.println("1.6.x/1.7.x: " + output.v2Manifest());
+                return 0;
+            } catch (Exception failure) {
+                System.err.println("MCSync legacy gateway publication failed: " + failure.getMessage());
+                return 1;
+            }
+        }
         if (arguments.length >= 1 && arguments[0].equals("--v5-template")) {
             if (arguments.length != 2) {
                 printUsage();
@@ -734,6 +754,9 @@ public final class PublisherMain {
         System.out.println(text(
                 "  java -jar MCSync.jar --publish-cloud-v5-full <游戏根目录> <项目JSON> <空输出目录> [已验证清单]",
                 "  java -jar MCSync.jar --publish-cloud-v5-full <game-root> <project-json> <empty-output-directory> [verified-manifest]"));
+        System.out.println(text(
+                "  java -jar MCSync.jar --publish-legacy-gateways <项目JSON> <MCSync JAR> <空输出目录>",
+                "  java -jar MCSync.jar --publish-legacy-gateways <project-json> <MCSync-JAR> <empty-output-directory>"));
         System.out.println(text(
                 "  语言：-Dmodsync.language=zh_cn 或 -Dmodsync.language=en_us",
                 "  Language: -Dmodsync.language=zh_cn or -Dmodsync.language=en_us"));
