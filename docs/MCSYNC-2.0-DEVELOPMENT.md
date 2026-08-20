@@ -79,6 +79,8 @@ v5 将配置变更与文件替换分开描述：
 
 发布器内容扫描从 `managedScopes` 读取实际目录和文件。`config`、`defaultconfigs`、`configureddefaults` 与其他普通范围一样参与扫描，但在建表前经过敏感路径与敏感键黑名单；命中项不进入文件表，并把排除原因反馈给发布者。导出阶段会再次执行相同门禁，避免手工添加绕过扫描策略。
 
+`PublisherConfigClassifier` 在敏感门禁之后把完整配置文件路由为 additive、first-install 或 key-level-only。扫描产生的 first-install 是精确文件范围，覆盖父级 config/additive 但不影响同目录的玩法配置。FancyMenu 有显式语义：布局、素材与主题是发布内容；options 是混合配置；用户变量/编辑器状态只首装；`fancymenu_data` 已知运行态路径由安全策略排除。扫描前必须提交 JTable 当前编辑值，避免新增范围仍以旧单元格内容执行。
+
 以下内容不属于 MCSync 发布状态：单人/多人存档、玩家数据、地图探索缓存、gamerule、统计、成就、实体和区块数据。
 
 ## 启动与重启边界

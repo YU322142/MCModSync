@@ -69,6 +69,8 @@ Mods 页只处理 `mods/*.jar`。
 
 发布器的“扫描安全内容目录”会扫描上述三个配置树以及其他已声明范围，不再依赖目录白名单。配置树中的账号/会话、凭据文件、备份、临时文件、解包缓存和包含 token/password/secret/API key 等敏感键的文档会被黑名单跳过；界面会列出路径和原因。黑名单只决定整文件能否进入发布清单，不替代配置键级 OTA。
 
+配置自动分流规则：`defaultconfigs/**` 使用 additive，`configureddefaults/**` 使用 first-install；`config/**` 中明确的客户端画面、声音、按键与 UI 文件建立精确文件级 first-install 范围；同时包含玩法键和个人键的文件不进入整文件列表，并提示建立键级 OTA。FancyMenu 的布局、素材和主题读取 `config/fancymenu/{customization,assets,ui_themes}` 等发布路径；`fancymenu_data/**` 的上次世界、Buddy 进度、浏览器设置与临时网页属于玩家/运行态数据。
+
 ## 5. 配置 OTA
 
 优先修改单个配置项，不要发布整个玩家配置目录。

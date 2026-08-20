@@ -544,6 +544,10 @@ final class V5PublisherWorkspace {
     }
 
     private void scanSafeRoots(JButton button) {
+        if (scopeTable.isEditing() && !scopeTable.getCellEditor().stopCellEditing()) {
+            showError("当前同步范围尚未完成编辑，请确认路径和策略后重试。");
+            return;
+        }
         Path rootPath;
         try {
             rootPath = requireGameRoot();
@@ -560,6 +564,7 @@ final class V5PublisherWorkspace {
             protected ContentScanResult doInBackground() throws Exception {
                 ArrayList<FileRow> found = new ArrayList<>();
                 ArrayList<String> skipped = new ArrayList<>();
+                LinkedHashMap<String, String> scopeOverrides = new LinkedHashMap<>();
                 Set<String> existing = files.normalizedPaths();
                 Path options = rootPath.resolve("options.txt");
                 if (Files.isRegularFile(options, LinkOption.NOFOLLOW_LINKS)
@@ -596,6 +601,17 @@ final class V5PublisherWorkspace {
                                 skipped.add(relative + " — " + exclusion);
                                 continue;
                             }
+                            if (SensitiveDataPolicy.isConfigTree(relative)) {
+                                PublisherConfigClassifier.Decision decision =
+                                        PublisherConfigClassifier.classify(relative, inspected);
+                                if (decision.action() == PublisherConfigClassifier.Action.KEY_LEVEL_ONLY) {
+                                    skipped.add(relative + " — " + decision.reason());
+                                    continue;
+                                }
+                                if (decision.action() == PublisherConfigClassifier.Action.FIRST_INSTALL) {
+                                    scopeOverrides.put(relative, "first-install");
+                                }
+                            }
                             FileRow row = FileRow.scanned(relative, kindFor(relative));
                             if (!PublisherModAutoMatcher.isModArtifact(relative, row.kind)) {
                                 row.confirmed = true;
@@ -615,7 +631,8 @@ final class V5PublisherWorkspace {
                             PublisherModAutoMatcher.localDownload(), "未匹配，使用本地文件");
                     row.applyMatch(match);
                 }
-                return new ContentScanResult(List.copyOf(found), List.copyOf(skipped));
+                return new ContentScanResult(
+                        List.copyOf(found), List.copyOf(skipped), Map.copyOf(scopeOverrides));
             }
 
             @Override
@@ -624,6 +641,7 @@ final class V5PublisherWorkspace {
                 try {
                     ContentScanResult result = get();
                     List<FileRow> found = result.found();
+                    result.scopeOverrides().forEach(V5PublisherWorkspace.this::ensureScopePolicy);
                     files.rows.addAll(found);
                     files.rows.sort(Comparator.comparing(row -> row.path));
                     files.fireTableDataChanged();
@@ -672,7 +690,23 @@ final class V5PublisherWorkspace {
         return List.copyOf(roots);
     }
 
-    private record ContentScanResult(List<FileRow> found, List<String> skipped) {
+    private void ensureScopePolicy(String path, String policy) {
+        String normalized = path.replace('\\', '/');
+        ScopeRow existing = scopes.rows.stream()
+                .filter(row -> row.path.replace('\\', '/').equalsIgnoreCase(normalized))
+                .findFirst().orElse(null);
+        if (existing == null) {
+            scopes.rows.add(new ScopeRow(normalized, policy));
+        } else {
+            existing.policy = policy;
+        }
+        scopes.fireTableDataChanged();
+    }
+
+    private record ContentScanResult(
+            List<FileRow> found,
+            List<String> skipped,
+            Map<String, String> scopeOverrides) {
     }
 
     private void scanMods(JButton button) {

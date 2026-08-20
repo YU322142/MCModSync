@@ -69,8 +69,16 @@ final class SensitiveDataPolicy {
 
     /** Returns a human-readable reason when a publisher-side full-file scan must omit this path. */
     static String publisherScanExclusionReason(String relative, byte[] bytes) {
-        if (!isConfigTree(relative)) return null;
         String normalized = relative.replace('\\', '/').toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("fancymenu_data/")) {
+            String tail = normalized.substring("fancymenu_data/".length());
+            if (tail.equals("browser_audio_settings.json") || tail.equals("browser_video_settings.json")
+                    || tail.equals("last_world.fmdata") || tail.startsWith("buddy/")
+                    || tail.startsWith("fancymenu_temp/")) {
+                return "FancyMenu 运行态、玩家进度或临时缓存；主菜单布局位于 config/fancymenu";
+            }
+        }
+        if (!isConfigTree(relative)) return null;
         String[] segments = normalized.split("/");
         for (int index = 1; index < segments.length - 1; index++) {
             if (BLACKLISTED_PATH_SEGMENTS.contains(segments[index])) {

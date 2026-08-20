@@ -73,6 +73,7 @@ public final class AllTests {
         testLoadedProjectSequenceAlwaysAdvances();
         testPublisherCustomScopesParticipateInContentScan();
         testPublisherConfigBlacklistKeepsGameplayDataAndRejectsSensitiveState();
+        testPublisherConfigClassifierProtectsPersonalSettings();
         testStructuredConfigMutationEngine();
         testV5AtomicReleaseTransactionAndOwnership();
         testV5NewReleaseDoesNotRewriteUnchangedFiles();
@@ -185,6 +186,12 @@ public final class AllTests {
         check(SensitiveDataPolicy.publisherScanExclusionReason(
                         "configureddefaults/mod/options.toml.bak", "enabled=true\n".getBytes(StandardCharsets.UTF_8)) != null,
                 "backup config files should be blacklisted");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "fancymenu_data/last_world.fmdata", new byte[]{1, 2, 3}) != null,
+                "FancyMenu last-world state should never become pack content");
+        check(SensitiveDataPolicy.publisherScanExclusionReason(
+                        "fancymenu_data/buddy/buddy_save_player.json", "{}\n".getBytes(StandardCharsets.UTF_8)) != null,
+                "FancyMenu buddy player progress should never become pack content");
         byte[] largeSafeData = new byte[5 * 1024 * 1024];
         Arrays.fill(largeSafeData, (byte) 'x');
         check(SensitiveDataPolicy.publisherScanExclusionReason(
@@ -197,6 +204,42 @@ public final class AllTests {
                         "configureddefaults/mod/large-gameplay-data.dat", largeSafeData) != null,
                 "credential keys near the end of a large config should still be detected");
         pass("publisher config blacklist preserves gameplay data and excludes sensitive state");
+    }
+
+    private void testPublisherConfigClassifierProtectsPersonalSettings() {
+        check(PublisherConfigClassifier.classify(
+                        "defaultconfigs/create-server.toml", "damage=2\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.ADDITIVE,
+                "defaultconfigs should remain gameplay-authoritative additive content");
+        check(PublisherConfigClassifier.classify(
+                        "configureddefaults/mod/options.json", "{\"enabled\":true}\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.FIRST_INSTALL,
+                "configureddefaults should preserve player changes after first installation");
+        check(PublisherConfigClassifier.classify(
+                        "config/example-client.toml", "volume=0.5\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.FIRST_INSTALL,
+                "client-named visual/audio settings should become first-install automatically");
+        check(PublisherConfigClassifier.classify(
+                        "config/gameplay-common.toml", "damage=4\nspawn_chance=0.2\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.ADDITIVE,
+                "gameplay-only common configuration should remain additive");
+        check(PublisherConfigClassifier.classify(
+                        "config/mixed-common.toml", "damage=4\nhud_scale=0.8\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.KEY_LEVEL_ONLY,
+                "mixed gameplay and personal settings should require key-level OTA");
+        check(PublisherConfigClassifier.classify(
+                        "config/fancymenu/customization/title_screen_layout.txt", "render_custom_layout=true\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.ADDITIVE,
+                "FancyMenu layout files should be synchronized as publisher UI content");
+        check(PublisherConfigClassifier.classify(
+                        "config/fancymenu/ui_themes/dark.json", "{\"overlay_opacity\":0.8}\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.ADDITIVE,
+                "FancyMenu bundled themes should not be mistaken for personal UI preferences");
+        check(PublisherConfigClassifier.classify(
+                        "config/fancymenu/options.txt", "F:game_intro_volume='1.0';\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.KEY_LEVEL_ONLY,
+                "FancyMenu mixed options should be routed to key-level OTA");
+        pass("publisher config classifier protects personal settings and routes mixed files to key-level OTA");
     }
 
     private void testMinecraftEarlyProgressFailsClosedOutsideNeoForge() {

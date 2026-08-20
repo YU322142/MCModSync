@@ -78,7 +78,7 @@ MCSync 不承诺在 JVM 已加载 JAR 后热替换模组。涉及模组、KubeJS
 3. 在“发布项目”中选择客户端根目录。
 4. 在“Mods”页检查必选/推荐、双语描述和上游匹配结果。
 5. 在“同步范围”中确认要管理的目录。
-6. 扫描会纳入同步范围中声明的 `config/`、`defaultconfigs/` 与 `configureddefaults/`；凭据、身份、备份及运行态缓存按路径和内容黑名单跳过并在界面报告。只需统一修改某个键时，仍在“配置 OTA”中添加精确操作，避免覆盖玩家的其他设置。
+6. 扫描会纳入同步范围中声明的 `config/`、`defaultconfigs/` 与 `configureddefaults/`；凭据、身份、备份及运行态缓存按路径和内容黑名单跳过并在界面报告。玩法配置自动使用 `additive`，明确的个人客户端配置自动建立文件级 `first-install`，混合配置转入键级 OTA。FancyMenu 的发布内容位于 `config/fancymenu/`，不是 `fancymenu_data/` 的玩家运行态数据。
 7. 如需服务器列表同步，选择经过测试的 `servers.dat`。
 8. 在“验证与导出”中消除全部阻断项后导出。
 9. 先上传不可变文件，再最后上传 `mods-v5.json`。
