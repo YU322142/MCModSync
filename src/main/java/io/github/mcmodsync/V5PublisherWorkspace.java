@@ -73,7 +73,7 @@ final class V5PublisherWorkspace {
     private final JCheckBox syncServerList = new JCheckBox("同步服务器列表（保留玩家自定义条目）", true);
     private final JTextField serverListSource = new JTextField();
     private final JTextField serverListManifestPath = new JTextField("server-list/serverlist.txt");
-    private final JCheckBox generateLegacyGateways = new JCheckBox("生成 1.9.x 和 1.6.x/1.7.x 永久升级入口", true);
+    private final JCheckBox generateLegacyGateways = new JCheckBox("生成 1.9.x 和 1.6.x/1.7.x 永久升级入口", false);
     private final FileModel files = new FileModel();
     private final ScopeModel scopes = new ScopeModel();
     private final ConfigModel config = new ConfigModel();
@@ -145,9 +145,9 @@ final class V5PublisherWorkspace {
                 "此工作台直接产生 schema-v5 发布。releaseSequence 只能增加，客户端会拒绝降级。\n"
                         + "自动扫描读取当前同步范围中的普通目录与文件；config/defaultconfigs/configureddefaults 也会参与，"
                         + "但凭据、身份、备份和运行态缓存会按路径与内容黑名单跳过。精确修复仍建议使用“配置 OTA”。\n"
-                        + "增量发布以“上一版完整发布输出/升级包”对比当前客户端；程序只需要其中完整的 manifest-v5.json，\n"
-                        + "旧文件本体不必重复携带。ZIP 升级包、releases/<序号> 目录和完整输出目录均可作为基线；只有差分清单而没有完整索引时会阻止导出。\n"
-                        + "未变化文件复用旧不可变地址，当前 releases/<序号>/ 只输出新增或变化的文件。");
+                        + "第一次发布请留空上一版基线，生成完整内容对象库。以后可选择上一版完整清单进行增量对比。\n"
+                        + "托管文件按 SHA-256 保存到 objects/sha256/，发布序号只用于防降级，不再出现在文件目录中。\n"
+                        + "未变化哈希不会重复输出；新清单仍然是完整终态索引，只有 UPLOAD-PLAN.json 不能充当基线。");
         note.setEditable(false);
         note.setLineWrap(true);
         note.setWrapStyleWord(true);
@@ -366,15 +366,16 @@ final class V5PublisherWorkspace {
 
         JTextArea explanation = new JTextArea(
                 "输出会按下列布局生成：\n\n"
-                        + "releases/<releaseSequence>/       不可变的版本文件与 manifest-v5.json\n"
+                        + "objects/sha256/<前两位>/<SHA256>  不可变的内容对象；不含时间戳目录\n"
+                        + "manifests/<releaseId>.json        每次发布的完整历史清单\n"
                         + "channel/stable/mods-v5.json        2.0 客户端的正式 v5 入口\n"
                         + "legacy/1.9/mods-v4.txt            1.8/1.9 升级网关\n"
                         + "legacy/1.6/mods.txt               1.6/1.7 v2 升级网关\n"
                         + "server-list/serverlist.txt        服务器列表校验清单\n"
                         + "server-list/servers.dat           服务器列表合并源\n"
                         + "client-modsync.properties         客户端/配置引导用的地址片段\n\n"
-                        + "新版只读取 mods-v5.json；旧版升级材料单独生成在 legacy/，不参与新版入口。\n"
-                        + "发布时先上传 releases 和新版 JSON，再把 legacy/ 下的材料放到你维护的旧版地址。");
+                        + "新版只读取 mods-v5.json；旧版升级材料默认不生成，启用时也单独放在 legacy/。\n"
+                        + "发布时先上传新的哈希对象，再上传历史清单，最后原子替换 stable JSON。");
         explanation.setEditable(false);
         explanation.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
         explanation.setLineWrap(true);
@@ -593,25 +594,27 @@ final class V5PublisherWorkspace {
                             if (Files.isSymbolicLink(path)) continue;
                             String relative = rootPath.relativize(path).toString().replace('\\', '/');
                             String first = relative.split("/", 2)[0].toLowerCase(Locale.ROOT);
-                            if (NEVER_SCAN_ROOTS.contains(first) || !existing.add(relative.toLowerCase(Locale.ROOT))) continue;
+                            if (NEVER_SCAN_ROOTS.contains(first)) continue;
+                            boolean newlyDiscovered = existing.add(relative.toLowerCase(Locale.ROOT));
                             byte[] inspected = SensitiveDataPolicy.isConfigTree(relative)
                                     ? Files.readAllBytes(path) : null;
                             String exclusion = SensitiveDataPolicy.publisherScanExclusionReason(relative, inspected);
                             if (exclusion != null) {
-                                skipped.add(relative + " — " + exclusion);
+                                if (newlyDiscovered) skipped.add(relative + " — " + exclusion);
                                 continue;
                             }
                             if (SensitiveDataPolicy.isConfigTree(relative)) {
                                 PublisherConfigClassifier.Decision decision =
                                         PublisherConfigClassifier.classify(relative, inspected);
                                 if (decision.action() == PublisherConfigClassifier.Action.KEY_LEVEL_ONLY) {
-                                    skipped.add(relative + " — " + decision.reason());
+                                    if (newlyDiscovered) skipped.add(relative + " — " + decision.reason());
                                     continue;
                                 }
                                 if (decision.action() == PublisherConfigClassifier.Action.FIRST_INSTALL) {
                                     scopeOverrides.put(relative, "first-install");
                                 }
                             }
+                            if (!newlyDiscovered) continue;
                             FileRow row = FileRow.scanned(relative, kindFor(relative));
                             if (!PublisherModAutoMatcher.isModArtifact(relative, row.kind)) {
                                 row.confirmed = true;

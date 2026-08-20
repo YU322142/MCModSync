@@ -84,6 +84,7 @@ public final class AllTests {
         testPublisherCloudBundleBuildsStableAndLegacyEntrypoints();
         testPublisherCloudBundleExportsServerList();
         testPublisherCloudBundleReusesPreviousImmutableFilesAndWritesDeltaGuide();
+        testPublisherFullCloudUsesEvidenceWithoutOmittingHostedObjects();
         testPublisherCloudBundleFailureLeavesNoPartialOutput();
         testPreviousPublisherOutputDirectorySelectsNewestRelease();
         testPreviousUpgradeZipProvidesFullBaselineWithoutOldPayloads();
@@ -227,6 +228,18 @@ public final class AllTests {
                         "config/mixed-common.toml", "damage=4\nhud_scale=0.8\n".getBytes(StandardCharsets.UTF_8)).action()
                         == PublisherConfigClassifier.Action.KEY_LEVEL_ONLY,
                 "mixed gameplay and personal settings should require key-level OTA");
+        check(PublisherConfigClassifier.classify(
+                        "config/fabric/indigo-renderer.properties", "always-tesselate-blocks=auto\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.FIRST_INSTALL,
+                "Indigo's self-rewritten client properties must not create a restart loop");
+        check(PublisherConfigClassifier.classify(
+                        "config/iris.properties", "enableShaders=false\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.FIRST_INSTALL,
+                "Iris's self-rewritten client properties must remain player-owned after first install");
+        check(PublisherConfigClassifier.classify(
+                        "config/packetfixer.properties", "packetSize=1048576\ntimeout=90\n".getBytes(StandardCharsets.UTF_8)).action()
+                        == PublisherConfigClassifier.Action.KEY_LEVEL_ONLY,
+                "Packet Fixer values must use key-level OTA because the mod rewrites the whole file");
         check(PublisherConfigClassifier.classify(
                         "config/fancymenu/customization/title_screen_layout.txt", "render_custom_layout=true\n".getBytes(StandardCharsets.UTF_8)).action()
                         == PublisherConfigClassifier.Action.ADDITIVE,
@@ -1883,10 +1896,15 @@ public final class AllTests {
                     "channel/stable/mods-v5.json", "legacy/1.9/mods-v4.txt", "legacy/1.6/mods.txt",
                     null, "", true, updater);
             ReleaseManifestV5 stable = ReleaseManifestV5.parse(Files.readAllBytes(result.stableManifest()));
+            String customHash = Hashing.sha256(root.resolve("game/mods/custom.jar"));
             check(stable.releaseSequence() == 2_000_001L
                             && stable.files().getFirst().download().endpoints().getFirst().uri().toASCIIString()
-                            .equals("https://files.example.test/mcsync/releases/2000001/mods/custom.jar"),
-                    "稳定 v5 入口应锁定不可变版本目录中的托管文件");
+                            .equals("https://files.example.test/mcsync/objects/sha256/"
+                                    + customHash.substring(0, 2) + "/" + customHash)
+                            && Files.isRegularFile(output.resolve("objects/sha256")
+                                    .resolve(customHash.substring(0, 2)).resolve(customHash))
+                            && Files.isRegularFile(output.resolve("manifests/cloud-1.json")),
+                    "稳定 v5 入口应锁定 SHA-256 内容寻址对象和完整历史清单");
             ModManifest v4 = ModManifest.parse(Files.readString(
                     output.resolve("legacy/1.9/mods-v4.txt"), StandardCharsets.UTF_8));
             String v2 = Files.readString(output.resolve("legacy/1.6/mods.txt"), StandardCharsets.UTF_8);
@@ -2030,11 +2048,13 @@ public final class AllTests {
             ReleaseManifestV5 stable = ReleaseManifestV5.parse(Files.readAllBytes(result.stableManifest()));
             ReleaseManifestV5.FileEntry stableUnchanged = stable.files().stream()
                     .filter(file -> file.path().equals("mods/unchanged.jar")).findFirst().orElseThrow();
+            String changedHash = Hashing.sha256(changed);
             check(stableUnchanged.download().endpoints().getFirst().uri().toASCIIString()
                             .equals("https://files.example.test/mcsync/releases/3001/mods/unchanged.jar")
-                            && !Files.exists(output.resolve("releases/3002/mods/unchanged.jar"))
-                            && Files.isRegularFile(output.resolve("releases/3002/mods/changed.jar")),
-                    "增量发布必须复用上一版精确哈希 URL，只输出新增或变化的托管文件");
+                            && Files.isRegularFile(output.resolve("objects/sha256")
+                                    .resolve(changedHash.substring(0, 2)).resolve(changedHash))
+                            && Files.isRegularFile(output.resolve("manifests/delta-current.json")),
+                    "增量发布必须复用上一版精确哈希 URL，并只输出新增内容对象");
             @SuppressWarnings("unchecked") Map<String, Object> plan = (Map<String, Object>) StrictJson.parse(
                     Files.readString(result.uploadPlan(), StandardCharsets.UTF_8));
             String zh = Files.readString(result.uploadGuideZh(), StandardCharsets.UTF_8);
@@ -2046,6 +2066,65 @@ public final class AllTests {
                             && en.contains("Atomically replace `channel/stable/mods-v5.json` last"),
                     "导出必须生成机器计划及内容等价的中英文上传替换指南");
             pass("publisher reuses previous immutable files and writes bilingual incremental upload guides");
+        } finally {
+            deleteTree(root);
+        }
+    }
+
+    private void testPublisherFullCloudUsesEvidenceWithoutOmittingHostedObjects() throws Exception {
+        Path root = Files.createTempDirectory("mcsync-cloud-full-");
+        try {
+            Path mods = Files.createDirectories(root.resolve("game/mods"));
+            Path custom = mods.resolve("custom.jar");
+            Files.writeString(custom, "full-baseline-content", StandardCharsets.UTF_8);
+            String hash = Hashing.sha256(custom);
+            ReleaseManifestV5 evidence = ReleaseManifestV5.parse(("""
+                    {
+                      "schema":5,"releaseId":"evidence","releaseSequence":4001,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[{
+                        "path":"mods/custom.jar","sha256":"%s","size":%d,
+                        "kind":"mod","required":true,"restartRequired":true,"side":["client"],
+                        "download":{"type":"publisher-hosted","distributionPolicy":"redistributable",
+                          "endpoints":[{"url":"https://old.example.test/releases/4001/mods/custom.jar",
+                            "role":"official","purpose":"file","region":"global","priority":100,"thirdParty":false}]}
+                      }],"configOperations":[]
+                    }
+                    """).formatted(hash, Files.size(custom)).getBytes(StandardCharsets.UTF_8));
+            @SuppressWarnings("unchecked")
+            Map<String, Object> project = (Map<String, Object>) StrictJson.parse("""
+                    {
+                      "schema":1,"releaseId":"full-current","releaseSequence":4002,
+                      "minimumMCSyncVersion":"2.0.0",
+                      "managedScopes":[{"path":"mods","policy":"managed"}],
+                      "files":[{
+                        "path":"mods/custom.jar","kind":"mod","required":true,
+                        "restartRequired":true,"side":["client"],
+                        "download":{"type":"publisher-hosted","distributionPolicy":"redistributable"}
+                      }],"configOperations":[]
+                    }
+                    """);
+            Path output = root.resolve("cloud");
+            PublisherCloudBundle.Result result = PublisherCloudBundle.publishFull(
+                    root.resolve("game"), project, output, "https://files.example.test/mcsync",
+                    "channel/stable/mods-v5.json", "legacy/1.9/mods-v4.txt", "legacy/1.6/mods.txt",
+                    null, "", evidence, PublisherProgress.NONE);
+            String endpoint = result.publication().manifest().files().getFirst()
+                    .download().endpoints().getFirst().uri().toASCIIString();
+            Path object = output.resolve("objects/sha256").resolve(hash.substring(0, 2)).resolve(hash);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> uploadPlan = (Map<String, Object>) StrictJson.parse(
+                    Files.readString(result.uploadPlan(), StandardCharsets.UTF_8));
+            check(result.publication().reusedHostedFiles() == 0
+                            && Files.isRegularFile(object)
+                            && endpoint.equals("https://files.example.test/mcsync/objects/sha256/"
+                                    + hash.substring(0, 2) + "/" + hash)
+                            && "".equals(uploadPlan.get("previousReleaseId"))
+                            && new BigDecimal("1").equals(uploadPlan.get("uploadFileCount"))
+                            && new BigDecimal("0").equals(uploadPlan.get("reusedFileCount")),
+                    "全量发布可以使用旧验证证据，但不得省略本地托管对象或沿用旧目录 URL");
+            pass("full cloud publication uses evidence without omitting hosted objects");
         } finally {
             deleteTree(root);
         }

@@ -110,6 +110,49 @@ public final class PublisherMain {
                 return 1;
             }
         }
+        if (arguments.length >= 1 && arguments[0].equals("--publish-cloud-v5-full")) {
+            if (arguments.length < 4 || arguments.length > 5) {
+                printUsage();
+                return 2;
+            }
+            try {
+                Path gameRoot = Path.of(arguments[1]).toAbsolutePath().normalize();
+                Path projectPath = Path.of(arguments[2]).toAbsolutePath().normalize();
+                Path output = Path.of(arguments[3]).toAbsolutePath().normalize();
+                ReleaseManifestV5 verificationEvidence = arguments.length == 5
+                        ? ReleaseManifestV5.parse(Files.readAllBytes(
+                                Path.of(arguments[4]).toAbsolutePath().normalize()))
+                        : null;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> project = (Map<String, Object>) StrictJson.parse(
+                        Files.readString(projectPath, StandardCharsets.UTF_8));
+                @SuppressWarnings("unchecked")
+                Map<String, Object> remote = (Map<String, Object>) project.get("remote");
+                if (remote == null) throw new IOException("发布项目缺少 remote 配置");
+                boolean syncServerList = Boolean.TRUE.equals(remote.get("syncServerList"));
+                Path serverList = syncServerList
+                        ? Path.of(String.valueOf(remote.get("serverListSource"))).toAbsolutePath().normalize()
+                        : null;
+                PublisherCloudBundle.Result result = PublisherCloudBundle.publishFull(
+                        gameRoot, project, output,
+                        String.valueOf(remote.get("baseUrl")),
+                        String.valueOf(remote.getOrDefault("stablePath", "channel/stable/mods-v5.json")),
+                        String.valueOf(remote.getOrDefault("legacyV4Path", "legacy/1.9/mods-v4.txt")),
+                        String.valueOf(remote.getOrDefault("legacyV2Path", "legacy/1.6/mods.txt")),
+                        serverList,
+                        syncServerList
+                                ? String.valueOf(remote.getOrDefault(
+                                        "serverListManifestPath", "server-list/serverlist.txt"))
+                                : "",
+                        verificationEvidence, PublisherProgress.NONE);
+                System.out.println("MCSync full content-addressed cloud release generated: "
+                        + result.stableManifest());
+                return 0;
+            } catch (Exception failure) {
+                System.err.println("MCSync full cloud publication failed: " + failure.getMessage());
+                return 1;
+            }
+        }
         if (arguments.length >= 1 && arguments[0].equals("--v5-template")) {
             if (arguments.length != 2) {
                 printUsage();
@@ -688,6 +731,9 @@ public final class PublisherMain {
         System.out.println(text(
                 "  java -jar MCSync.jar --publish-v5 <游戏根目录> <项目JSON> <空输出目录>",
                 "  java -jar MCSync.jar --publish-v5 <game-root> <project-json> <empty-output-directory>"));
+        System.out.println(text(
+                "  java -jar MCSync.jar --publish-cloud-v5-full <游戏根目录> <项目JSON> <空输出目录> [已验证清单]",
+                "  java -jar MCSync.jar --publish-cloud-v5-full <game-root> <project-json> <empty-output-directory> [verified-manifest]"));
         System.out.println(text(
                 "  语言：-Dmodsync.language=zh_cn 或 -Dmodsync.language=en_us",
                 "  Language: -Dmodsync.language=zh_cn or -Dmodsync.language=en_us"));

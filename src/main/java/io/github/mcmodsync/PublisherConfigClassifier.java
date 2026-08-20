@@ -31,6 +31,11 @@ final class PublisherConfigClassifier {
             "recipe", "balance", "damage", "speed", "cooldown", "spawn", "generation", "worldgen",
             "difficulty", "capacity", "limit", "permission", "command", "server", "common", "chance",
             "rate", "multiplier", "cost", "duration", "mob", "entity", "block", "item", "fluid");
+    private static final Set<String> SELF_REWRITING_PERSONAL_FILES = Set.of(
+            "config/fabric/indigo-renderer.properties",
+            "config/iris.properties");
+    private static final Set<String> SELF_REWRITING_MIXED_FILES = Set.of(
+            "config/packetfixer.properties");
 
     private PublisherConfigClassifier() {
     }
@@ -45,6 +50,15 @@ final class PublisherConfigClassifier {
         }
         if (!normalized.startsWith("config/")) {
             return new Decision(Action.ADDITIVE, "普通受管内容");
+        }
+
+        if (SELF_REWRITING_PERSONAL_FILES.contains(normalized)) {
+            return new Decision(Action.FIRST_INSTALL,
+                    "该客户端配置会在每次启动时重写时间戳/序列化内容，仅首装写入以避免更新重启循环");
+        }
+        if (SELF_REWRITING_MIXED_FILES.contains(normalized)) {
+            return new Decision(Action.KEY_LEVEL_ONLY,
+                    "该配置会在每次启动时重写整文件；需要统一的值必须改用配置项级 OTA");
         }
 
         if (normalized.startsWith("config/fancymenu/")) {

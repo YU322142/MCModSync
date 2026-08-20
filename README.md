@@ -83,7 +83,7 @@ MCSync 不承诺在 JVM 已加载 JAR 后热替换模组。涉及模组、KubeJS
 8. 在“验证与导出”中消除全部阻断项后导出。
 9. 先上传不可变文件，再最后上传 `mods-v5.json`。
 
-可在“发布项目”页选择**上一版完整发布输出、单个 v5 清单或 ZIP 升级包**。MCSync 会读取其中发布序号最高的完整终态索引，并把它与当前待发布客户端目录中的实际文件按大小和 SHA-256 对比。升级包不需要包含更早版本的大量文件本体，只要保留完整 `manifest-v5.json`/`mods-v5.json` 及其中的旧不可变 URL；若只提供差分 `UPLOAD-PLAN.json`，发布器会拒绝继续，避免静默退化为重复全量上传。内容未变化的本地托管文件直接复用上一版不可变 URL，不再次复制进新版本目录；当前 `releases/<releaseSequence>/` 只包含新增或变化的升级文件。历史 `releases/` 必须继续保留，因为新版完整清单可以引用其中的旧对象。输出根目录同时生成 `UPLOAD-PLAN.json`、`UPLOAD-GUIDE.zh-CN.md` 和内容完全等价的 `UPLOAD-GUIDE.en.md`，明确新增/替换、复用、外部下载和删除路径。
+第一次发布时留空上一版基线，MCSync 会生成完整的 SHA-256 内容对象库。托管文件保存为 `objects/sha256/<前两位>/<完整哈希>`，发布序号只用于防降级，不再成为云端目录名；相同内容即使对应多个逻辑路径也只保存一次。每次发布另写入 `manifests/<releaseId>.json` 完整历史清单，并把相同内容复制到稳定入口。以后选择上一版完整输出、单个 v5 清单或 ZIP 时，只复用已验证的平台证据和已存在的哈希对象；差分 `UPLOAD-PLAN.json` 不能代替完整终态索引。输出根目录同时生成机器计划与内容等价的中英文指南。
 
 客户端应用 schema-v5 发布时会校验完整终态清单，但只暂存、备份和写入实际变化的文件，不会因为发布序号更新而重写所有正确文件。Minecraft 退出前会显示预计提交文件数、数据量和耗时范围；该估算以实际写集合为基础，大量小文件或较慢磁盘可能超出范围。
 
@@ -94,18 +94,11 @@ MCSync 不承诺在 JVM 已加载 JAR 后热替换模组。涉及模组、KubeJS
 ## 推荐的云端布局
 
 ```text
-channel/stable/
-├─ mods-v5.json
-├─ releases/
-│  └─ <release-sequence>/
-│     ├─ mods/
-│     ├─ resourcepacks/
-│     ├─ shaderpacks/
-│     ├─ kubejs/
-│     └─ other-managed-files/
-└─ server-list/
-   ├─ serverlist.txt
-   └─ servers.dat
+channel/stable/mods-v5.json
+manifests/<releaseId>.json
+objects/sha256/<前两位>/<完整SHA256>
+server-list/serverlist.txt
+server-list/servers.dat
 ```
 
 旧 1.6.x、1.7 和 1.9.x 客户端使用的升级材料应继续留在它们原来的 URL。新 v5 目录不需要旁挂 v4 文件。参见[旧版升级指南](docs/中文使用指南.md)。

@@ -9,13 +9,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/** Builds the complete immutable release, stable channel, and legacy upgrade gateway layout. */
+/** Builds a content-addressed object store, historical manifests, and the stable channel pointer. */
 final class PublisherCloudBundle {
     record Result(
             PublisherProjectV5.Publication publication,
@@ -78,6 +77,43 @@ final class PublisherCloudBundle {
             Path updaterJar,
             ReleaseManifestV5 previousManifest,
             PublisherProgress progress) throws IOException {
+        return publishInternal(gameRoot, project, outputRoot, baseUrl, stablePath, legacyV4Path, legacyV2Path,
+                serverListSource, serverListManifestPath, legacyGateways, updaterJar, previousManifest,
+                progress, true);
+    }
+
+    static Result publishFull(
+            Path gameRoot,
+            Map<String, Object> project,
+            Path outputRoot,
+            String baseUrl,
+            String stablePath,
+            String legacyV4Path,
+            String legacyV2Path,
+            Path serverListSource,
+            String serverListManifestPath,
+            ReleaseManifestV5 verificationEvidence,
+            PublisherProgress progress) throws IOException {
+        return publishInternal(gameRoot, project, outputRoot, baseUrl, stablePath, legacyV4Path, legacyV2Path,
+                serverListSource, serverListManifestPath, false, null, verificationEvidence,
+                progress, false);
+    }
+
+    private static Result publishInternal(
+            Path gameRoot,
+            Map<String, Object> project,
+            Path outputRoot,
+            String baseUrl,
+            String stablePath,
+            String legacyV4Path,
+            String legacyV2Path,
+            Path serverListSource,
+            String serverListManifestPath,
+            boolean legacyGateways,
+            Path updaterJar,
+            ReleaseManifestV5 previousManifest,
+            PublisherProgress progress,
+            boolean reuseHostedObjects) throws IOException {
         PublisherProgress reporter = progress == null ? PublisherProgress.NONE : progress;
         reporter.update(PublisherProgress.Stage.PREPARE, 0, 1, "检查云端布局与发布参数");
         Path output = outputRoot.toAbsolutePath().normalize();
@@ -109,7 +145,7 @@ final class PublisherCloudBundle {
         try {
             Result staged = publishInto(gameRoot, project, staging, base, stableRelative, v4Relative, v2Relative,
                     serverListSource, serverListRelative, syncServerList, legacyGateways, updaterJar,
-                    previousManifest, reporter, sequence);
+                    previousManifest, reporter, sequence, reuseHostedObjects);
             commitStaging(staging, output);
             committed = true;
             reporter.update(PublisherProgress.Stage.COMPLETE, 1, 1, "发布完成");
@@ -134,12 +170,28 @@ final class PublisherCloudBundle {
             Path updaterJar,
             ReleaseManifestV5 previousManifest,
             PublisherProgress reporter,
-            long sequence) throws IOException {
-        Map<String, Object> remoteProject = withHostedEndpoints(project, base, sequence);
-        Path releaseRoot = output.resolve("releases").resolve(Long.toString(sequence));
-        PublisherProjectV5.Publication publication = PublisherProjectV5.publish(
-                gameRoot, remoteProject, releaseRoot, String.valueOf(project.get("releaseId")) + ".publisher.json",
-                previousManifest, reporter);
+            long sequence,
+            boolean reuseHostedObjects) throws IOException {
+        Path assemblyRoot = output.resolve(".publication-stage");
+        PublisherProjectV5.Publication assembled = PublisherProjectV5.publish(
+                gameRoot, project, assemblyRoot, String.valueOf(project.get("releaseId")) + ".publisher.json",
+                previousManifest, reporter,
+                (path, sha256, size, download) -> withObjectEndpoint(download, base, sha256),
+                reuseHostedObjects);
+        materializeObjects(output, assemblyRoot, assembled);
+
+        String releaseName = safeReleaseName(assembled.manifest().releaseId());
+        Path historicalManifest = output.resolve("manifests").resolve(releaseName + ".json");
+        Path historicalReport = output.resolve("reports").resolve(releaseName + ".publication.json");
+        Files.createDirectories(historicalManifest.getParent());
+        Files.createDirectories(historicalReport.getParent());
+        Files.copy(assembled.manifestPath(), historicalManifest, StandardCopyOption.REPLACE_EXISTING);
+        Files.copy(assembled.reportPath(), historicalReport, StandardCopyOption.REPLACE_EXISTING);
+        PublisherProjectV5.Publication publication = new PublisherProjectV5.Publication(
+                assembled.manifest(), historicalManifest, historicalReport,
+                assembled.hostedFiles(), assembled.reusedHostedFiles(),
+                assembled.reusedPlatformVerifications(), assembled.reusedHostedPaths());
+        deleteStaging(assemblyRoot);
 
         reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 0, 5, "复制 2.0 稳定入口");
         Path stable = output.resolve(stableRelative.replace('/', java.io.File.separatorChar));
@@ -171,10 +223,11 @@ final class PublisherCloudBundle {
         writeGuide(output.resolve("REMOTE-DEPLOYMENT.md"), sequence, stableRelative, stableUrl,
                 serverListRelative, legacyGateways);
         reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 4, 5, "生成增量上传计划");
+        ReleaseManifestV5 deltaBaseline = reuseHostedObjects ? previousManifest : null;
         PublisherReleaseDelta.Plan delta = PublisherReleaseDelta.plan(
-                previousManifest, publication.manifest(), publication.reusedHostedPaths());
+                deltaBaseline, publication.manifest(), publication.reusedHostedPaths());
         PublisherReleaseDelta.Paths deltaPaths = PublisherReleaseDelta.write(
-                output, delta, previousManifest, publication.manifest(), stableRelative, serverListRelative);
+                output, delta, deltaBaseline, publication.manifest(), stableRelative, serverListRelative);
         reporter.update(PublisherProgress.Stage.BUILD_CLOUD_BUNDLE, 5, 5, "云端发布目录整理完成");
         return new Result(publication, stable, properties, serverListManifest,
                 deltaPaths.json(), deltaPaths.zh(), deltaPaths.en());
@@ -223,26 +276,54 @@ final class PublisherCloudBundle {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    static Map<String, Object> withHostedEndpoints(Map<String, Object> source, String baseUrl, long sequence) {
-        LinkedHashMap<String, Object> result = new LinkedHashMap<>(source);
-        String releaseBase = normalizeBase(baseUrl) + "/releases/" + sequence + "/";
-        List<Object> files = ((List<Object>) source.get("files")).stream().map(raw -> {
-            Map<String, Object> original = (Map<String, Object>) raw;
-            LinkedHashMap<String, Object> file = new LinkedHashMap<>(original);
-            Map<String, Object> originalDownload = (Map<String, Object>) original.get("download");
-            LinkedHashMap<String, Object> download = new LinkedHashMap<>(originalDownload);
-            if ("publisher-hosted".equals(download.get("type"))) {
-                download.put("endpoints", List.of(Map.of(
-                        "url", releaseBase + encodePath(String.valueOf(file.get("path"))),
-                        "role", "official", "purpose", "file", "region", "global",
-                        "priority", 100, "thirdParty", false)));
+    private static Map<String, Object> withObjectEndpoint(
+            Map<String, Object> original, String baseUrl, String sha256) {
+        LinkedHashMap<String, Object> download = new LinkedHashMap<>(original);
+        String normalizedHash = sha256.toLowerCase(Locale.ROOT);
+        String objectUrl = normalizeBase(baseUrl) + "/" + objectRelative(normalizedHash);
+        download.put("endpoints", List.of(Map.of(
+                "url", objectUrl,
+                "role", "official", "purpose", "file", "region", "global",
+                "priority", 100, "thirdParty", false)));
+        return download;
+    }
+
+    private static void materializeObjects(
+            Path output, Path assemblyRoot, PublisherProjectV5.Publication publication) throws IOException {
+        for (ReleaseManifestV5.FileEntry file : publication.manifest().files()) {
+            if (!"publisher-hosted".equals(file.download().type())
+                    || publication.reusedHostedPaths().contains(file.path())) continue;
+            Path source = assemblyRoot.resolve(file.path()).normalize();
+            if (!source.startsWith(assemblyRoot) || !Files.isRegularFile(source)) {
+                throw new IOException("发布暂存文件缺失: " + file.path());
             }
-            file.put("download", download);
-            return (Object) file;
-        }).toList();
-        result.put("files", files);
-        return result;
+            Path object = output.resolve(objectRelative(file.sha256())).normalize();
+            if (!object.startsWith(output)) throw new IOException("对象路径逃逸: " + file.path());
+            Files.createDirectories(object.getParent());
+            if (Files.exists(object)) {
+                if (!Hashing.sha256(object).equalsIgnoreCase(file.sha256())) {
+                    throw new IOException("对象仓库发生哈希冲突: " + object);
+                }
+                Files.delete(source);
+            } else {
+                Files.move(source, object);
+            }
+            if (!Hashing.sha256(object).equalsIgnoreCase(file.sha256())) {
+                throw new IOException("对象写入后哈希不一致: " + file.path());
+            }
+        }
+    }
+
+    private static String objectRelative(String sha256) {
+        String hash = sha256.toLowerCase(Locale.ROOT);
+        if (!hash.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("无效 SHA-256: " + sha256);
+        return "objects/sha256/" + hash.substring(0, 2) + "/" + hash;
+    }
+
+    private static String safeReleaseName(String releaseId) {
+        String safe = releaseId == null ? "" : releaseId.strip().replaceAll("[^A-Za-z0-9._-]", "-");
+        while (safe.startsWith(".")) safe = safe.substring(1);
+        return safe.isBlank() ? "release" : safe;
     }
 
     private static void buildLegacyDirectory(
@@ -285,16 +366,17 @@ final class PublisherCloudBundle {
         Files.writeString(output,
                 "# MCSync cloud deployment\n\n"
                         + "Release sequence: " + sequence + "\n\n"
-                        + "1. Upload `releases/" + sequence + "/` first.\n"
+                        + "1. Upload new files under `objects/sha256/` first. Existing hash objects are never overwritten.\n"
                         + (legacy
                                 ? "2. Copy the generated files under `legacy/` to the separately managed legacy download locations.\n"
                                 : "2. Legacy gateways were not generated.\n")
-                        + "3. Atomically replace `" + stablePath + "` last.\n"
-                        + "4. Configure clients with `manifest=" + stableUrl + "`.\n\n"
+                        + "3. Upload the complete historical manifest under `manifests/`.\n"
+                        + "4. Atomically replace `" + stablePath + "` last.\n"
+                        + "5. Configure clients with `manifest=" + stableUrl + "`.\n\n"
                         + (serverListPath.isBlank() ? ""
-                                : "5. Upload `" + serverListPath + "` and its sibling `servers.dat`.\n\n")
-                        + "Each release contains a complete manifest but only new or changed hosted payloads. Keep all historical immutable release directories because later manifests may reference them.\n"
-                        + "Do not overwrite immutable release files. Rollback uses a new, larger releaseSequence.\n",
+                                : "6. Upload `" + serverListPath + "` and its sibling `servers.dat`.\n\n")
+                        + "Payload URLs are derived from SHA-256, not release timestamps. A full publication uploads every referenced local object; later OTA publications upload only hashes not already present.\n"
+                        + "Do not overwrite hash objects. Rollback still uses a new, larger releaseSequence.\n",
                 StandardCharsets.UTF_8);
     }
 
@@ -329,11 +411,6 @@ final class PublisherCloudBundle {
         int separator = path.lastIndexOf('/');
         if (separator < 1) throw new IOException("旧版入口必须放在独立目录: " + path);
         return path.substring(0, separator);
-    }
-
-    private static String encodePath(String relative) {
-        return String.join("/", Arrays.stream(relative.replace('\\', '/').split("/"))
-                .map(Rfc3986::encodePathSegment).toList());
     }
 
     private static BigDecimal number(Object value, String name) {

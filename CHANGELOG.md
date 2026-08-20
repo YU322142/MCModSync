@@ -4,6 +4,11 @@
 
 ## 2.0.0
 
+- Replaced timestamp-named release payload directories with a SHA-256 content-addressed object store: `objects/sha256/<first-two>/<full-hash>`. Release sequences now serve anti-downgrade checks only. Complete historical manifests live under `manifests/<releaseId>.json`, and the stable manifest is replaced last.
+- Added a fresh full-publication mode that can reuse exact-hash platform verification evidence without reusing or omitting publisher-hosted payloads. This allows a clean baseline publication while avoiding redundant Modrinth/CurseForge verification downloads.
+- Changed legacy gateway generation to opt-in in the GUI and added a command-line full cloud publisher. The generated MCSync JAR remains a required managed Mod and is verified against the manifest/object hash.
+- Prevented launch loops caused by self-rewriting Iris, Indigo, and PacketFixer property files: Iris/Indigo are first-install files, while PacketFixer is routed away from whole-file replacement.
+
 - Fixed publisher scans failing to append files after adding synchronization scopes. Safe-content scanning now follows the current scope table and includes `config/`, `defaultconfigs/`, and `configureddefaults/`. Account/session data, credentials, backups, temporary/runtime caches, and credential-shaped configuration documents are skipped by path/content blacklists with visible reasons; precise configuration repairs still use key-level OTA.
 - Added automatic configuration routing: gameplay-consistency files remain `additive`; client graphics, volume, keybinding, and UI files receive exact-file `first-install` scopes; files mixing gameplay and personal keys are withheld from full-file publication and explicitly routed to key-level configuration OTA.
 - Fixed scans reading the previous value when a custom scope was typed and scanned before its table edit committed. FancyMenu layouts, assets, and themes under `config/fancymenu/` are recognized as publisher UI content, while last-world state, Buddy player progress, browser state, and temporary cache files under `fancymenu_data/` are excluded with visible reasons.

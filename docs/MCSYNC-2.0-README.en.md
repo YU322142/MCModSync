@@ -83,7 +83,7 @@ Only JARs located directly in `mods/` are queried against Modrinth, CurseForge, 
 8. Under “Validation and Export”, resolve every blocker before exporting.
 9. Upload immutable files first, and upload `mods-v5.json` last.
 
-The **complete output of the previous publication, a standalone v5 manifest, or a ZIP upgrade package** may be selected on the “Publishing Project” tab. MCSync reads the complete desired-state index with the highest release sequence and compares it with the actual files in the current client directory by size and SHA-256. The upgrade package does not need to duplicate payloads from older releases; it only needs a complete `manifest-v5.json`/`mods-v5.json` containing their immutable URLs. A delta-only `UPLOAD-PLAN.json` is rejected instead of silently falling back to duplicate full uploads. Unchanged publisher-hosted files reuse their previous immutable URLs and are not copied again, while the current `releases/<releaseSequence>/` contains only new or changed upgrade files. Historical `releases/` directories must remain available because the new complete manifest may still reference their objects. The output root also contains `UPLOAD-PLAN.json`, `UPLOAD-GUIDE.zh-CN.md`, and a fully equivalent `UPLOAD-GUIDE.en.md`, identifying additions/replacements, reuse, external downloads, and removed paths.
+Leave the previous baseline empty for the first publication. MCSync then creates a complete SHA-256 content-object store. Hosted files are stored as `objects/sha256/<first-two>/<full-hash>`; the release sequence remains an anti-downgrade value and is no longer part of a payload directory. Identical bytes are stored once even when several logical paths reference them. Each publication also writes a complete historical manifest at `manifests/<releaseId>.json` and copies the same manifest to the stable channel pointer. Later publications may use a complete previous output, standalone v5 manifest, or ZIP as verification evidence and to avoid emitting objects that already exist. A delta-only `UPLOAD-PLAN.json` is never accepted as the desired-state baseline.
 
 When applying a schema-v5 release, the client verifies the complete desired-state manifest but stages, backs up, and writes only files that actually changed. A newer release sequence no longer rewrites every correct file. Before Minecraft exits, the game window shows the estimated commit file count, byte size, and duration range; many small files or slower disks may exceed that estimate.
 
@@ -94,18 +94,11 @@ When “Scan and Detect Upgrades” is used directly, the current `mods/` direct
 ## Recommended Cloud Layout
 
 ```text
-channel/stable/
-├─ mods-v5.json
-├─ releases/
-│  └─ <release-sequence>/
-│     ├─ mods/
-│     ├─ resourcepacks/
-│     ├─ shaderpacks/
-│     ├─ kubejs/
-│     └─ other-managed-files/
-└─ server-list/
-   ├─ serverlist.txt
-   └─ servers.dat
+channel/stable/mods-v5.json
+manifests/<releaseId>.json
+objects/sha256/<first-two>/<full-SHA256>
+server-list/serverlist.txt
+server-list/servers.dat
 ```
 
 Upgrade materials used by legacy 1.6.x, 1.7, and 1.9.x clients must remain at their original URLs. The new v5 directory does not need an adjacent v4 file. See the [legacy upgrade guide](中文使用指南.md).

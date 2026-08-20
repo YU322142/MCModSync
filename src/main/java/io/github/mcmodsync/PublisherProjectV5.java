@@ -32,6 +32,12 @@ final class PublisherProjectV5 {
     private PublisherProjectV5() {
     }
 
+    @FunctionalInterface
+    interface HostedDownloadDecorator {
+        Map<String, Object> decorate(String path, String sha256, long size, Map<String, Object> download)
+                throws IOException;
+    }
+
     static long currentTimeReleaseSequence() {
         return Long.parseLong(LocalDateTime.now().format(RELEASE_SEQUENCE_TIME));
     }
@@ -131,6 +137,30 @@ final class PublisherProjectV5 {
             String projectName,
             ReleaseManifestV5 previousManifest,
             PublisherProgress progress) throws IOException {
+        return publish(gameRoot, source, outputDirectory, projectName, previousManifest, progress, null);
+    }
+
+    static Publication publish(
+            Path gameRoot,
+            Map<String, Object> source,
+            Path outputDirectory,
+            String projectName,
+            ReleaseManifestV5 previousManifest,
+            PublisherProgress progress,
+            HostedDownloadDecorator hostedDownloadDecorator) throws IOException {
+        return publish(gameRoot, source, outputDirectory, projectName, previousManifest, progress,
+                hostedDownloadDecorator, true);
+    }
+
+    static Publication publish(
+            Path gameRoot,
+            Map<String, Object> source,
+            Path outputDirectory,
+            String projectName,
+            ReleaseManifestV5 previousManifest,
+            PublisherProgress progress,
+            HostedDownloadDecorator hostedDownloadDecorator,
+            boolean reuseHostedObjects) throws IOException {
         PublisherProgress reporter = progress == null ? PublisherProgress.NONE : progress;
         reporter.update(PublisherProgress.Stage.PREPARE, 0, 1, "检查发布目录与项目结构");
         Path root = gameRoot.toAbsolutePath().normalize();
@@ -222,7 +252,15 @@ final class PublisherProjectV5 {
             }
             generated.put("sha256", sha256);
             generated.put("size", localBytes.length);
-            if (generated.get("download") instanceof Map<?, ?> rawDownload
+            if (hostedDownloadDecorator != null
+                    && generated.get("download") instanceof Map<?, ?> rawDownload
+                    && "publisher-hosted".equals(rawDownload.get("type"))) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> hostedDownload = (Map<String, Object>) rawDownload;
+                generated.put("download", hostedDownloadDecorator.decorate(
+                        relative, sha256, localBytes.length, hostedDownload));
+            }
+            if (reuseHostedObjects && generated.get("download") instanceof Map<?, ?> rawDownload
                     && "publisher-hosted".equals(rawDownload.get("type"))) {
                 ReleaseManifestV5.FileEntry reusable = PublisherReleaseDelta.reusable(
                         previousManifest, relative, sha256, localBytes.length);
